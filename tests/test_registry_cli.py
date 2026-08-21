@@ -17,7 +17,10 @@ def test_cli_parser_has_all_subcommands():
     parser = build_parser()
     sub_actions = [a for a in parser._subparsers._group_actions if hasattr(a, "choices")]
     commands = set(sub_actions[0].choices.keys())
-    assert commands == {"import", "validate", "stats", "export", "doctor", "verify"}
+    assert commands == {
+        "import", "validate", "stats", "export", "doctor", "verify",
+        "acquire", "batches", "resume",
+    }
 
 
 def test_cli_import_command(tmp_env, tmp_path, capsys):

@@ -181,4 +181,113 @@ across 3 provider families (15 Greenhouse, 4 Ashby, 1 Workday), each row carryin
 - Safe page discovery cannot see JavaScript-rendered careers links (by design — no stealth
   browser). CSV/JSON bulk import remains the reliable acquisition path for such companies.
 - No distributed poller exists yet — sharding is groundwork only. See `docs/registry-scaling.md`
+  "What remains" for the full list. *(Superseded by Phase 5 below — a real distributed poller
+  now exists and enforces sharding.)*
+
+## Phase 5 — Distributed polling execution layer (verified 2026-08-21)
+
+Full write-up: `docs/phase5-distributed-polling.md`, `docs/worker-architecture.md`,
+`docs/polling-leases.md`, `docs/registry-acquisition.md`, `docs/fleet-operations.md`,
+`docs/scaling-claims.md`.
+
+| Requirement | Verification |
+|---|---|
+| Atomic lease acquisition, no double-poll | `tests/test_workers_leasing.py` (threaded + real multi-process ad hoc check: 6 OS processes, 40 rows, 0 duplicates); `tests/test_acceptance_scenarios_phase5.py` |
+| Lease expiration / crash recovery | `test_worker_crash_recovery_lease_expires_and_is_reclaimed`, live-tested below |
+| Worker heartbeat / identity / status | `tests/test_workers_graceful_shutdown.py`, `tests/test_workers_runner.py::test_heartbeat_and_final_status_recorded` |
+| Sharding: partition + no overlap + deterministic | `test_shard_partition_covers_every_portal_exactly_once`, reused unchanged Phase 4 `app/registry/sharding.py` |
+| Retry policy / Retry-After / bounded backoff | `tests/test_workers_retry_circuit.py`; Retry-After already covered by pre-existing `tests/test_http_client.py` |
+| Circuit breaker (trip / half-open / never-permanent) | `tests/test_workers_retry_circuit.py` (17 tests) |
+| Provider concurrency isolation | `test_provider_isolation_one_failing_provider_does_not_block_another`; live-confirmed below |
+| Idempotent retry / no duplicate jobs | `test_idempotent_retry_does_not_duplicate_jobs` |
+| Attempt history (bounded) | `tests/test_workers_runner.py` (attempt recorded for every path incl. cancellations) |
+| Dead-letter / requeue | `tests/test_workers_dead_letter.py` (6 tests) |
+| Schema drift vs. empty board | `tests/test_schema_drift.py` (17 tests, one per provider with a probe) |
+| Acquisition batch + resume | `tests/test_registry_acquisition.py` (7 tests, incl. simulated-crash resume with zero duplicates) |
+| Verification queue (separate lease, backoff, no hot-loop) | `test_verification_queue_failed_portal_backs_off_not_hot_loop` |
+| Honest monitoring metrics (stored vs. actually-polled) | `tests/test_monitoring_metrics.py` (5 tests) |
+| Discovery latency (real timestamps only) | `test_discovery_latency_ignores_fabricated_timestamps` |
+| Dashboard fleet/acquisition routes | `tests/test_fleet_dashboard.py` (7 tests) |
+| CLI (`run`/`status`/`attempts`/`dead-letter`, `acquire`/`batches`/`resume`) | `tests/test_workers_cli.py` (7 tests); `tests/test_registry_cli.py` updated |
+| Safe migration, additive only | `tests/test_phase5_migration_and_sqlite_safety.py` (6 tests); real migration re-run against the actual populated `data/app.db` (see below) |
+| SQLite WAL / busy-timeout, concurrent writers | `test_wal_mode_and_busy_timeout_configured`, `test_concurrent_writers_do_not_corrupt_or_deadlock` |
+| Graceful shutdown | `tests/test_workers_graceful_shutdown.py` (5 tests) |
+| Bounded due-query at scale | `tests/test_workers_bounded_queries.py`; full 1k/10k/50k/100k benchmark below |
+| 4-worker local acceptance (100 synthetic portals) | `tests/test_acceptance_scenarios_phase5.py::test_local_four_worker_acceptance_scenario` |
+
+### Synthetic scale benchmark (`scripts/worker_benchmark.py`, isolated temp DB)
+
+```
+size=1000    single_claim_50=0.0048s   8-worker drain of 950=0.150s   duplicate_claims=0
+size=10000   single_claim_50=0.0071s   8-worker drain of 9950=0.464s  duplicate_claims=0
+size=50000   single_claim_50=0.0139s   8-worker drain of 49950=1.845s duplicate_claims=0
+size=100000  single_claim_50=0.0215s   8-worker drain of 99950=4.215s duplicate_claims=0
+```
+
+Bounded due-queries stay well under 25ms even at 100k rows; zero duplicate claims across 8
+concurrent threads at every size. DB-only — says nothing about network capacity (see
+`docs/scaling-claims.md`).
+
+### Limited live validation (real network, real 2-worker run, `2026-08-21`)
+
+Ran `python -m app.workers.cli run --shard-index {0,1} --shard-count 2 --once` as two real,
+concurrent OS processes against the actual real, live-verified registry from Phase 4 (19 real
+`ACTIVE` portals: 14 Greenhouse, 4 Ashby, 1 Workday) — no mocking, real internet, real candidate
+profile downstream.
+
+- Round 1: 11/19 portals successfully polled (`monitoring_coverage_24h: 0.58`) — the rest were
+  correctly cooldown-deferred by `PROVIDER_CONCURRENCY_DEFAULT=3` (14 Greenhouse tenants sharing
+  a budget of 3 concurrent requests within one bounded `--once` cycle).
+- Rounds 2-3 (same command, re-run): coverage converged to 0.74, then 0.89, confirming continuous
+  operation (not `--once`) is what closes the gap — expected, correct behavior, not a bug.
+- **Live-caught and fixed a real bug during this run**: an uncaught `ResponseTooLargeError` from
+  `GreenhouseProvider.fetch_jobs()` for an unusually large real board escaped every layer of
+  per-tenant error isolation and crashed one worker's per-item task, leaving that portal's lease
+  stranded with zero attempt record until natural expiry. Fixed with an outer safety-net
+  `except Exception` around the fetch call in `app/workers/runner.py::_process_poll_item`,
+  guaranteeing an attempt is always recorded and the lease always released regardless of failure
+  cause. Regression test:
+  `test_unexpected_fetch_jobs_exception_still_records_attempt_and_releases_lease`. Re-ran after
+  the fix: zero further crashes.
+- Final state: **444 real jobs** in the `jobs` table (up from 9 pre-existing), 1 `READY_TO_APPLY`
+  (`CONFIRMED_SPONSOR`), 5 `REVIEW_REQUIRED` (`LIKELY_SPONSOR`), the rest correctly gated/skipped
+  by the unchanged sponsorship/seniority/match pipeline. `python -m app.registry.cli doctor` and
+  the fleet's own `dead_letters_open`/`provider_circuits_open_or_half_open` stayed at 0 throughout.
+  `/`, `/fleet`, `/registry`, `/registry/doctor` all rendered correctly against the resulting real
+  (non-trivial) database.
+
+### Real registry growth test (`2026-08-21`)
+
+`data/registry_seed/phase5_growth_seed.csv` (6 additional real companies) run through
+`python -m app.registry.cli acquire ... --source-name phase5_growth_seed` against the real
+database with real live verification: **6/6 records processed, 6 companies created, 6 portal
+candidates, 3 verified+active (Dropbox, Affirm, Webflow), 3 correctly left unverified (DoorDash,
+Plaid, Retool — guessed tenant slugs simply 404'd, an honest outcome, not a defect)**. Doctor: 0
+issues throughout. See `docs/registry-acquisition.md` for the full breakdown.
+
+### Real DB migration safety
+
+`python -m app.db.init_db()`-equivalent (every CLI command calls it) was re-run against the real,
+now-populated `data/app.db` multiple times across this session with zero data loss: existing
+`jobs`, `application_state_history`, `discovery_cycles`, `registry_*`, and `company_registry` rows
+were all preserved, and the full pre-existing 312-test suite continued passing unmodified
+throughout Phase 5 development.
+
+### Known Phase 5 limitations
+
+- SQLite provides real multi-*process* (not multi-*machine*) concurrency — see
+  `docs/scaling-claims.md` for the honest ceiling and the documented PostgreSQL/queue swap path.
+- `PROVIDER_CONCURRENCY_DEFAULT`'s tight default (3) means a single bounded `--once` cycle does
+  not always fully drain a provider with many tenants in one pass — by design (rate-limiting), but
+  worth knowing before assuming one `--once` run proves full coverage; continuous operation
+  converges over successive cycles, as demonstrated above.
+- Schema-drift detection covers exactly the providers with a raw structural probe (10 today) —
+  by construction the only providers that can ever reach `ACTIVE`, so there's no coverage gap for
+  anything actually polled, but a provider manually added to `company_registry` without going
+  through Phase 4 verification (bypassing the requirement) gets no real success/failure signal at
+  all (pre-existing Phase 2/3 behavior, unchanged).
+- The real verified registry is still small (26 companies / 22 active portals after this phase's
+  growth test) — per CLAUDE.md's no-fake-scale policy, this was never inflated with synthetic
+  rows; reaching materially larger real coverage is now a matter of running more legitimate,
+  attributable acquisition batches with the tooling built here, not a code gap.
   "What remains" for the full list.

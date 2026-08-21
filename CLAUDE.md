@@ -312,3 +312,58 @@ coverage scales toward Phase 4's 10,000–100,000+ tenant registry:
   real one.
 - Company/portal identity dedup always requires domain (or an explicit provider+tenant pair) —
   normalized *name* alone is never sufficient to merge two registry companies.
+
+## Distributed Polling / Worker Fleet Rules (recorded after Phase 5, apply to all future phases)
+
+These are durable rules the Phase 5 distributed polling execution layer (`app/workers/`) and its
+future replacements/extensions must keep obeying:
+
+- Never claim "monitoring N portals" anywhere (docs, dashboard, reports) unless real, timestamped
+  attempt history proves those N portals were actually polled within their expected schedule.
+  Allowed wording: "registry contains N portals" / "N verified" / "N active" / "N successfully
+  polled in the last 24h" / "monitoring coverage: X%". Storing a row is never the same as
+  monitoring a company. See `docs/scaling-claims.md`.
+- A portal/verification-queue item is claimed via a single atomic `UPDATE ... WHERE
+  (unleased OR lease-expired)` — never a read-then-write pattern from application code, and never
+  an in-memory-only lock. Correctness comes from SQLite's own single-writer serialization (WAL
+  mode + `busy_timeout`, both must stay configured on every connection); do not reintroduce a
+  separate application-level locking mechanism on top of it.
+- A worker crash must never require crash-detection logic. The only mechanism that recovers a
+  crashed worker's held-but-abandoned lease is the lease's own `lease_expires_at` passing —
+  do not add a heartbeat-based "is this worker alive" check as an alternative path.
+- The network call (the actual HTTP request to a provider) must always happen OUTSIDE any
+  `db_session()` transaction — never hold a DB write transaction open across a network call.
+- Sharding (`REGISTRY_SHARD_COUNT`/`REGISTRY_SHARD_INDEX`) is applied by filtering candidates in
+  Python before the claim `UPDATE`, using the existing deterministic
+  `app.registry.sharding.shard_for_portal` hash — never add a second, different sharding scheme.
+- A claimed work item that is skipped without ever being attempted (circuit open, provider at its
+  concurrency limit) must get a short cooldown (lease extended), never an outright lease release —
+  releasing outright causes a busy-spin of claim/cancel/reclaim across multiple workers/threads
+  sharing one provider's tight concurrency budget. This was a real bug caught during Phase 5's own
+  local multi-worker acceptance testing; do not revert to bare release-on-cancel.
+- Every poll/verification attempt must result in exactly one recorded `poll_attempts` row and the
+  lease being released (or intentionally extended, never left indeterminate) — including on a
+  wholly unanticipated exception. Any new code path added to `app/workers/runner.py` must be
+  wrapped so this remains true; a stranded lease with no attempt record is exactly the failure
+  mode the outer safety-net `except Exception` blocks exist to prevent (a real one was caught live
+  during this phase's own validation: `ResponseTooLargeError` escaping `GreenhouseProvider.
+  fetch_jobs()`'s own internal error isolation for an unusually large real board).
+- The circuit breaker must never permanently disable a provider — it always eventually returns to
+  allowing a HALF_OPEN probe attempt after `CIRCUIT_BREAKER_COOLDOWN_SECONDS`, regardless of how
+  many times it has tripped before.
+- Dead-lettering only ever triggers on CONSECUTIVE PERMANENT failures reaching
+  `DEAD_LETTER_MAX_ATTEMPTS` — transient failures (retryable) never count toward that threshold,
+  matching the same permanent-vs-temporary distinction Phase 4's registry lifecycle already
+  established. Never auto-requeue a dead-lettered item; requeuing is always an explicit operator
+  action.
+- Schema-drift detection (a structurally wrong/missing response field) must remain distinct from
+  an empty board (a structurally valid, empty response) in both attempt history and portal
+  health — never conflate the two, and never quarantine/disable a portal for schema drift alone.
+- `app/workers/queue.py::WorkQueue` (`claim_due_work`/`ack`/`retry`/`fail`/`extend_lease`) is the
+  only interface the worker runner and pipeline code may depend on for queue operations — never
+  let `app/workers/runner.py` or any provider/pipeline code reference SQLite-specific locking
+  details directly; that keeps a future PostgreSQL/Redis/SQS swap possible without touching them.
+- Synthetic benchmark data (`scripts/worker_benchmark.py`) must only ever be written to an
+  isolated temp DB, never the real registry, and must use the provider name `benchmark-fixture`
+  (matching `scripts/registry_benchmark.py`'s existing convention) that can never collide with a
+  real provider.

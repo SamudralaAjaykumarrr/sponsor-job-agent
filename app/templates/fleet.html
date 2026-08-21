@@ -1,0 +1,141 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Fleet Operations — Sponsor Job Agent</title>
+  <style>
+    body { font-family: -apple-system, Arial, sans-serif; margin: 2rem; background: #f7f7f9; color: #1a1a1a; }
+    table { width: 100%; border-collapse: collapse; background: white; margin-top: 1rem; }
+    th, td { padding: 8px 10px; border-bottom: 1px solid #eee; text-align: left; font-size: 0.82rem; }
+    th { background: #fafafa; }
+    .cards { display: flex; flex-wrap: wrap; gap: 0.75rem; margin: 1rem 0; }
+    .card { background: white; border: 1px solid #ddd; border-radius: 8px; padding: 0.75rem 1.1rem; min-width: 130px; }
+    .card .n { font-size: 1.5rem; font-weight: 700; }
+    .card .l { font-size: 0.72rem; color: #666; text-transform: uppercase; letter-spacing: 0.03em; }
+    .status-tag { padding: 2px 8px; border-radius: 10px; font-size: 0.72rem; font-weight: 600; }
+    .status-WORKING, .status-SUCCEEDED, .status-VERIFIED { background: #d4edda; color: #155724; }
+    .status-IDLE, .status-STARTING { background: #e2e3e5; color: #383d41; }
+    .status-DEGRADED, .status-RETRYABLE_FAILURE, .status-CANCELLED { background: #fff3cd; color: #856404; }
+    .status-STOPPING, .status-STOPPED { background: #e2e3e5; color: #383d41; }
+    .status-PERMANENT_FAILURE, .status-LEASE_EXPIRED { background: #f8d7da; color: #721c24; }
+    .stale-badge { background: #f8d7da; color: #721c24; padding: 1px 6px; border-radius: 8px; font-size: 0.68rem; margin-left: 4px; }
+    section { margin-top: 2.5rem; }
+    code.small { font-size: 0.78rem; }
+  </style>
+</head>
+<body>
+  <p><a href="/">&larr; back to dashboard</a> · <a href="/registry">Registry</a> · <a href="/acquisition">Acquisition</a></p>
+  <h1>Fleet Operations</h1>
+  <p style="color:#666;">Distributed polling execution layer (Phase 5). "Actually polled" numbers below are real
+     poll-attempt history, not registry row counts -- see <code class="small">docs/scaling-claims.md</code>.</p>
+
+  <div class="cards">
+    <div class="card"><div class="n">{{ snapshot.stored_portals }}</div><div class="l">Stored portals</div></div>
+    <div class="card"><div class="n">{{ snapshot.active_portals }}</div><div class="l">Active portals</div></div>
+    <div class="card"><div class="n">{{ snapshot.operational_poll_targets }}</div><div class="l">Operational poll targets</div></div>
+    <div class="card"><div class="n">{{ snapshot.actually_polled_last_1h }}</div><div class="l">Actually polled (1h)</div></div>
+    <div class="card"><div class="n">{{ snapshot.actually_polled_last_24h }}</div><div class="l">Actually polled (24h)</div></div>
+    <div class="card"><div class="n">{{ '%.1f' % (snapshot.monitoring_coverage_24h * 100) if snapshot.monitoring_coverage_24h is not none else 'n/a' }}{{ '%' if snapshot.monitoring_coverage_24h is not none else '' }}</div><div class="l">Monitoring coverage (24h)</div></div>
+    <div class="card"><div class="n">{{ snapshot.jobs_fetched_last_24h }}</div><div class="l">Jobs fetched (24h)</div></div>
+    <div class="card"><div class="n">{{ snapshot.new_jobs_last_24h }}</div><div class="l">New jobs (24h)</div></div>
+    <div class="card"><div class="n">{{ snapshot.healthy_monitored_portals }}</div><div class="l">Healthy targets</div></div>
+    <div class="card"><div class="n">{{ snapshot.failing_monitored_portals }}</div><div class="l">Failing targets</div></div>
+    <div class="card"><div class="n">{{ snapshot.dead_letters_open }}</div><div class="l">Dead letters (open)</div></div>
+    <div class="card"><div class="n">{{ snapshot.provider_circuits_open_or_half_open }}</div><div class="l">Circuits open/half-open</div></div>
+    <div class="card"><div class="n">{{ active_poll_leases }}</div><div class="l">Active poll leases</div></div>
+    <div class="card"><div class="n">{{ active_verification_leases }}</div><div class="l">Active verification leases</div></div>
+  </div>
+
+  <section>
+    <h2>Discovery latency (published_at &rarr; first_seen_at, real timestamps only)</h2>
+    {% if latency.sample_size == 0 %}
+    <p style="color:#666;">{{ latency.note }}</p>
+    {% else %}
+    <div class="cards">
+      <div class="card"><div class="n">{{ latency.p50_minutes }}m</div><div class="l">p50</div></div>
+      <div class="card"><div class="n">{{ latency.p90_minutes }}m</div><div class="l">p90</div></div>
+      <div class="card"><div class="n">{{ latency.p95_minutes }}m</div><div class="l">p95</div></div>
+      <div class="card"><div class="n">{{ latency.p99_minutes }}m</div><div class="l">p99</div></div>
+      <div class="card"><div class="n">{{ latency.sample_size }}</div><div class="l">Sample size</div></div>
+    </div>
+    {% endif %}
+  </section>
+
+  <section>
+    <h2>Workers</h2>
+    <p style="color:#666;">Config: concurrency={{ config.poll_worker_concurrency }}/worker, lease={{ config.portal_lease_seconds }}s,
+       shard={{ config.shard_index }}/{{ config.shard_count }}, dead-letter after {{ config.dead_letter_max_attempts }} permanent
+       failures, circuit trips at {{ (config.circuit_breaker_failure_threshold * 100) | round(0) }}% failure rate
+       ({{ config.circuit_breaker_cooldown_seconds }}s cooldown).</p>
+    <table>
+      <thead><tr><th>Worker</th><th>Status</th><th>Shard</th><th>Heartbeat</th><th>Current</th><th>Portals</th><th>Jobs</th><th>Errors</th></tr></thead>
+      <tbody>
+        {% for w in workers %}
+        <tr>
+          <td>{{ w.worker_id }}</td>
+          <td><span class="status-tag status-{{ w.status }}">{{ w.status }}</span>{% if w.worker_id in stale_worker_ids %}<span class="stale-badge">STALE</span>{% endif %}</td>
+          <td>{{ w.shard_index }}/{{ w.shard_count }}</td>
+          <td>{{ w.last_heartbeat_at }}</td>
+          <td>{{ w.current_portal_type or '-' }}:{{ w.current_portal_id or '-' }}</td>
+          <td>{{ w.portals_processed }}</td>
+          <td>{{ w.jobs_processed }}</td>
+          <td>{{ w.errors }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="8">No workers have run yet. Start one with <code class="small">python -m app.workers.cli run</code>.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Recent attempts</h2>
+    <table>
+      <thead><tr><th>Started</th><th>Queue</th><th>Provider</th><th>Portal</th><th>Status</th><th>Jobs new</th><th>Error</th><th>Worker</th></tr></thead>
+      <tbody>
+        {% for a in attempts %}
+        <tr>
+          <td>{{ a.started_at }}</td>
+          <td>{{ a.queue }}</td>
+          <td>{{ a.provider }}</td>
+          <td>{{ a.portal_type }}:{{ a.portal_id }}</td>
+          <td><span class="status-tag status-{{ a.status }}">{{ a.status }}</span></td>
+          <td>{{ a.jobs_new }}</td>
+          <td>{{ a.error_type or '-' }}</td>
+          <td>{{ a.worker_id }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="8">No attempts recorded yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <p style="color:#666; font-size:0.8rem;">Showing up to 100 most recent attempts (bounded query).</p>
+  </section>
+
+  <section>
+    <h2>Dead letters</h2>
+    <table>
+      <thead><tr><th>Portal</th><th>Provider</th><th>Attempts</th><th>Reason</th><th>Last error</th><th>Updated</th><th></th></tr></thead>
+      <tbody>
+        {% for d in dead_letters %}
+        <tr>
+          <td>{{ d.portal_type }}:{{ d.portal_id }}</td>
+          <td>{{ d.provider }}</td>
+          <td>{{ d.attempt_count }}</td>
+          <td>{{ d.reason }}</td>
+          <td>{{ d.last_error[:120] }}</td>
+          <td>{{ d.updated_at }}</td>
+          <td>
+            <form method="post" action="/fleet/dead-letter/{{ d.id }}/requeue" style="margin:0;">
+              <button type="submit">Requeue</button>
+            </form>
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="7">No dead-lettered work items.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+</body>
+</html>

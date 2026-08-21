@@ -1,0 +1,61 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Registry Acquisition — Sponsor Job Agent</title>
+  <style>
+    body { font-family: -apple-system, Arial, sans-serif; margin: 2rem; background: #f7f7f9; color: #1a1a1a; }
+    table { width: 100%; border-collapse: collapse; background: white; margin-top: 1rem; }
+    th, td { padding: 8px 10px; border-bottom: 1px solid #eee; text-align: left; font-size: 0.82rem; }
+    th { background: #fafafa; }
+    .status-tag { padding: 2px 8px; border-radius: 10px; font-size: 0.72rem; font-weight: 600; }
+    .status-COMPLETED { background: #d4edda; color: #155724; }
+    .status-RUNNING, .status-PENDING { background: #e2e3e5; color: #383d41; }
+    .status-PAUSED { background: #fff3cd; color: #856404; }
+    .status-FAILED { background: #f8d7da; color: #721c24; }
+    code.small { font-size: 0.78rem; }
+  </style>
+</head>
+<body>
+  <p><a href="/">&larr; back to dashboard</a> · <a href="/registry">Registry</a> · <a href="/fleet">Fleet</a></p>
+  <h1>Registry Acquisition</h1>
+  <p style="color:#666;">Resumable batches: seed dataset &rarr; company &rarr; portal candidate &rarr; live verification &rarr;
+     VERIFIED/ACTIVE or QUARANTINED. Start/resume a batch from the CLI:
+     <code class="small">python -m app.registry.cli acquire seed.csv</code> /
+     <code class="small">python -m app.registry.cli resume BATCH_ID</code>.</p>
+
+  <table>
+    <thead>
+      <tr>
+        <th>ID</th><th>Source</th><th>Status</th><th>Progress</th><th>Companies</th><th>Candidates</th>
+        <th>Verified</th><th>Active</th><th>Quarantined</th><th>Failed</th><th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for b in batches %}
+      <tr>
+        <td>{{ b.id }}</td>
+        <td>{{ b.source_name }}</td>
+        <td><span class="status-tag status-{{ b.status }}">{{ b.status }}</span></td>
+        <td>{{ b.records_processed }}/{{ b.records_total }}</td>
+        <td>{{ b.companies_created }}</td>
+        <td>{{ b.portal_candidates }}</td>
+        <td>{{ b.verified }}</td>
+        <td>{{ b.active }}</td>
+        <td>{{ b.quarantined }}</td>
+        <td>{{ b.failed }}</td>
+        <td>
+          {% if b.status in ('FAILED', 'PAUSED') %}
+          <form method="post" action="/acquisition/batches/{{ b.id }}/resume" style="margin:0;">
+            <button type="submit">Resume</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="11">No acquisition batches yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</body>
+</html>

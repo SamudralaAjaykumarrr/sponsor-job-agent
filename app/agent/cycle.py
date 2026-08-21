@@ -152,6 +152,12 @@ def _process_raw_job(
     return "new"
 
 
+# Public aliases for reuse by the Phase 5 worker fleet (app/workers/runner.py)
+# -- same fetch->filter->dedupe->store->analyze pipeline, no duplicated logic.
+process_raw_job = _process_raw_job
+analyze_and_maybe_generate = _analyze_and_maybe_generate
+
+
 def _discover_from_static_config(cycle_id: int, stats: dict) -> list[str]:
     """Legacy Phase 2 path: providers configured via ENABLED_PROVIDERS /
     *_BOARD_TOKENS env vars. Unchanged behavior, preserved for backward

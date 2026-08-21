@@ -29,12 +29,17 @@ from app.registry.models import CompanyRegistryEntry
 from app.registry.repo import insert_entry, list_entries, provider_health_summary, seed_demo_entries
 from app.registry.scheduling import compute_health
 
+from app.registry import acquisition as registry_acquisition
 from app.registry import analytics as registry_analytics
 from app.registry import doctor as registry_doctor
 from app.registry import lifecycle as registry_lifecycle
 from app.registry import store as registry_store
 from app.registry import sync as registry_sync
 from app.registry.verification import verify_portal
+from app.workers import dead_letter as workers_dead_letter
+from app.workers import leasing as workers_leasing
+from app.workers import metrics as workers_metrics
+from app.workers import repo as workers_repo
 
 
 @asynccontextmanager
@@ -365,3 +370,68 @@ def candidate_status():
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+# --- Phase 5: fleet operations dashboard ------------------------------------
+
+@app.get("/fleet", response_class=HTMLResponse)
+def fleet_page(request: Request):
+    workers = workers_repo.list_workers()
+    stale = {w["worker_id"] for w in workers_repo.list_stale_workers(older_than_seconds=config.WORKER_HEARTBEAT_SECONDS * 4)}
+    attempts = workers_repo.list_recent_attempts(limit=100)
+    dead_letters = workers_dead_letter.list_dead_letters(limit=100)
+    snapshot = workers_metrics.fleet_snapshot()
+    latency = workers_metrics.discovery_latency_percentiles()
+    return templates.TemplateResponse(
+        request, "fleet.html",
+        {
+            "workers": workers, "stale_worker_ids": stale, "attempts": attempts,
+            "dead_letters": dead_letters, "snapshot": snapshot, "latency": latency,
+            "active_poll_leases": workers_leasing.count_active_poll_leases(),
+            "active_verification_leases": workers_leasing.count_active_verification_leases(),
+            "config": {
+                "poll_worker_concurrency": config.POLL_WORKER_CONCURRENCY,
+                "portal_lease_seconds": config.PORTAL_LEASE_SECONDS,
+                "shard_count": config.REGISTRY_SHARD_COUNT,
+                "shard_index": config.REGISTRY_SHARD_INDEX,
+                "dead_letter_max_attempts": config.DEAD_LETTER_MAX_ATTEMPTS,
+                "circuit_breaker_failure_threshold": config.CIRCUIT_BREAKER_FAILURE_THRESHOLD,
+                "circuit_breaker_cooldown_seconds": config.CIRCUIT_BREAKER_COOLDOWN_SECONDS,
+            },
+        },
+    )
+
+
+@app.post("/fleet/dead-letter/{dead_letter_id}/requeue")
+def fleet_dead_letter_requeue(dead_letter_id: int):
+    workers_dead_letter.requeue(dead_letter_id)
+    return RedirectResponse(url="/fleet", status_code=303)
+
+
+@app.get("/fleet/metrics")
+def fleet_metrics():
+    return JSONResponse({
+        "snapshot": workers_metrics.fleet_snapshot(),
+        "discovery_latency": workers_metrics.discovery_latency_percentiles(),
+        "active_poll_leases": workers_leasing.count_active_poll_leases(),
+        "active_verification_leases": workers_leasing.count_active_verification_leases(),
+    })
+
+
+# --- Phase 5: registry acquisition dashboard --------------------------------
+
+@app.get("/acquisition", response_class=HTMLResponse)
+def acquisition_page(request: Request):
+    batches = registry_acquisition.list_batches()
+    return templates.TemplateResponse(request, "acquisition.html", {"batches": batches})
+
+
+@app.post("/acquisition/batches/{batch_id}/resume")
+def acquisition_resume(batch_id: int):
+    batch = registry_acquisition.get_batch(batch_id)
+    if batch is None:
+        raise HTTPException(404, "batch not found")
+    if batch["status"] not in ("FAILED", "PAUSED"):
+        raise HTTPException(400, f"batch is {batch['status']} -- only FAILED/PAUSED batches can be resumed")
+    registry_acquisition.run_acquisition_batch(batch["path"], resume_batch_id=batch_id)
+    return RedirectResponse(url="/acquisition", status_code=303)

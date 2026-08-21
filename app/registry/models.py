@@ -39,6 +39,15 @@ class CompanyRegistryEntry(BaseModel):
     average_latency_ms: float = 0.0
     poll_interval_minutes: int = 15
 
+    # Phase 5: poll-queue leasing (app.workers.leasing) + permanent-failure
+    # bookkeeping for dead-lettering (app.workers.dead_letter). Nullable/
+    # zero-defaulted so every pre-Phase-5 row remains valid.
+    lease_owner: Optional[str] = None
+    lease_attempt_id: Optional[str] = None
+    lease_acquired_at: Optional[str] = None
+    lease_expires_at: Optional[str] = None
+    consecutive_permanent_failures: int = 0
+
     created_at: str = Field(default_factory=utcnow)
     updated_at: str = Field(default_factory=utcnow)
 
@@ -135,6 +144,12 @@ class CareerPortal(BaseModel):
     registry_entry_id: Optional[int] = None
     superseded_by_portal_id: Optional[int] = None
     notes: str = ""
+
+    # Phase 5: verification-queue leasing (app.workers.leasing).
+    verify_lease_owner: Optional[str] = None
+    verify_lease_attempt_id: Optional[str] = None
+    verify_lease_acquired_at: Optional[str] = None
+    verify_lease_expires_at: Optional[str] = None
 
     created_at: str = Field(default_factory=utcnow)
     updated_at: str = Field(default_factory=utcnow)

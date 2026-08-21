@@ -2,6 +2,7 @@ import json
 import sys
 from pathlib import Path
 
+import httpx
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -51,6 +52,26 @@ def tmp_env(tmp_path, monkeypatch):
         "output_dir": output_dir,
         "candidate_dir": candidate_dir,
     }
+
+
+@pytest.fixture
+def mock_httpx(monkeypatch):
+    """Globally routes every httpx.Client constructed for the duration of a
+    test through an httpx.MockTransport handler -- needed for Phase 5 worker
+    tests, where app.workers.runner and app.providers.registry each build
+    their own httpx.Client internally (no injection point), unlike the
+    Phase 3/4 tests that pass a client= directly to a provider/probe."""
+
+    def _install(handler):
+        real_client = httpx.Client
+
+        def factory(*args, **kwargs):
+            kwargs["transport"] = httpx.MockTransport(handler)
+            return real_client(*args, **kwargs)
+
+        monkeypatch.setattr(httpx, "Client", factory)
+
+    return _install
 
 
 @pytest.fixture

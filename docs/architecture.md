@@ -170,3 +170,32 @@ added on top of Phase 3, without rebuilding it (all 205 Phase 3 tests still pass
   portals, migration history, safe POST actions); `/registry/doctor`.
 - `scripts/registry_benchmark.py` — synthetic 1k/10k/50k/100k scale benchmark, isolated temp
   SQLite DB only, never the real registry (`docs/registry-scaling.md`).
+
+## Phase 5 — distributed polling execution layer + registry acquisition
+
+See `docs/phase5-distributed-polling.md` (start here), `docs/worker-architecture.md`,
+`docs/polling-leases.md`, `docs/registry-acquisition.md`, `docs/fleet-operations.md`,
+`docs/scaling-claims.md` for full detail. Summary of what was added on top of Phase 4, without
+rebuilding it (all 312 pre-existing tests still pass unmodified):
+
+- `app/workers/` — the entire new package: `identity.py` (PII-free worker id), `models.py`
+  (`WorkerStatus`/`AttemptStatus`/`CircuitState`/`LeasedWorkItem`), `repo.py` (CRUD for the new
+  execution tables), `leasing.py` (atomic claim/release/extend against `company_registry`/
+  `registry_portals`), `queue.py` (`WorkQueue` abstraction), `retry.py` (centralized retry
+  classification + backoff), `circuit.py` (per-provider circuit breaker + inflight-concurrency
+  slots), `schema_check.py` (schema-drift vs. empty-board detection), `dead_letter.py`,
+  `metrics.py` (honest stored-vs-monitored metrics), `runner.py` (`Worker`, the actual execution
+  loop, reusing `app.agent.cycle.process_raw_job` and `app.registry.verification.verify_portal`
+  entirely unchanged), `supervisor.py` (local dev multi-process spawner, no shell involved),
+  `cli.py` (`run`/`status`/`attempts`/`dead-letter`).
+- `app/registry/acquisition.py` — resumable acquisition batch executor (checkpointed resume,
+  per-record failure isolation, immediate live verification of new candidates), on top of the
+  unchanged Phase 4 `importers.py`/`verification.py`/`lifecycle.py`/`sync.py`.
+- New, additive tables/columns (`app/db.py`): `poll_attempts`, `workers`, `dead_letters`,
+  `provider_circuit_state`, `registry_acquisition_batches`, plus lease columns on
+  `company_registry` and `registry_portals`. WAL mode + `busy_timeout` now configured on every
+  connection for safe multi-process concurrency.
+- Dashboard: `/fleet` (workers, attempts, dead letters, fleet metrics, discovery latency),
+  `/acquisition` (batch progress + resume), `/fleet/metrics` (JSON).
+- `scripts/worker_benchmark.py` — synthetic 1k/10k/50k/100k `company_registry` leasing/attempt
+  benchmark, isolated temp SQLite DB only.

@@ -91,3 +91,13 @@ In practice, populating the registry at scale now means: `python -m app.registry
 companies.csv` → `python -m app.registry.cli verify` (or the dashboard's per-portal Verify
 button) → the verified portals appear here automatically, ready for `app/agent/cycle.py` to poll
 on its next due cycle.
+
+**Phase 5 update**: rows in this table are now also polled by the distributed worker fleet
+(`python -m app.workers.cli run`), not only by the legacy in-process scheduler — both read the
+exact same `next_poll_at`/`mark_poll_result` scheduling this document describes, unchanged. What's
+new is *how* a due row gets claimed: an atomic, sharded lease (four additive columns:
+`lease_owner`/`lease_attempt_id`/`lease_acquired_at`/`lease_expires_at`) guarantees at most one
+worker process ever polls a given row at a time, even with several worker processes running.
+See `docs/polling-leases.md` and `docs/worker-architecture.md`. The single-import-then-verify
+workflow above can now also be driven end-to-end as one resumable batch via `python -m
+app.registry.cli acquire companies.csv` — see `docs/registry-acquisition.md`.

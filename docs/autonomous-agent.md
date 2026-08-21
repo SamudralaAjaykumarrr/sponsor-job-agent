@@ -137,3 +137,18 @@ candidate profile fields.
 - Every `AMBIGUOUS`/`QUARANTINED` registry portal (Phase 4): the verification pipeline could not
   confirm the returned company identity matches the registry company — review on the portal
   detail page (`/registry/portals/{id}`) before manually re-verifying or enabling it.
+- Every open dead-letter entry (Phase 5, `/fleet` or `python -m app.workers.cli dead-letter`): a
+  portal/verification target that failed permanently and repeatedly enough to be disabled — an
+  operator should investigate the underlying cause before requeuing it (never auto-requeued).
+
+## Phase 5: who actually runs discovery now
+
+This document describes the original single-process, in-process scheduler
+(`app.agent.scheduler.AgentScheduler`) — it is **unchanged** and still exists; toggling
+`AGENT_ENABLED` still works exactly as described above. Phase 5 adds an *additional*,
+independent way to run discovery: one or more `python -m app.workers.cli run` processes, which
+claim the same `company_registry` rows via an atomic lease (so the legacy scheduler and any
+number of Phase 5 workers can safely run at the same time without double-polling a portal) and
+reuse the exact same `app.agent.cycle.process_raw_job` pipeline described in this document. See
+`docs/phase5-distributed-polling.md` for the full picture, and `docs/fleet-operations.md` for how
+to actually run a fleet of workers locally.

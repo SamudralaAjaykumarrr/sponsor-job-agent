@@ -6,6 +6,9 @@
     python -m app.registry.cli export registry.jsonl [--format jsonl|json]
     python -m app.registry.cli doctor
     python -m app.registry.cli verify [--limit N] [--provider NAME]
+    python -m app.registry.cli acquire seed.csv [--source-name NAME] [--no-verify]
+    python -m app.registry.cli batches
+    python -m app.registry.cli resume BATCH_ID [--no-verify]
 
 Every command initializes the real app database (app.config.DB_PATH) via
 app.db.init_db() first -- migrations are additive and idempotent, so this is
@@ -83,6 +86,53 @@ def _cmd_doctor(_: argparse.Namespace) -> int:
     return 1 if report.serious_count else 0
 
 
+def _cmd_acquire(args: argparse.Namespace) -> int:
+    from app.registry.acquisition import run_acquisition_batch
+
+    result = run_acquisition_batch(
+        args.path, source_name=args.source_name, source_type=args.source_type,
+        verify_new_candidates=not args.no_verify,
+    )
+    _print_batch_result(result)
+    return 0 if result.status == "COMPLETED" else 1
+
+
+def _cmd_batches(_: argparse.Namespace) -> int:
+    from app.registry.acquisition import list_batches
+
+    for b in list_batches():
+        print(f"  id={b['id']:<4} status={b['status']:<10} source={b['source_name']:<24} "
+              f"processed={b['records_processed']}/{b['records_total']} "
+              f"companies={b['companies_created']} candidates={b['portal_candidates']} "
+              f"verified={b['verified']} active={b['active']} quarantined={b['quarantined']} failed={b['failed']}")
+    return 0
+
+
+def _cmd_resume(args: argparse.Namespace) -> int:
+    from app.registry.acquisition import get_batch, run_acquisition_batch
+
+    existing = get_batch(args.batch_id)
+    if existing is None:
+        print(f"no such batch id={args.batch_id}")
+        return 1
+    result = run_acquisition_batch(existing["path"], resume_batch_id=args.batch_id, verify_new_candidates=not args.no_verify)
+    _print_batch_result(result)
+    return 0 if result.status == "COMPLETED" else 1
+
+
+def _print_batch_result(result) -> None:
+    print(f"batch {result.batch_id}: {result.status}")
+    print(f"  records_processed: {result.records_processed}/{result.records_total}")
+    print(f"  companies_created: {result.companies_created}")
+    print(f"  portal_candidates: {result.portal_candidates}")
+    print(f"  verified:          {result.verified}")
+    print(f"  active:            {result.active}")
+    print(f"  quarantined:       {result.quarantined}")
+    print(f"  failed:            {result.failed}")
+    for err in result.errors[:50]:
+        print(f"  ERROR: {err}")
+
+
 def _cmd_verify(args: argparse.Namespace) -> int:
     from app.registry import lifecycle, store, sync
     from app.registry.verification import verify_portal
@@ -140,6 +190,21 @@ def build_parser() -> argparse.ArgumentParser:
     p_verify.add_argument("--limit", type=int, default=50)
     p_verify.add_argument("--provider", default=None)
     p_verify.set_defaults(func=_cmd_verify)
+
+    p_acquire = sub.add_parser("acquire", help="run a resumable acquisition batch: seed dataset -> companies -> portal candidates -> verification")
+    p_acquire.add_argument("path")
+    p_acquire.add_argument("--source-name", default=None)
+    p_acquire.add_argument("--source-type", default="CSV")
+    p_acquire.add_argument("--no-verify", action="store_true", help="skip immediate verification of newly created candidates")
+    p_acquire.set_defaults(func=_cmd_acquire)
+
+    p_batches = sub.add_parser("batches", help="list acquisition batches and their progress")
+    p_batches.set_defaults(func=_cmd_batches)
+
+    p_resume = sub.add_parser("resume", help="resume an interrupted/failed acquisition batch by id")
+    p_resume.add_argument("batch_id", type=int)
+    p_resume.add_argument("--no-verify", action="store_true")
+    p_resume.set_defaults(func=_cmd_resume)
 
     return parser
 

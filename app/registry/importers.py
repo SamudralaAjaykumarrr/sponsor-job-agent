@@ -186,22 +186,28 @@ def _find_existing_portal(candidate: RegistryCandidate, canonical: str) -> Optio
     return None
 
 
-def _process_row(candidate: RegistryCandidate, source_name: str, summary: ImportSummary, dry_run: bool) -> None:
+def _process_row(
+    candidate: RegistryCandidate, source_name: str, summary: ImportSummary, dry_run: bool,
+) -> Optional[int]:
+    """Returns the portal id this row touched (created or re-observed an
+    existing one), or None for an invalid/company-only/dry-run row. Additive
+    return value -- app.registry.acquisition uses it to immediately verify a
+    freshly-created candidate; import_candidates()'s existing callers ignore it."""
     if not candidate.company_name.strip():
         summary.rows_invalid += 1
         summary.errors.append(f"row {candidate.row_number}: missing company_name")
-        return
+        return None
 
     if candidate.careers_url and not is_valid_http_url(candidate.careers_url):
         summary.rows_invalid += 1
         summary.errors.append(f"row {candidate.row_number}: invalid careers_url '{candidate.careers_url}'")
-        return
+        return None
 
     company = _upsert_company(candidate, summary, dry_run)
     if company is None:
         summary.rows_invalid += 1
         summary.errors.append(f"row {candidate.row_number}: could not normalize company_name '{candidate.company_name}'")
-        return
+        return None
 
     provider = candidate.provider
     tenant = candidate.tenant_identifier
@@ -223,7 +229,7 @@ def _process_row(candidate: RegistryCandidate, source_name: str, summary: Import
     if not provider and not careers_url:
         # Company-only row -- no portal to create.
         summary.rows_skipped += 1
-        return
+        return None
 
     existing_portal = _find_existing_portal(candidate, canonical)
 
@@ -237,11 +243,11 @@ def _process_row(candidate: RegistryCandidate, source_name: str, summary: Import
             )
             store.upsert_provenance(prov)
         summary.rows_updated += 1
-        return
+        return existing_portal.id
 
     if dry_run:
         summary.rows_created += 1
-        return
+        return None
 
     support_level = _support_level_for(provider)
     portal = CareerPortal(
@@ -265,6 +271,13 @@ def _process_row(candidate: RegistryCandidate, source_name: str, summary: Import
     quality = score_portal(store.get_portal(portal_id), has_official_link_provenance=False)
     store.update_portal(portal_id, confidence=quality.score, confidence_reasons=quality.reasons)
     summary.rows_created += 1
+    return portal_id
+
+
+# Public alias for reuse by app.registry.acquisition (the Phase 5 resumable
+# batch executor), which needs the touched-portal-id return value to
+# immediately run verification on freshly created candidates.
+process_row = _process_row
 
 
 def _support_level_for(provider: str) -> SupportLevel:

@@ -1,0 +1,7 @@
+company_name,company_domain,provider,tenant_identifier,careers_url,country,source,source_url
+DoorDash,doordash.com,greenhouse,doordash,https://boards.greenhouse.io/doordash,US,live_verification_2026-08-21_phase5,https://boards-api.greenhouse.io/v1/boards/doordash/jobs
+Dropbox,dropbox.com,greenhouse,dropbox,https://boards.greenhouse.io/dropbox,US,live_verification_2026-08-21_phase5,https://boards-api.greenhouse.io/v1/boards/dropbox/jobs
+Affirm,affirm.com,greenhouse,affirm,https://boards.greenhouse.io/affirm,US,live_verification_2026-08-21_phase5,https://boards-api.greenhouse.io/v1/boards/affirm/jobs
+Plaid,plaid.com,greenhouse,plaid,https://boards.greenhouse.io/plaid,US,live_verification_2026-08-21_phase5,https://boards-api.greenhouse.io/v1/boards/plaid/jobs
+Retool,retool.com,greenhouse,retool,https://boards.greenhouse.io/retool,US,live_verification_2026-08-21_phase5,https://boards-api.greenhouse.io/v1/boards/retool/jobs
+Webflow,webflow.com,greenhouse,webflow,https://boards.greenhouse.io/webflow,US,live_verification_2026-08-21_phase5,https://boards-api.greenhouse.io/v1/boards/webflow/jobs
