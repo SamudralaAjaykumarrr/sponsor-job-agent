@@ -1,0 +1,114 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Sponsor Job Agent</title>
+  <style>
+    body { font-family: -apple-system, Arial, sans-serif; margin: 2rem; background: #f7f7f9; color: #1a1a1a; }
+    h1 { margin-bottom: 0.25rem; }
+    .subtitle { color: #666; margin-top: 0; }
+    .warning { background: #fff3cd; border: 1px solid #ffe08a; padding: 0.75rem 1rem; border-radius: 6px; margin: 1rem 0; }
+    form.ingest { background: white; border: 1px solid #ddd; border-radius: 8px; padding: 1rem; margin-bottom: 1.5rem; }
+    form.ingest textarea { width: 100%; min-height: 120px; }
+    form.ingest input[type=text] { width: 100%; padding: 4px; }
+    .row { display: flex; gap: 1rem; margin-bottom: 0.5rem; }
+    .row > div { flex: 1; }
+    .filters { margin-bottom: 1rem; }
+    .filters a { margin-right: 0.75rem; padding: 4px 10px; border-radius: 14px; background: #eee; text-decoration: none; color: #333; font-size: 0.85rem; }
+    .filters a.active { background: #333; color: white; }
+    table { width: 100%; border-collapse: collapse; background: white; }
+    th, td { padding: 8px 10px; border-bottom: 1px solid #eee; text-align: left; font-size: 0.9rem; }
+    th { background: #fafafa; }
+    .tag { padding: 2px 8px; border-radius: 10px; font-size: 0.75rem; font-weight: 600; }
+    .tag-confirmed { background: #d4edda; color: #155724; }
+    .tag-likely { background: #fff3cd; color: #856404; }
+    .tag-unknown { background: #eee; color: #555; }
+    .tag-no { background: #f8d7da; color: #721c24; }
+    .tag-remote { background: #d1ecf1; color: #0c5460; }
+    .tag-hybrid { background: #e2d9f3; color: #4a2e8a; }
+    .tag-onsite { background: #eee; color: #555; }
+    button { cursor: pointer; }
+  </style>
+</head>
+<body>
+  <h1>Sponsor Job Agent</h1>
+  <p class="subtitle">Local ASSIST-mode job pipeline. Nothing is auto-submitted.</p>
+
+  {% if missing_profile_count > 0 %}
+  <div class="warning">
+    <strong>Candidate profile incomplete:</strong> {{ missing_profile_count }} field(s) still need input
+    (e.g. {{ missing_profile_fields | join(", ") }}). Edit <code>candidate_data/profile.json</code>.
+    Resume generation for a job will be blocked until required facts are filled in.
+  </div>
+  {% endif %}
+
+  <form class="ingest" method="post" action="/jobs/ingest">
+    <h3>Ingest a job description</h3>
+    <div class="row">
+      <div><label>Title</label><input type="text" name="title" required></div>
+      <div><label>Company</label><input type="text" name="company" required></div>
+    </div>
+    <div class="row">
+      <div><label>Location</label><input type="text" name="location"></div>
+      <div><label>URL</label><input type="text" name="url"></div>
+      <div><label>Published at (ISO, optional)</label><input type="text" name="published_at" placeholder="2026-08-21T12:00:00Z"></div>
+    </div>
+    <label>Job description</label>
+    <textarea name="description" required></textarea>
+    <div class="row">
+      <div>
+        <label>Mode</label>
+        <select name="mode">
+          <option value="ASSIST" selected>ASSIST</option>
+          <option value="ANALYZE">ANALYZE</option>
+        </select>
+      </div>
+    </div>
+    <button type="submit">Ingest &amp; Process</button>
+  </form>
+
+  <div class="filters">
+    <a href="/" class="{{ 'active' if not filters.work_arrangement and not filters.sponsorship_status and not filters.application_state and not filters.fresh_under_1hr and not filters.high_priority else '' }}">All</a>
+    <a href="/?work_arrangement=REMOTE">Remote</a>
+    <a href="/?work_arrangement=HYBRID">Hybrid</a>
+    <a href="/?work_arrangement=ONSITE">Onsite</a>
+    <a href="/?sponsorship_status=CONFIRMED_SPONSOR">Confirmed Sponsor</a>
+    <a href="/?sponsorship_status=LIKELY_SPONSOR">Likely Sponsor</a>
+    <a href="/?fresh_under_1hr=true">Fresh &lt; 1hr</a>
+    <a href="/?high_priority=true">High Priority</a>
+    <a href="/?application_state=READY_TO_APPLY">Ready To Apply</a>
+    <a href="/?application_state=APPLIED">Applied</a>
+    <a href="/?application_state=INTERVIEW">Interview</a>
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Company</th><th>Role</th><th>Location</th><th>Arrangement</th>
+        <th>Freshness</th><th>Sponsorship</th><th>Match</th><th>Priority</th><th>State</th><th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for job in jobs %}
+      <tr>
+        <td>{{ job.company }}</td>
+        <td>{{ job.title }}</td>
+        <td>{{ job.location }}</td>
+        <td><span class="tag tag-{{ job.work_arrangement.value.lower() }}">{{ job.work_arrangement.value }}</span></td>
+        <td>{{ job.freshness_tier.value }}</td>
+        <td>
+          {% set s = job.sponsorship_status.value %}
+          <span class="tag {{ 'tag-confirmed' if s == 'CONFIRMED_SPONSOR' else ('tag-likely' if s == 'LIKELY_SPONSOR' else ('tag-no' if s == 'NO_SPONSORSHIP' else 'tag-unknown')) }}">{{ s }}</span>
+        </td>
+        <td>{{ job.technical_match_score }}%</td>
+        <td>{{ job.priority_tier.value }} ({{ job.priority_score }})</td>
+        <td>{{ job.application_state.value }}</td>
+        <td><a href="/jobs/{{ job.id }}">View</a></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="10">No jobs ingested yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</body>
+</html>

@@ -5,3 +5,9 @@ __pycache__/
 output/*
 !output/.gitkeep
 data/private/
+data/app.db
+data/*.db
+candidate_data/
+!candidate_data/.gitkeep
+.pytest_cache/
+

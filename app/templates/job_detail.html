@@ -1,0 +1,63 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>{{ job.title }} — {{ job.company }}</title>
+  <style>
+    body { font-family: -apple-system, Arial, sans-serif; margin: 2rem; background: #f7f7f9; color: #1a1a1a; max-width: 900px; }
+    .card { background: white; border: 1px solid #ddd; border-radius: 8px; padding: 1.25rem; margin-bottom: 1rem; }
+    dl { display: grid; grid-template-columns: 220px 1fr; row-gap: 6px; }
+    dt { font-weight: 600; color: #555; }
+    a.btn { display: inline-block; margin-right: 0.5rem; padding: 6px 12px; background: #333; color: white; border-radius: 6px; text-decoration: none; font-size: 0.85rem; }
+    pre { white-space: pre-wrap; background: #fafafa; padding: 0.75rem; border-radius: 6px; }
+    form.state { display: inline; }
+  </style>
+</head>
+<body>
+  <p><a href="/">&larr; back to dashboard</a></p>
+  <h1>{{ job.title }} — {{ job.company }}</h1>
+
+  <div class="card">
+    <dl>
+      <dt>Location</dt><dd>{{ job.location }}</dd>
+      <dt>Work arrangement</dt><dd>{{ job.work_arrangement.value }}</dd>
+      <dt>Sponsorship status</dt><dd>{{ job.sponsorship_status.value }}</dd>
+      <dt>Sponsorship evidence</dt><dd>{{ job.sponsorship_evidence }}</dd>
+      <dt>Freshness</dt><dd>{{ job.freshness_tier.value }} (first seen {{ job.first_seen_at }})</dd>
+      <dt>Technical match</dt><dd>{{ job.technical_match_score }}% — matched: {{ job.matched_skills }} | gaps: {{ job.gap_skills }}</dd>
+      <dt>Priority</dt><dd>{{ job.priority_tier.value }} ({{ job.priority_score }})</dd>
+      <dt>Application state</dt><dd>{{ job.application_state.value }}</dd>
+      <dt>Notes</dt><dd>{{ job.notes }}</dd>
+    </dl>
+  </div>
+
+  <div class="card">
+    <h3>Files</h3>
+    {% if job.resume_docx_path %}<a class="btn" href="/jobs/{{ job.id }}/download/docx">resume.docx</a>{% endif %}
+    {% if job.resume_pdf_path %}<a class="btn" href="/jobs/{{ job.id }}/download/pdf">resume.pdf</a>{% endif %}
+    {% if job.resume_txt_path %}<a class="btn" href="/jobs/{{ job.id }}/download/txt">resume.txt</a>{% endif %}
+    {% if job.job_analysis_path %}<a class="btn" href="/jobs/{{ job.id }}/download/job_analysis">job_analysis.json</a>{% endif %}
+    {% if job.application_answers_path %}<a class="btn" href="/jobs/{{ job.id }}/download/answers">application_answers.json</a>{% endif %}
+    {% if job.cover_letter_path %}<a class="btn" href="/jobs/{{ job.id }}/download/cover_letter">cover_letter.txt</a>{% endif %}
+    {% if not job.resume_docx_path %}<p>No application files generated (sponsorship not eligible, role skipped, or profile incomplete).</p>{% endif %}
+  </div>
+
+  <div class="card">
+    <h3>Update state</h3>
+    <form class="state" method="post" action="/jobs/{{ job.id }}/state">
+      <select name="target_state">
+        <option value="APPLIED">Mark Applied</option>
+        <option value="INTERVIEW">Mark Interview</option>
+        <option value="REJECTED">Mark Rejected</option>
+        <option value="SKIPPED">Mark Skipped</option>
+      </select>
+      <button type="submit">Update</button>
+    </form>
+  </div>
+
+  <div class="card">
+    <h3>Job description</h3>
+    <pre>{{ job.description }}</pre>
+  </div>
+</body>
+</html>
