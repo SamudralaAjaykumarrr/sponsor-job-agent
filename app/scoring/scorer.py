@@ -69,6 +69,52 @@ def compute_priority_score(
     return round(base + match_component + freshness_component, 1)
 
 
+def build_score_breakdown(
+    *,
+    work_arrangement: WorkArrangement,
+    sponsorship_status: SponsorshipStatus,
+    priority_tier: PriorityTier,
+    priority_score: float,
+    technical_match_score: float,
+    matched_skills: list[str],
+    gap_skills: list[str],
+    freshness_tier: FreshnessTier,
+    freshness_minutes: float | None,
+    seniority_reason: str,
+    compensation_reason: str,
+) -> dict:
+    """Machine-readable explanation for a job's score -- never a fabricated
+    'probability of getting an interview', just the deterministic inputs."""
+    total_kw = len(matched_skills) + len(gap_skills)
+    return {
+        "priority_tier": priority_tier.value,
+        "priority_score": priority_score,
+        "components": [
+            {
+                "name": "work_arrangement_sponsorship_tier",
+                "value": TIER_BASE_SCORE[priority_tier],
+                "reason": f"{work_arrangement.value} + {sponsorship_status.value} -> {priority_tier.value}",
+            },
+            {
+                "name": "technical_match",
+                "value": round(technical_match_score * 0.3, 1),
+                "reason": f"{len(matched_skills)}/{total_kw} JD keywords matched candidate profile ({technical_match_score}%)"
+                if total_kw else "No JD keywords extracted to match against.",
+            },
+            {
+                "name": "freshness",
+                "value": FRESHNESS_WEIGHT[freshness_tier],
+                "reason": f"{freshness_tier.value}"
+                + (f" (~{freshness_minutes:.0f} min old)" if freshness_minutes is not None else " (age unknown)"),
+            },
+            {"name": "seniority", "reason": seniority_reason},
+            {"name": "compensation", "reason": compensation_reason},
+        ],
+        "matched_skills": matched_skills,
+        "gap_skills": gap_skills,
+    }
+
+
 def determine_initial_application_state(
     sponsorship_status: SponsorshipStatus, is_target_role: bool
 ) -> ApplicationState:

@@ -15,20 +15,27 @@ def _parse_dt(value: str) -> datetime | None:
         return None
 
 
-def compute_freshness(published_at: str | None, first_seen_at: str, now: datetime | None = None) -> FreshnessTier:
-    """Prefer published_at when reliable/parseable, else fall back to first_seen_at."""
+def compute_age_minutes(published_at: str | None, first_seen_at: str, now: datetime | None = None) -> float | None:
+    """Prefer published_at when reliable/parseable, else fall back to first_seen_at.
+    Returns None if neither timestamp is parseable."""
     now = now or datetime.now(timezone.utc)
 
     reference = _parse_dt(published_at) if published_at else None
     if reference is None:
         reference = _parse_dt(first_seen_at)
     if reference is None:
-        return FreshnessTier.LOWER
+        return None
 
     age_minutes = (now - reference).total_seconds() / 60.0
+    return max(age_minutes, 0.0)
 
-    if age_minutes < 0:
-        age_minutes = 0
+
+def compute_freshness(published_at: str | None, first_seen_at: str, now: datetime | None = None) -> FreshnessTier:
+    """Prefer published_at when reliable/parseable, else fall back to first_seen_at."""
+    age_minutes = compute_age_minutes(published_at, first_seen_at, now=now)
+
+    if age_minutes is None:
+        return FreshnessTier.LOWER
 
     if age_minutes <= 60:
         return FreshnessTier.MAXIMUM

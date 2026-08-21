@@ -27,7 +27,7 @@ def test_no_sponsorship_job_is_hard_skipped(tmp_env, sample_profile):
     )
     result = ingest_and_process(job)
     assert result.sponsorship_status == SponsorshipStatus.NO_SPONSORSHIP
-    assert result.application_state == ApplicationState.SKIPPED
+    assert result.application_state == ApplicationState.SKIPPED_NO_SPONSORSHIP
     assert result.resume_docx_path is None
 
 
@@ -62,8 +62,8 @@ def test_likely_sponsor_is_review_only_but_still_generates_outputs(tmp_env, samp
     job = _job(company="Acme Corp")  # in known_h1b_sponsors.json fixture list
     result = ingest_and_process(job)
     assert result.sponsorship_status == SponsorshipStatus.LIKELY_SPONSOR
-    assert result.application_state == ApplicationState.READY_TO_APPLY
-    assert "REVIEW ONLY" in result.notes
+    assert result.application_state == ApplicationState.REVIEW_REQUIRED
+    assert "REVIEW REQUIRED" in result.notes
     assert result.resume_docx_path
 
 

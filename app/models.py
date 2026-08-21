@@ -33,12 +33,19 @@ class FreshnessTier(str, Enum):
 
 class ApplicationState(str, Enum):
     NEW = "NEW"
+    DISCOVERED = "DISCOVERED"
     ANALYZED = "ANALYZED"
+    SKIPPED = "SKIPPED"                        # legacy/generic + manual "Skip" button
+    SKIPPED_NO_SPONSORSHIP = "SKIPPED_NO_SPONSORSHIP"
+    SKIPPED_SENIORITY = "SKIPPED_SENIORITY"
+    SKIPPED_COMPENSATION = "SKIPPED_COMPENSATION"
+    SKIPPED_POOR_MATCH = "SKIPPED_POOR_MATCH"
+    REVIEW_REQUIRED = "REVIEW_REQUIRED"
+    CLAIM_VALIDATION_FAILED = "CLAIM_VALIDATION_FAILED"
     READY_TO_APPLY = "READY_TO_APPLY"
     APPLIED = "APPLIED"
     INTERVIEW = "INTERVIEW"
     REJECTED = "REJECTED"
-    SKIPPED = "SKIPPED"
 
 
 class ApplicationMode(str, Enum):
@@ -77,18 +84,28 @@ class Job(BaseModel):
     url: str = ""
     source: str = "manual"
 
+    provider: str = "manual"
+    external_job_id: str = ""
+    employment_type: str = ""
+    salary_min: Optional[float] = None
+    salary_max: Optional[float] = None
+    dedup_fingerprint: str = ""
+
     published_at: Optional[str] = None
     first_seen_at: str = Field(default_factory=utcnow)
+    last_seen_at: str = Field(default_factory=utcnow)
 
     work_arrangement: WorkArrangement = WorkArrangement.UNKNOWN
     sponsorship_status: SponsorshipStatus = SponsorshipStatus.UNKNOWN
     sponsorship_evidence: str = ""
 
     freshness_tier: FreshnessTier = FreshnessTier.LOWER
+    freshness_minutes: Optional[float] = None
 
     technical_match_score: float = 0.0
     matched_skills: str = ""   # comma-separated
     gap_skills: str = ""       # comma-separated
+    score_breakdown: str = "{}"  # JSON-encoded machine-readable reasons
 
     priority_tier: PriorityTier = PriorityTier.NOT_ELIGIBLE
     priority_score: float = 0.0

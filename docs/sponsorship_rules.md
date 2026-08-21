@@ -14,14 +14,18 @@ Applied in this order against the job description + company name:
    This is explicitly review-only — historical filing is not proof a specific role sponsors.
 4. **UNKNOWN** otherwise — not enough evidence. Per spec: do not apply.
 
-Downstream effect (`scoring/scorer.py`):
+Downstream effect (`pipeline.py` / `scoring/scorer.py`):
 
 | Status            | Effect                                  |
 |-------------------|------------------------------------------|
-| CONFIRMED_SPONSOR  | eligible — full pipeline, READY_TO_APPLY |
-| LIKELY_SPONSOR     | review only — full pipeline, but flagged for manual review before applying |
-| UNKNOWN            | analyzed, not progressed — do not apply  |
-| NO_SPONSORSHIP     | hard skip — no further processing        |
+| CONFIRMED_SPONSOR  | eligible — full pipeline, application_state = READY_TO_APPLY |
+| LIKELY_SPONSOR     | review only — package still generated, application_state = REVIEW_REQUIRED, never auto-submitted |
+| UNKNOWN            | analyzed, not progressed — do not apply (application_state = ANALYZED) |
+| NO_SPONSORSHIP     | hard skip — no further processing, application_state = SKIPPED_NO_SPONSORSHIP |
+
+This applies identically whether the job arrived via manual JD paste or the autonomous
+discovery agent (`docs/autonomous-agent.md`) — sponsorship classification and its downstream
+state are not source-dependent.
 
 Priority ordering (highest first): Remote+Confirmed > Remote+Likely > Hybrid+Confirmed >
 Hybrid+Likely > Onsite+Confirmed > Onsite+Likely. Any job classified NO_SPONSORSHIP is

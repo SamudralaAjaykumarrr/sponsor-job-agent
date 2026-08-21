@@ -9,8 +9,13 @@
     dl { display: grid; grid-template-columns: 220px 1fr; row-gap: 6px; }
     dt { font-weight: 600; color: #555; }
     a.btn { display: inline-block; margin-right: 0.5rem; padding: 6px 12px; background: #333; color: white; border-radius: 6px; text-decoration: none; font-size: 0.85rem; }
+    button.btn { display: inline-block; margin-right: 0.5rem; padding: 6px 12px; background: #333; color: white; border-radius: 6px; border: none; font-size: 0.85rem; }
     pre { white-space: pre-wrap; background: #fafafa; padding: 0.75rem; border-radius: 6px; }
     form.state { display: inline; }
+    table.breakdown { width: 100%; border-collapse: collapse; }
+    table.breakdown td, table.breakdown th { padding: 4px 8px; border-bottom: 1px solid #eee; font-size: 0.85rem; text-align: left; }
+    .skill-list { font-size: 0.85rem; }
+    .history-item { font-size: 0.85rem; padding: 3px 0; border-bottom: 1px solid #f0f0f0; }
   </style>
 </head>
 <body>
@@ -20,40 +25,78 @@
   <div class="card">
     <dl>
       <dt>Location</dt><dd>{{ job.location }}</dd>
+      <dt>Provider / source</dt><dd>{{ job.provider }} ({{ job.external_job_id or 'n/a' }})</dd>
       <dt>Work arrangement</dt><dd>{{ job.work_arrangement.value }}</dd>
       <dt>Sponsorship status</dt><dd>{{ job.sponsorship_status.value }}</dd>
       <dt>Sponsorship evidence</dt><dd>{{ job.sponsorship_evidence }}</dd>
-      <dt>Freshness</dt><dd>{{ job.freshness_tier.value }} (first seen {{ job.first_seen_at }})</dd>
+      <dt>Freshness</dt><dd>{{ job.freshness_tier.value }}
+        {% if job.freshness_minutes is not none %}(~{{ "%.0f"|format(job.freshness_minutes) }} min old){% endif %}
+        — first seen {{ job.first_seen_at }}, last seen {{ job.last_seen_at }}</dd>
+      <dt>Compensation</dt><dd>
+        {% if job.salary_min or job.salary_max %}${{ job.salary_min or '?' }} – ${{ job.salary_max or '?' }}{% else %}Not published{% endif %}
+      </dd>
       <dt>Technical match</dt><dd>{{ job.technical_match_score }}% — matched: {{ job.matched_skills }} | gaps: {{ job.gap_skills }}</dd>
       <dt>Priority</dt><dd>{{ job.priority_tier.value }} ({{ job.priority_score }})</dd>
       <dt>Application state</dt><dd>{{ job.application_state.value }}</dd>
       <dt>Notes</dt><dd>{{ job.notes }}</dd>
+      <dt>Source URL</dt><dd>{% if job.url %}<a href="{{ job.url }}" target="_blank" rel="noopener">{{ job.url }}</a>{% else %}n/a{% endif %}</dd>
     </dl>
   </div>
 
+  {% if score_breakdown and score_breakdown.get('components') %}
   <div class="card">
-    <h3>Files</h3>
+    <h3>Score breakdown</h3>
+    <table class="breakdown">
+      <thead><tr><th>Component</th><th>Value</th><th>Reason</th></tr></thead>
+      <tbody>
+        {% for c in score_breakdown.components %}
+        <tr><td>{{ c.name }}</td><td>{{ c.value if c.value is defined else '' }}</td><td>{{ c.reason }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
+  <div class="card">
+    <h3>Files &amp; actions</h3>
     {% if job.resume_docx_path %}<a class="btn" href="/jobs/{{ job.id }}/download/docx">resume.docx</a>{% endif %}
     {% if job.resume_pdf_path %}<a class="btn" href="/jobs/{{ job.id }}/download/pdf">resume.pdf</a>{% endif %}
     {% if job.resume_txt_path %}<a class="btn" href="/jobs/{{ job.id }}/download/txt">resume.txt</a>{% endif %}
     {% if job.job_analysis_path %}<a class="btn" href="/jobs/{{ job.id }}/download/job_analysis">job_analysis.json</a>{% endif %}
     {% if job.application_answers_path %}<a class="btn" href="/jobs/{{ job.id }}/download/answers">application_answers.json</a>{% endif %}
     {% if job.cover_letter_path %}<a class="btn" href="/jobs/{{ job.id }}/download/cover_letter">cover_letter.txt</a>{% endif %}
-    {% if not job.resume_docx_path %}<p>No application files generated (sponsorship not eligible, role skipped, or profile incomplete).</p>{% endif %}
+    {% if job.url %}<a class="btn" href="{{ job.url }}" target="_blank" rel="noopener">Open Application</a>{% endif %}
+    {% if not job.resume_docx_path %}<p>No application files generated yet (sponsorship not eligible, a gate skipped this job, or profile incomplete).</p>{% endif %}
+    {% if job.sponsorship_status.value in ('CONFIRMED_SPONSOR', 'LIKELY_SPONSOR') %}
+    <form method="post" action="/jobs/{{ job.id }}/regenerate" style="margin-top: 0.5rem;">
+      <button class="btn" type="submit">Regenerate Resume</button>
+    </form>
+    {% endif %}
   </div>
 
   <div class="card">
     <h3>Update state</h3>
     <form class="state" method="post" action="/jobs/{{ job.id }}/state">
       <select name="target_state">
+        <option value="READY_TO_APPLY">Mark Ready to Apply</option>
         <option value="APPLIED">Mark Applied</option>
         <option value="INTERVIEW">Mark Interview</option>
         <option value="REJECTED">Mark Rejected</option>
-        <option value="SKIPPED">Mark Skipped</option>
+        <option value="SKIPPED">Skip</option>
       </select>
       <button type="submit">Update</button>
     </form>
+    <p style="font-size:0.8rem;color:#666;">Opening the external application link never marks a job Applied automatically -- use this form once you've actually applied.</p>
   </div>
+
+  {% if history %}
+  <div class="card">
+    <h3>Pipeline history</h3>
+    {% for h in history %}
+    <div class="history-item">{{ h.changed_at }} — {{ h.from_state or '(created)' }} &rarr; {{ h.to_state }} ({{ h.actor }})</div>
+    {% endfor %}
+  </div>
+  {% endif %}
 
   <div class="card">
     <h3>Job description</h3>

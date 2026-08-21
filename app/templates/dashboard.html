@@ -8,6 +8,12 @@
     h1 { margin-bottom: 0.25rem; }
     .subtitle { color: #666; margin-top: 0; }
     .warning { background: #fff3cd; border: 1px solid #ffe08a; padding: 0.75rem 1rem; border-radius: 6px; margin: 1rem 0; }
+    .agent-bar { background: white; border: 1px solid #ddd; border-radius: 8px; padding: 0.75rem 1rem; margin-bottom: 1rem; display: flex; align-items: center; gap: 1.5rem; flex-wrap: wrap; font-size: 0.85rem; }
+    .agent-bar .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; }
+    .dot-on { background: #28a745; }
+    .dot-off { background: #999; }
+    .agent-bar form { display: inline; }
+    .agent-bar button { padding: 4px 10px; border-radius: 6px; border: 1px solid #ccc; background: #f0f0f0; }
     form.ingest { background: white; border: 1px solid #ddd; border-radius: 8px; padding: 1rem; margin-bottom: 1.5rem; }
     form.ingest textarea { width: 100%; min-height: 120px; }
     form.ingest input[type=text] { width: 100%; padding: 4px; }
@@ -33,6 +39,27 @@
 <body>
   <h1>Sponsor Job Agent</h1>
   <p class="subtitle">Local ASSIST-mode job pipeline. Nothing is auto-submitted.</p>
+
+  <div class="agent-bar">
+    <span><span class="dot {{ 'dot-on' if agent.enabled else 'dot-off' }}"></span>
+      Autonomous agent: <strong>{{ 'ON' if agent.enabled else 'OFF' }}</strong>{{ ' (running)' if agent.running else '' }}</span>
+    <span>Last cycle: {{ agent.last_cycle_started_at or 'never' }}</span>
+    <span>Next cycle: {{ agent.next_cycle_at or (('disabled') if not agent.enabled else 'pending') }}</span>
+    {% if agent.last_cycle_summary %}
+    <span>Last: fetched {{ agent.last_cycle_summary.get('jobs_fetched', 0) }},
+      new {{ agent.last_cycle_summary.get('jobs_new', 0) }},
+      confirmed {{ agent.last_cycle_summary.get('confirmed_sponsors', 0) }},
+      likely {{ agent.last_cycle_summary.get('likely_sponsors', 0) }},
+      skipped {{ agent.last_cycle_summary.get('hard_skips', 0) }},
+      ready/review {{ agent.last_cycle_summary.get('packages_generated', 0) }},
+      errors {{ agent.last_cycle_summary.get('errors', []) | length }}</span>
+    {% endif %}
+    <span>Interval: {{ agent_config.interval_minutes }}m · Providers: {{ agent_config.enabled_providers | join(', ') }}</span>
+    <form method="post" action="/agent/toggle">
+      <input type="hidden" name="enabled" value="{{ 'false' if agent.enabled else 'true' }}">
+      <button type="submit">{{ 'Turn OFF' if agent.enabled else 'Turn ON' }}</button>
+    </form>
+  </div>
 
   {% if missing_profile_count > 0 %}
   <div class="warning">
@@ -68,15 +95,17 @@
   </form>
 
   <div class="filters">
-    <a href="/" class="{{ 'active' if not filters.work_arrangement and not filters.sponsorship_status and not filters.application_state and not filters.fresh_under_1hr and not filters.high_priority else '' }}">All</a>
+    <a href="/" class="{{ 'active' if not filters.work_arrangement and not filters.sponsorship_status and not filters.application_state and not filters.fresh_under_1hr and not filters.fresh_under_6hr and not filters.high_priority else '' }}">All</a>
+    <a href="/?fresh_under_1hr=true">Fresh &lt; 1hr</a>
+    <a href="/?fresh_under_6hr=true">Fresh &lt; 6hr</a>
     <a href="/?work_arrangement=REMOTE">Remote</a>
     <a href="/?work_arrangement=HYBRID">Hybrid</a>
     <a href="/?work_arrangement=ONSITE">Onsite</a>
     <a href="/?sponsorship_status=CONFIRMED_SPONSOR">Confirmed Sponsor</a>
     <a href="/?sponsorship_status=LIKELY_SPONSOR">Likely Sponsor</a>
-    <a href="/?fresh_under_1hr=true">Fresh &lt; 1hr</a>
     <a href="/?high_priority=true">High Priority</a>
     <a href="/?application_state=READY_TO_APPLY">Ready To Apply</a>
+    <a href="/?application_state=REVIEW_REQUIRED">Review Required</a>
     <a href="/?application_state=APPLIED">Applied</a>
     <a href="/?application_state=INTERVIEW">Interview</a>
   </div>

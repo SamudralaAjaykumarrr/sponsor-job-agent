@@ -3,10 +3,12 @@ from pathlib import Path
 
 from app.applications.answers import generate_application_answers
 from app.candidate.profile import load_profile
-from app.config import OUTPUT_DIR
-from app.freshness.tracker import compute_freshness
-from app.jobs_repo import get_job, insert_job, update_job
+from app.config import MIN_MATCH_SCORE, OUTPUT_DIR
+from app.freshness.tracker import compute_age_minutes, compute_freshness
+from app.jobs_repo import get_job, insert_job, record_state_change, update_job
+from app.matching.compensation import evaluate_compensation
 from app.matching.roles import is_target_role
+from app.matching.seniority import evaluate_seniority
 from app.matching.skills import extract_jd_keywords, match_candidate_skills
 from app.models import ApplicationMode, ApplicationState, Job, SponsorshipStatus
 from app.resume.claim_checker import check_resume_claims
@@ -14,60 +16,113 @@ from app.resume.docx_writer import write_docx
 from app.resume.generator import generate_resume_content
 from app.resume.pdf_writer import write_pdf
 from app.resume.txt_writer import write_txt
-from app.scoring.scorer import compute_priority_score, determine_priority_tier
+from app.scoring.scorer import build_score_breakdown, compute_priority_score, determine_priority_tier
 from app.sponsorship.classifier import classify_sponsorship
 from app.workarrangement.classifier import classify_work_arrangement
 
 
+def _transition(job_id: int, from_state: ApplicationState, to_state: ApplicationState, **fields) -> None:
+    update_job(job_id, application_state=to_state, **fields)
+    if from_state != to_state:
+        record_state_change(job_id, from_state.value, to_state.value)
+
+
 def analyze_job(job_id: int) -> Job:
-    """Runs classification + scoring on a stored job. Applies the hard gates:
-    non-target-role and NO_SPONSORSHIP jobs are skipped and not processed further.
-    """
+    """Runs classification + scoring on a stored job and applies the hard
+    gates, in order: target-role relevance, NO_SPONSORSHIP, seniority,
+    compensation, minimum match score. UNKNOWN sponsorship is analyzed but not
+    progressed ("do not apply"). CONFIRMED/LIKELY sponsor jobs that pass every
+    gate stay ANALYZED, ready for generate_assist_outputs to decide
+    READY_TO_APPLY vs REVIEW_REQUIRED."""
     job = get_job(job_id)
     if job is None:
         raise ValueError(f"job {job_id} not found")
 
     relevant, is_primary = is_target_role(job.title)
     if not relevant:
-        update_job(job_id, application_state=ApplicationState.SKIPPED,
-                   notes="Skipped: not a CS/STEM target role.")
+        _transition(job_id, job.application_state, ApplicationState.SKIPPED,
+                    notes="Skipped: not a CS/STEM target role.")
         return get_job(job_id)
 
     work_arrangement = classify_work_arrangement(job.location, job.description)
     sponsorship_status, sponsorship_evidence = classify_sponsorship(job.description, job.company)
     freshness_tier = compute_freshness(job.published_at, job.first_seen_at)
+    freshness_minutes = compute_age_minutes(job.published_at, job.first_seen_at)
 
     profile = load_profile()
     jd_keywords = extract_jd_keywords(f"{job.title}\n{job.description}")
     match_score, matched, gaps = match_candidate_skills(jd_keywords, profile.skills)
 
+    seniority_ok, seniority_reason, _required_years = evaluate_seniority(job.title, job.description)
+    compensation_ok, compensation_reason = evaluate_compensation(job.salary_min, job.salary_max)
+
     priority_tier = determine_priority_tier(work_arrangement, sponsorship_status)
     priority_score = compute_priority_score(priority_tier, match_score, freshness_tier)
+    score_breakdown = build_score_breakdown(
+        work_arrangement=work_arrangement,
+        sponsorship_status=sponsorship_status,
+        priority_tier=priority_tier,
+        priority_score=priority_score,
+        technical_match_score=match_score,
+        matched_skills=matched,
+        gap_skills=gaps,
+        freshness_tier=freshness_tier,
+        freshness_minutes=freshness_minutes,
+        seniority_reason=seniority_reason,
+        compensation_reason=compensation_reason,
+    )
 
-    if sponsorship_status == SponsorshipStatus.NO_SPONSORSHIP:
-        state = ApplicationState.SKIPPED
-        notes = f"Skipped: NO_SPONSORSHIP. {sponsorship_evidence}"
-    elif sponsorship_status == SponsorshipStatus.UNKNOWN:
-        state = ApplicationState.ANALYZED
-        notes = "Not progressed: sponsorship UNKNOWN (do not apply per policy)."
-    else:
-        state = ApplicationState.ANALYZED
-        notes = sponsorship_evidence
-
-    update_job(
-        job_id,
+    common_fields = dict(
         work_arrangement=work_arrangement,
         sponsorship_status=sponsorship_status,
         sponsorship_evidence=sponsorship_evidence,
         freshness_tier=freshness_tier,
+        freshness_minutes=freshness_minutes,
         technical_match_score=match_score,
         matched_skills=", ".join(matched),
         gap_skills=", ".join(gaps),
+        score_breakdown=json.dumps(score_breakdown),
         priority_tier=priority_tier,
         priority_score=priority_score,
-        application_state=state,
-        notes=notes,
     )
+
+    if sponsorship_status == SponsorshipStatus.NO_SPONSORSHIP:
+        _transition(
+            job_id, job.application_state, ApplicationState.SKIPPED_NO_SPONSORSHIP,
+            notes=f"Hard skip: NO_SPONSORSHIP. {sponsorship_evidence}", **common_fields,
+        )
+        return get_job(job_id)
+
+    if not seniority_ok:
+        _transition(
+            job_id, job.application_state, ApplicationState.SKIPPED_SENIORITY,
+            notes=f"Skipped: {seniority_reason}", **common_fields,
+        )
+        return get_job(job_id)
+
+    if not compensation_ok:
+        _transition(
+            job_id, job.application_state, ApplicationState.SKIPPED_COMPENSATION,
+            notes=f"Skipped: {compensation_reason}", **common_fields,
+        )
+        return get_job(job_id)
+
+    if match_score < MIN_MATCH_SCORE:
+        _transition(
+            job_id, job.application_state, ApplicationState.SKIPPED_POOR_MATCH,
+            notes=f"Skipped: technical match {match_score}% below threshold ({MIN_MATCH_SCORE}%).",
+            **common_fields,
+        )
+        return get_job(job_id)
+
+    if sponsorship_status == SponsorshipStatus.UNKNOWN:
+        _transition(
+            job_id, job.application_state, ApplicationState.ANALYZED,
+            notes="Not progressed: sponsorship UNKNOWN (do not apply per policy).", **common_fields,
+        )
+        return get_job(job_id)
+
+    _transition(job_id, job.application_state, ApplicationState.ANALYZED, notes=sponsorship_evidence, **common_fields)
     return get_job(job_id)
 
 
@@ -79,9 +134,13 @@ def _job_output_dir(job_id: int) -> Path:
 
 def generate_assist_outputs(job_id: int) -> Job:
     """ASSIST mode: generates resume (docx/pdf/txt), job_analysis.json,
-    application_answers.json, cover_letter.txt, and marks READY_TO_APPLY --
-    only for jobs eligible per sponsorship policy (CONFIRMED_SPONSOR or
-    LIKELY_SPONSOR). Refuses (raises) for NO_SPONSORSHIP/UNKNOWN jobs."""
+    application_answers.json, cover_letter.txt for jobs eligible per
+    sponsorship policy (CONFIRMED_SPONSOR or LIKELY_SPONSOR). CONFIRMED jobs
+    land on READY_TO_APPLY; LIKELY jobs land on REVIEW_REQUIRED (never
+    auto-submitted). Claim violations land on CLAIM_VALIDATION_FAILED instead
+    of raising, so batch/autonomous callers can continue processing other
+    jobs. Raises only for the programmer-error case of calling this on a job
+    that was never sponsorship-eligible in the first place."""
     job = get_job(job_id)
     if job is None:
         raise ValueError(f"job {job_id} not found")
@@ -97,12 +156,11 @@ def generate_assist_outputs(job_id: int) -> Job:
 
     violations = check_resume_claims(resume, profile)
     if violations:
-        update_job(
-            job_id,
-            application_state=ApplicationState.ANALYZED,
+        _transition(
+            job_id, job.application_state, ApplicationState.CLAIM_VALIDATION_FAILED,
             notes="BLOCKED: resume contained unsupported claims: " + "; ".join(violations),
         )
-        raise ValueError("Resume generation blocked -- unsupported claims: " + "; ".join(violations))
+        return get_job(job_id)
 
     out_dir = _job_output_dir(job_id)
 
@@ -124,6 +182,7 @@ def generate_assist_outputs(job_id: int) -> Job:
         "gap_skills": job.gap_skills,
         "priority_tier": job.priority_tier,
         "priority_score": job.priority_score,
+        "score_breakdown": json.loads(job.score_breakdown) if job.score_breakdown else {},
     }
     job_analysis_path = out_dir / "job_analysis.json"
     job_analysis_path.write_text(json.dumps(job_analysis, indent=2, default=str))
@@ -144,37 +203,38 @@ def generate_assist_outputs(job_id: int) -> Job:
         )
 
     review_only = job.sponsorship_status == SponsorshipStatus.LIKELY_SPONSOR
+    final_state = ApplicationState.REVIEW_REQUIRED if review_only else ApplicationState.READY_TO_APPLY
     notes = job.notes
     if review_only:
-        notes = (notes + " " if notes else "") + "REVIEW ONLY: LIKELY_SPONSOR -- verify sponsorship before applying."
+        notes = (notes + " " if notes else "") + "REVIEW REQUIRED: LIKELY_SPONSOR -- verify sponsorship before applying."
 
-    update_job(
-        job_id,
+    _transition(
+        job_id, job.application_state, final_state,
         resume_docx_path=str(docx_path),
         resume_pdf_path=str(pdf_path),
         resume_txt_path=str(txt_path),
         job_analysis_path=str(job_analysis_path),
         application_answers_path=str(answers_path),
         cover_letter_path=str(cover_letter_path) if cover_letter_path else None,
-        application_state=ApplicationState.READY_TO_APPLY,
         notes=notes,
     )
     return get_job(job_id)
 
 
 def ingest_and_process(job: Job) -> Job:
-    """Full pipeline entry point for a freshly ingested job."""
+    """Full pipeline entry point for a freshly ingested job (manual paste or
+    autonomous discovery)."""
     job_id = insert_job(job)
     analyzed = analyze_job(job_id)
 
     if analyzed.mode == ApplicationMode.ANALYZE:
         return analyzed
 
-    if analyzed.application_state == ApplicationState.SKIPPED:
-        return analyzed
+    if analyzed.application_state != ApplicationState.ANALYZED:
+        return analyzed  # hard-skipped by a gate above
 
     if analyzed.sponsorship_status == SponsorshipStatus.UNKNOWN:
-        return analyzed  # do not apply -- stays ANALYZED
+        return analyzed  # do not apply -- stays ANALYZED per policy
 
     if analyzed.mode == ApplicationMode.ASSIST:
         return generate_assist_outputs(job_id)

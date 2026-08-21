@@ -37,6 +37,45 @@ Modular monolith, Python 3.12 + FastAPI. No React/Kafka/Redis/Kubernetes/microse
 - `candidate_data/` — private candidate facts (gitignored). Missing fields = `"NEEDS_USER_INPUT"`.
 - `output/<job_id>/` — resume.docx, resume.pdf, resume.txt, job_analysis.json, application_answers.json, cover_letter.txt (when useful).
 
-## Explicitly out of scope for MVP
+## Explicitly out of scope
 
-No LinkedIn/Indeed automation, no CAPTCHA/MFA/rate-limit/anti-bot bypass, no auto-apply (AUTO mode is a stub only), no job-board scraping (ingestion is manual JD paste for MVP — keeps the system inside "assist" boundaries and avoids ToS/anti-bot issues).
+No LinkedIn/Indeed automation, no CAPTCHA/MFA/rate-limit/anti-bot bypass, no auto-apply (AUTO mode is a stub only).
+
+## Phase 2 — autonomous discovery agent
+
+See `docs/autonomous-agent.md` for full detail. Summary of what was added on top of the
+MVP above, without breaking it (all 45 original tests still pass unmodified in behavior,
+except two intentional state-machine renames noted below):
+
+- `app/providers/` — `JobProvider` interface + `RawJobPosting`, plus `greenhouse.py` and
+  `lever.py` connectors (public, unauthenticated ATS job-board APIs) and `registry.py`
+  (enabled-provider factory driven by `ENABLED_PROVIDERS` config).
+- `app/discovery/dedup.py` — stable-ID (provider + external_job_id) dedup with a
+  company/title/location fingerprint fallback across providers.
+- `app/matching/seniority.py`, `compensation.py`, `employment_type.py`, `geography.py` —
+  new gates. Seniority/compensation/match-score run inside `pipeline.analyze_job` (apply to
+  both manual and autonomous ingestion). Employment-type/geography are discovery-time
+  pre-filters only (`app/agent/cycle.py`), applied before a job is even stored, so a
+  manually-pasted job — a deliberate user action — is never silently skipped by a heuristic.
+- `app/agent/state.py`, `cycle.py`, `scheduler.py` — in-memory agent status, the 15-step
+  discovery cycle, and an asyncio background loop (runs the sync cycle via
+  `asyncio.to_thread`, started/stopped from FastAPI's `lifespan`).
+- `jobs` table gained additive columns (provider, external_job_id, employment_type,
+  salary_min/max, last_seen_at, freshness_minutes, dedup_fingerprint, score_breakdown JSON) —
+  applied via `PRAGMA table_info` + `ALTER TABLE ADD COLUMN`, never destroying existing rows.
+  New tables: `discovery_cycles` (per-cycle log), `application_state_history` (every state
+  transition, manual or automatic).
+- `ApplicationState` gained `DISCOVERED, REVIEW_REQUIRED, CLAIM_VALIDATION_FAILED,
+  SKIPPED_NO_SPONSORSHIP, SKIPPED_SENIORITY, SKIPPED_COMPENSATION, SKIPPED_POOR_MATCH`,
+  keeping `NEW/ANALYZED/SKIPPED/READY_TO_APPLY/APPLIED/INTERVIEW/REJECTED` for backward
+  compatibility. **Two intentional behavior changes** (explicitly required by the Phase 2
+  spec, existing tests updated to match): `NO_SPONSORSHIP` now lands on the specific
+  `SKIPPED_NO_SPONSORSHIP` instead of generic `SKIPPED`; `LIKELY_SPONSOR` now lands on
+  `REVIEW_REQUIRED` instead of `READY_TO_APPLY` (the package is still generated, just never
+  presented as ready-to-submit — matches "LIKELY_SPONSOR -> review only, do not auto-submit").
+- `app/scoring/scorer.py::build_score_breakdown` — machine-readable per-component reasons
+  (never a fabricated "probability of interview"), stored as JSON on the job row and shown
+  on the job detail page.
+- Dashboard: agent ON/OFF status bar with last/next cycle + counters, `Fresh <6h` filter,
+  `Review Required` filter, job-detail score breakdown table, pipeline history, and
+  Regenerate Resume / Open Application actions.
