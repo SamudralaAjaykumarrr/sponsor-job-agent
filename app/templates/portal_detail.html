@@ -1,0 +1,112 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Portal Detail — Sponsor Job Agent</title>
+  <style>
+    body { font-family: -apple-system, Arial, sans-serif; margin: 2rem; background: #f7f7f9; color: #1a1a1a; max-width: 900px; }
+    .card { background: white; border: 1px solid #ddd; border-radius: 8px; padding: 1rem 1.25rem; margin-bottom: 1rem; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 6px 8px; border-bottom: 1px solid #eee; text-align: left; font-size: 0.85rem; }
+    .status-tag { padding: 2px 8px; border-radius: 10px; font-size: 0.75rem; font-weight: 600; }
+    .status-ACTIVE, .status-VERIFIED { background: #d4edda; color: #155724; }
+    .status-CANDIDATE, .status-DISCOVERED { background: #e2e3e5; color: #383d41; }
+    .status-DEGRADED { background: #fff3cd; color: #856404; }
+    .status-STALE, .status-QUARANTINED, .status-DISABLED { background: #f8d7da; color: #721c24; }
+    .actions form { display: inline; margin-right: 0.5rem; }
+    .actions button { padding: 6px 12px; border-radius: 6px; border: 1px solid #ccc; background: #f0f0f0; cursor: pointer; }
+    .reasons li { font-size: 0.85rem; }
+  </style>
+</head>
+<body>
+  <p><a href="/registry">&larr; back to registry</a></p>
+  <h1>{{ company.display_name if company else 'Unknown company' }} &mdash; {{ portal.provider or '(undetected)' }}</h1>
+  <span class="status-tag status-{{ portal.verification_status.value }}">{{ portal.verification_status.value }}</span>
+  <span>confidence: {{ portal.confidence }}</span>
+
+  <div class="card">
+    <h3>Portal</h3>
+    <table>
+      <tr><th>Company domain</th><td>{{ company.primary_domain if company else '' }}</td></tr>
+      <tr><th>Provider</th><td>{{ portal.provider or '(undetected)' }}</td></tr>
+      <tr><th>Tenant identifier</th><td>{{ portal.tenant_identifier or '-' }}</td></tr>
+      <tr><th>Careers URL</th><td><a href="{{ portal.careers_url }}">{{ portal.careers_url }}</a></td></tr>
+      <tr><th>Canonical URL</th><td>{{ portal.canonical_url }}</td></tr>
+      <tr><th>Support level</th><td>{{ portal.support_level.value }}</td></tr>
+      <tr><th>Discovery status</th><td>{{ portal.discovery_status.value }}</td></tr>
+      <tr><th>Identity status</th><td>{{ portal.identity_status.value }}</td></tr>
+      <tr><th>Enabled</th><td>{{ 'Yes' if portal.enabled else 'No' }}</td></tr>
+      <tr><th>Last verified</th><td>{{ portal.last_verified_at or 'never' }}</td></tr>
+      <tr><th>Last success / failure</th><td>{{ portal.last_success_at or 'never' }} / {{ portal.last_failure_at or 'never' }}</td></tr>
+      <tr><th>Consecutive permanent failures</th><td>{{ portal.consecutive_permanent_failures }}</td></tr>
+      <tr><th>Avg job yield / latency</th><td>{{ portal.average_job_yield }} / {{ portal.average_latency_ms }}ms</td></tr>
+      <tr><th>Jobs currently visible</th><td>{{ portal.current_job_count }}</td></tr>
+      <tr><th>Mirrored operational registry id</th><td>{{ portal.registry_entry_id or 'not mirrored (not ACTIVE/VERIFIED yet)' }}</td></tr>
+      <tr><th>Superseded by</th><td>{{ portal.superseded_by_portal_id or '-' }}</td></tr>
+      <tr><th>Notes / last evidence</th><td>{{ portal.notes }}</td></tr>
+    </table>
+  </div>
+
+  <div class="card">
+    <h3>Confidence reasons</h3>
+    <ul class="reasons">
+      {% for r in portal.confidence_reasons %}<li>{{ r }}</li>{% else %}<li>no scored signals yet</li>{% endfor %}
+    </ul>
+  </div>
+
+  <div class="card actions">
+    <h3>Actions</h3>
+    <form method="post" action="/registry/portals/{{ portal.id }}/verify"><button type="submit">Verify</button></form>
+    <form method="post" action="/registry/portals/{{ portal.id }}/recheck"><button type="submit">Recheck careers page</button></form>
+    {% if portal.enabled %}
+    <form method="post" action="/registry/portals/{{ portal.id }}/disable"><button type="submit">Disable</button></form>
+    {% else %}
+    <form method="post" action="/registry/portals/{{ portal.id }}/enable"><button type="submit">Enable</button></form>
+    {% endif %}
+    <form method="post" action="/registry/portals/{{ portal.id }}/quarantine"><button type="submit">Quarantine</button></form>
+  </div>
+
+  <div class="card">
+    <h3>Provenance ({{ provenance|length }})</h3>
+    <table>
+      <thead><tr><th>Source type</th><th>Source name</th><th>Source URL</th><th>Observed</th><th>Confidence</th><th>Evidence</th></tr></thead>
+      <tbody>
+        {% for p in provenance %}
+        <tr><td>{{ p.source_type }}</td><td>{{ p.source_name }}</td><td>{{ p.source_url }}</td><td>{{ p.observed_at }}</td><td>{{ p.confidence }}</td><td>{{ p.evidence }}</td></tr>
+        {% else %}
+        <tr><td colspan="6">No provenance recorded.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  {% if sibling_portals %}
+  <div class="card">
+    <h3>Other portals for this company</h3>
+    <table>
+      <thead><tr><th>Provider</th><th>Tenant</th><th>Status</th></tr></thead>
+      <tbody>
+        {% for s in sibling_portals %}
+        <tr><td>{{ s.provider }}</td><td>{{ s.tenant_identifier }}</td>
+        <td><a href="/registry/portals/{{ s.id }}">{{ s.verification_status.value }}</a></td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
+  {% if migrations %}
+  <div class="card">
+    <h3>Migration history</h3>
+    <table>
+      <thead><tr><th>Detected</th><th>Old portal</th><th>New portal</th><th>Evidence</th></tr></thead>
+      <tbody>
+        {% for m in migrations %}
+        <tr><td>{{ m.detected_at }}</td><td>{{ m.old_portal_id }}</td><td>{{ m.new_portal_id }}</td><td>{{ m.evidence }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</body>
+</html>

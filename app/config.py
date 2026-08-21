@@ -126,3 +126,31 @@ PROVIDER_MAX_POLL_MINUTES = _env_int("PROVIDER_MAX_POLL_MINUTES", 240)
 # meant to be populated deliberately (Phase 4 importer), not with fabricated
 # example companies in a real deployment.
 REGISTRY_SEED_DEMO_DATA = _env_bool("REGISTRY_SEED_DEMO_DATA", False)
+
+# --- Phase 4: registry acquisition/verification/lifecycle scale settings ---
+# Deterministic partitioning for a future distributed worker (Phase 7). Local
+# default is 1 shard / index 0 -- no behavior change unless configured.
+REGISTRY_SHARD_COUNT = _env_int("REGISTRY_SHARD_COUNT", 1)
+REGISTRY_SHARD_INDEX = _env_int("REGISTRY_SHARD_INDEX", 0)
+
+# Backpressure: how many due portals to pull into memory per batch, and the
+# overall wall-clock budget for one registry verification/poll cycle. Neither
+# is "poll 100k portals" -- these bound one local run regardless of registry size.
+REGISTRY_DUE_BATCH_SIZE = _env_int("REGISTRY_DUE_BATCH_SIZE", 50)
+DISCOVERY_CYCLE_TIME_BUDGET_SECONDS = _env_int("DISCOVERY_CYCLE_TIME_BUDGET_SECONDS", 60)
+REGISTRY_MAX_PORTALS_PER_CYCLE = _env_int("REGISTRY_MAX_PORTALS_PER_CYCLE", 50)
+
+# Verification pipeline: how many jobs to request when probing a candidate
+# portal's endpoint (kept tiny -- this is a structural check, not a poll).
+REGISTRY_VERIFICATION_PROBE_JOBS = _env_int("REGISTRY_VERIFICATION_PROBE_JOBS", 5)
+# Consecutive PERMANENT (e.g. repeated 404) failures before an ACTIVE/VERIFIED
+# portal is demoted to STALE -- distinct from transient-failure backoff.
+REGISTRY_STALE_AFTER_PERMANENT_FAILURES = _env_int("REGISTRY_STALE_AFTER_PERMANENT_FAILURES", 5)
+
+# --- Phase 4: safe bounded career-page discovery ---------------------------
+PAGE_DISCOVERY_MAX_PAGES = _env_int("PAGE_DISCOVERY_MAX_PAGES", 9)
+PAGE_DISCOVERY_TIMEOUT_SECONDS = _env_float("PAGE_DISCOVERY_TIMEOUT_SECONDS", 8.0)
+PAGE_DISCOVERY_MAX_RESPONSE_BYTES = _env_int("PAGE_DISCOVERY_MAX_RESPONSE_BYTES", 2_000_000)
+PAGE_DISCOVERY_MAX_REDIRECTS = _env_int("PAGE_DISCOVERY_MAX_REDIRECTS", 3)
+PAGE_DISCOVERY_CONCURRENCY_LIMIT = _env_int("PAGE_DISCOVERY_CONCURRENCY_LIMIT", 3)
+PAGE_DISCOVERY_RESPECT_ROBOTS = _env_bool("PAGE_DISCOVERY_RESPECT_ROBOTS", True)

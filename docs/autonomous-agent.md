@@ -129,4 +129,11 @@ candidate profile fields.
   profile -- check `candidate_data/profile.json` coverage, then use "Regenerate Resume".
 - All actual submission: the agent prepares, the user applies.
 - Provider/company selection: `GREENHOUSE_BOARD_TOKENS` / `LEVER_COMPANY_SLUGS` are a manual
-  choice, not something the agent infers.
+  choice, not something the agent infers. As of Phase 4, `company_registry` tenants can also
+  arrive automatically via the acquisition/verification pipeline (`docs/registry-import.md`,
+  `docs/registry-verification.md`) — but a tenant only ever gets there after passing live
+  verification (`python -m app.registry.cli verify`), never by direct insertion of an unverified
+  guess.
+- Every `AMBIGUOUS`/`QUARANTINED` registry portal (Phase 4): the verification pipeline could not
+  confirm the returned company identity matches the registry company — review on the portal
+  detail page (`/registry/portals/{id}`) before manually re-verifying or enabling it.

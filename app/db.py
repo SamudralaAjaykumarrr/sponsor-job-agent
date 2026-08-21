@@ -136,6 +136,124 @@ CREATE TABLE IF NOT EXISTS discovery_log (
 
 CREATE INDEX IF NOT EXISTS idx_discovery_log_provider ON discovery_log (provider);
 CREATE INDEX IF NOT EXISTS idx_discovery_log_cycle_id ON discovery_log (cycle_id);
+
+-- Phase 4: company/portal acquisition-verification-lifecycle registry. Additive
+-- only -- the Phase 3 `company_registry` operational polling table above is
+-- untouched; a VERIFIED/ACTIVE registry_portals row gets mirrored into it
+-- (app/registry/sync.py), never the other way around.
+CREATE TABLE IF NOT EXISTS registry_companies (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    normalized_name TEXT NOT NULL,
+    display_name TEXT NOT NULL,
+    primary_domain TEXT DEFAULT '',
+    careers_home_url TEXT DEFAULT '',
+    country TEXT DEFAULT '',
+    headquarters_location TEXT DEFAULT '',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_registry_companies_identity
+    ON registry_companies (normalized_name, primary_domain);
+CREATE INDEX IF NOT EXISTS idx_registry_companies_domain ON registry_companies (primary_domain);
+
+CREATE TABLE IF NOT EXISTS registry_portals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id INTEGER NOT NULL REFERENCES registry_companies(id),
+    provider TEXT NOT NULL,
+    tenant_identifier TEXT DEFAULT '',
+    careers_url TEXT DEFAULT '',
+    jobs_url TEXT DEFAULT '',
+    canonical_url TEXT DEFAULT '',
+    support_level TEXT NOT NULL DEFAULT 'UNSUPPORTED',
+    discovery_status TEXT NOT NULL DEFAULT 'IMPORTED',
+    verification_status TEXT NOT NULL DEFAULT 'DISCOVERED',
+    identity_status TEXT NOT NULL DEFAULT 'UNKNOWN',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    confidence INTEGER NOT NULL DEFAULT 0,
+    confidence_reasons TEXT DEFAULT '[]',
+    last_verified_at TEXT,
+    last_polled_at TEXT,
+    next_poll_at TEXT,
+    last_success_at TEXT,
+    last_failure_at TEXT,
+    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    consecutive_permanent_failures INTEGER NOT NULL DEFAULT 0,
+    average_job_yield REAL DEFAULT 0.0,
+    average_latency_ms REAL DEFAULT 0.0,
+    current_job_count INTEGER DEFAULT 0,
+    poll_interval_minutes INTEGER NOT NULL DEFAULT 15,
+    registry_entry_id INTEGER,
+    superseded_by_portal_id INTEGER,
+    notes TEXT DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_registry_portals_canonical
+    ON registry_portals (canonical_url) WHERE canonical_url != '';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_registry_portals_provider_tenant
+    ON registry_portals (provider, tenant_identifier) WHERE tenant_identifier != '';
+CREATE INDEX IF NOT EXISTS idx_registry_portals_company ON registry_portals (company_id);
+CREATE INDEX IF NOT EXISTS idx_registry_portals_verification ON registry_portals (verification_status);
+CREATE INDEX IF NOT EXISTS idx_registry_portals_next_poll ON registry_portals (next_poll_at);
+CREATE INDEX IF NOT EXISTS idx_registry_portals_id_pagination ON registry_portals (id);
+
+CREATE TABLE IF NOT EXISTS registry_provenance (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    portal_id INTEGER REFERENCES registry_portals(id),
+    company_id INTEGER REFERENCES registry_companies(id),
+    source_type TEXT NOT NULL,
+    source_name TEXT DEFAULT '',
+    source_url TEXT DEFAULT '',
+    imported_at TEXT NOT NULL,
+    observed_at TEXT NOT NULL,
+    evidence TEXT DEFAULT '',
+    confidence INTEGER DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_registry_provenance_portal ON registry_provenance (portal_id);
+CREATE INDEX IF NOT EXISTS idx_registry_provenance_company ON registry_provenance (company_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_registry_provenance_upsert
+    ON registry_provenance (portal_id, source_type, source_name);
+
+CREATE TABLE IF NOT EXISTS registry_portal_health_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    portal_id INTEGER NOT NULL,
+    occurred_at TEXT NOT NULL,
+    event_type TEXT NOT NULL,
+    http_status INTEGER,
+    error_type TEXT DEFAULT '',
+    latency_ms REAL,
+    jobs_yield INTEGER,
+    detail TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_health_events_portal ON registry_portal_health_events (portal_id, occurred_at);
+
+CREATE TABLE IF NOT EXISTS registry_migrations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_id INTEGER NOT NULL,
+    old_portal_id INTEGER NOT NULL,
+    new_portal_id INTEGER NOT NULL,
+    detected_at TEXT NOT NULL,
+    evidence TEXT DEFAULT '',
+    confidence INTEGER DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_migrations_company ON registry_migrations (company_id);
+
+CREATE TABLE IF NOT EXISTS registry_import_batches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_name TEXT NOT NULL,
+    format TEXT DEFAULT '',
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    rows_total INTEGER DEFAULT 0,
+    rows_created INTEGER DEFAULT 0,
+    rows_updated INTEGER DEFAULT 0,
+    rows_skipped INTEGER DEFAULT 0,
+    rows_invalid INTEGER DEFAULT 0,
+    dry_run INTEGER DEFAULT 0,
+    errors TEXT DEFAULT '[]'
+);
 """
 
 # Additive columns introduced after the initial `jobs` table shipped. Applied

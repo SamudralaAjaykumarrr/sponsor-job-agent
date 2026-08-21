@@ -120,3 +120,53 @@ unmodified):
 - Dashboard: `/providers` (capability matrix + live tenant health), `/registry`
   (per-tenant table + add-entry form + provider filter), `/discovery-log` (JSON), and a
   "Source provenance" section on the job detail page.
+
+## Phase 4 — company/career-portal registry (acquisition, verification, lifecycle, scale)
+
+See `docs/phase4-company-registry.md`, `docs/registry-import.md`, `docs/registry-verification.md`,
+`docs/registry-operations.md`, `docs/registry-scaling.md` for full detail. Summary of what was
+added on top of Phase 3, without rebuilding it (all 205 Phase 3 tests still pass unmodified):
+
+- New, additive tables (`app/db.py`): `registry_companies`, `registry_portals`,
+  `registry_provenance`, `registry_portal_health_events`, `registry_migrations`,
+  `registry_import_batches`. The Phase 3 `company_registry` operational polling table is
+  **unchanged** — it remains the only thing `app/agent/cycle.py` reads from.
+- `app/registry/models.py` gained `Company`, `CareerPortal`, `RegistryProvenance` and the
+  `PortalStatus`/`DiscoveryStatus`/`VerificationResult`/`IdentityStatus` enums, alongside the
+  untouched `CompanyRegistryEntry`.
+- `app/registry/normalize.py`, `url_canon.py` — deterministic company-name/domain normalization
+  and career-portal URL canonicalization (tenant-path-preserving, unlike the job-posting-URL
+  canonicalizer in `app/discovery/dedup.py`).
+- `app/registry/store.py` — bounded/keyset-paginated CRUD for the new tables; every list query
+  takes a `limit` and never does `SELECT *` over the whole table.
+- `app/registry/importers.py` + `app/registry/cli.py` — `RegistrySource` interface, CSV/JSON/JSONL
+  bulk import, idempotent upsert engine, `python -m app.registry.cli {import,validate,stats,
+  export,doctor,verify}`.
+- `app/registry/probe.py` — raw, bounded, per-provider structural probes (reuses each connector's
+  own URL templates) that **raise** on failure, unlike `JobProvider.fetch_jobs()`, which
+  deliberately swallows per-tenant errors for the discovery cycle's sake. Verification needs the
+  un-isolated outcome for exactly one tenant, hence the separate module.
+- `app/registry/verification.py`, `lifecycle.py` — the two-step verification pipeline
+  (structural probe, then best-effort enrichment) and lifecycle transitions (promotion,
+  permanent-vs-temporary-failure-aware demotion, migration detection).
+- `app/registry/quality.py` — deterministic, rule-based confidence scoring with human-readable
+  reasons (never an opaque probability).
+- `app/registry/sharding.py` — deterministic `portal_id -> shard` hashing
+  (`REGISTRY_SHARD_COUNT`/`REGISTRY_SHARD_INDEX`, default 1/0), groundwork for a future
+  distributed worker (no distributed infrastructure built).
+- `app/registry/sync.py` — the single bridge from the Phase 4 layer to the unchanged Phase 3
+  `company_registry` table: mirrors a `VERIFIED`/`ACTIVE` portal in (promoting it to `ACTIVE`),
+  disables (never deletes) the mirrored row when a portal regresses.
+- `app/registry/page_discovery.py` — safe, bounded, robots.txt-respecting, JS-free career-page
+  link discovery for a given company domain.
+- `app/registry/doctor.py`, `analytics.py`, `export.py` — integrity checker, real DB-derived
+  aggregate stats, streaming JSONL/JSON export (no candidate data).
+- `app/providers/registry.py::workday_base_url` — small Phase 3 bug fix: Workday tenant
+  identifiers coming from `app.providers.detector`'s short form (`tenant/wdHost/site`) are now
+  reconstructed into the full CXS base URL `WorkdayProvider` actually needs; previously only a
+  literal full base URL (the static-config shape) worked.
+- Dashboard: `/registry` gained Phase 4 summary cards, filters, search, and a bounded portal
+  table; `/registry/portals/{id}` (detail: provenance, confidence reasons, health, sibling
+  portals, migration history, safe POST actions); `/registry/doctor`.
+- `scripts/registry_benchmark.py` — synthetic 1k/10k/50k/100k scale benchmark, isolated temp
+  SQLite DB only, never the real registry (`docs/registry-scaling.md`).

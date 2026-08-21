@@ -73,6 +73,22 @@ def get_enabled_providers() -> list[JobProvider]:
     return providers
 
 
+def workday_base_url(tenant_identifier: str) -> str:
+    """WorkdayProvider needs a full CXS base URL. `tenant_identifier` may
+    already be one (the WORKDAY_TENANT_BASE_URLS / manually-supplied-URL
+    shape), or it may be the short "tenant/wdHost/site" form that
+    app.providers.detector's Workday rule extracts from a plain careers URL
+    -- reconstruct the base URL in that case rather than passing a
+    non-URL string straight to the connector."""
+    if "://" in tenant_identifier:
+        return tenant_identifier
+    parts = tenant_identifier.split("/")
+    if len(parts) == 3:
+        tenant, wd_host, site = parts
+        return f"https://{tenant}.{wd_host}.myworkdayjobs.com/wday/cxs/{tenant}/{site}"
+    return tenant_identifier
+
+
 def build_provider_for_tenant(provider_name: str, tenant_identifier: str) -> JobProvider | None:
     """Builds a single-tenant provider instance for a company_registry row,
     for the adaptive per-tenant discovery path."""
@@ -81,7 +97,7 @@ def build_provider_for_tenant(provider_name: str, tenant_identifier: str) -> Job
     if cls is None:
         return None
     if provider_name.lower() == "workday":
-        return WorkdayProvider([tenant_identifier])
+        return WorkdayProvider([workday_base_url(tenant_identifier)])
     if provider_name.lower() == "comeet":
         return CometProvider([tenant_identifier])
     try:

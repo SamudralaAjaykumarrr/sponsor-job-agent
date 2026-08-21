@@ -74,3 +74,20 @@ including other tenants of the same provider — from being processed in the sam
 Phase 4's bulk importer should call `insert_entry`/`update_entry` in a loop (or a bulk
 `INSERT` against the same schema) — no code changes to the discovery cycle, scheduler, or
 dashboard are required to go from a handful of rows to 100,000+.
+
+## Phase 4 update: this table is now populated via the acquisition/verification layer
+
+This document describes the table exactly as Phase 3 left it — **unchanged**. Phase 4 added a
+richer acquisition/verification/lifecycle layer on top (`app/registry/store.py` +
+`registry_companies`/`registry_portals`/`registry_provenance`, see
+`docs/registry-import.md`/`registry-verification.md`), and the only new thing that touches *this*
+table is `app/registry/sync.py::sync_portal_to_operational_registry`, which upserts a row here
+(by the same `(provider, tenant_identifier)` unique index) once a Phase 4 portal reaches
+`VERIFIED`/`ACTIVE`, and disables (never deletes) the row if the portal later regresses. The
+manual `/registry/add` form and direct `insert_entry` calls documented above still work exactly
+as before — nothing here was rebuilt.
+
+In practice, populating the registry at scale now means: `python -m app.registry.cli import
+companies.csv` → `python -m app.registry.cli verify` (or the dashboard's per-portal Verify
+button) → the verified portals appear here automatically, ready for `app/agent/cycle.py` to poll
+on its next due cycle.

@@ -1,0 +1,21 @@
+company_name,company_domain,provider,tenant_identifier,careers_url,country,source,source_url
+GitLab,gitlab.com,greenhouse,gitlab,https://boards.greenhouse.io/gitlab,US,live_verification_2026-08-21,https://boards-api.greenhouse.io/v1/boards/gitlab/jobs
+Discord,discord.com,greenhouse,discord,https://boards.greenhouse.io/discord,US,live_verification_2026-08-21,https://boards-api.greenhouse.io/v1/boards/discord/jobs
+Robinhood,robinhood.com,greenhouse,robinhood,https://boards.greenhouse.io/robinhood,US,live_verification_2026-08-21,https://boards-api.greenhouse.io/v1/boards/robinhood/jobs
+Reddit,reddit.com,greenhouse,reddit,https://boards.greenhouse.io/reddit,US,live_verification_2026-08-21,https://boards-api.greenhouse.io/v1/boards/reddit/jobs
+Coinbase,coinbase.com,greenhouse,coinbase,https://boards.greenhouse.io/coinbase,US,live_verification_2026-08-21,https://boards-api.greenhouse.io/v1/boards/coinbase/jobs
+Airbnb,airbnb.com,greenhouse,airbnb,https://boards.greenhouse.io/airbnb,US,live_verification_2026-08-21,https://boards-api.greenhouse.io/v1/boards/airbnb/jobs
+Cloudflare,cloudflare.com,greenhouse,cloudflare,https://boards.greenhouse.io/cloudflare,US,live_verification_2026-08-21,https://boards-api.greenhouse.io/v1/boards/cloudflare/jobs
+Twilio,twilio.com,greenhouse,twilio,https://boards.greenhouse.io/twilio,US,live_verification_2026-08-21,https://boards-api.greenhouse.io/v1/boards/twilio/jobs
+Databricks,databricks.com,greenhouse,databricks,https://boards.greenhouse.io/databricks,US,live_verification_2026-08-21,https://boards-api.greenhouse.io/v1/boards/databricks/jobs
+Instacart,instacart.com,greenhouse,instacart,https://boards.greenhouse.io/instacart,US,live_verification_2026-08-21,https://boards-api.greenhouse.io/v1/boards/instacart/jobs
+Brex,brex.com,greenhouse,brex,https://boards.greenhouse.io/brex,US,live_verification_2026-08-21,https://boards-api.greenhouse.io/v1/boards/brex/jobs
+Scale AI,scale.com,greenhouse,scaleai,https://boards.greenhouse.io/scaleai,US,live_verification_2026-08-21,https://boards-api.greenhouse.io/v1/boards/scaleai/jobs
+Figma,figma.com,greenhouse,figma,https://boards.greenhouse.io/figma,US,live_verification_2026-08-21,https://boards-api.greenhouse.io/v1/boards/figma/jobs
+Asana,asana.com,greenhouse,asana,https://boards.greenhouse.io/asana,US,live_verification_2026-08-21,https://boards-api.greenhouse.io/v1/boards/asana/jobs
+Stripe,stripe.com,greenhouse,stripe,https://boards.greenhouse.io/stripe,US,live_verification_2026-08-21,https://boards-api.greenhouse.io/v1/boards/stripe/jobs
+Ramp,ramp.com,ashby,ramp,https://jobs.ashbyhq.com/ramp,US,live_verification_2026-08-21,https://api.ashbyhq.com/posting-api/job-board/ramp
+Linear,linear.app,ashby,linear,https://jobs.ashbyhq.com/linear,US,live_verification_2026-08-21,https://api.ashbyhq.com/posting-api/job-board/linear
+Notion,notion.so,ashby,notion,https://jobs.ashbyhq.com/notion,US,live_verification_2026-08-21,https://api.ashbyhq.com/posting-api/job-board/notion
+Vercel,vercel.com,ashby,vercel,https://jobs.ashbyhq.com/vercel,US,live_verification_2026-08-21,https://api.ashbyhq.com/posting-api/job-board/vercel
+Workday,workday.com,workday,workday/wd5/Workday,https://workday.wd5.myworkdayjobs.com/Workday,US,live_verification_2026-08-21,https://workday.wd5.myworkdayjobs.com/wday/cxs/workday/Workday/jobs

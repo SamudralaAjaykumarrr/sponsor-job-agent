@@ -16,10 +16,23 @@
     form.add input, form.add select { padding: 4px; margin-right: 0.5rem; }
     .filters a { margin-right: 0.75rem; padding: 4px 10px; border-radius: 14px; background: #eee; text-decoration: none; color: #333; font-size: 0.85rem; }
     .filters a.active { background: #333; color: white; }
+    .cards { display: flex; flex-wrap: wrap; gap: 0.75rem; margin: 1rem 0; }
+    .card { background: white; border: 1px solid #ddd; border-radius: 8px; padding: 0.75rem 1.1rem; min-width: 110px; }
+    .card .n { font-size: 1.5rem; font-weight: 700; }
+    .card .l { font-size: 0.75rem; color: #666; text-transform: uppercase; letter-spacing: 0.03em; }
+    .status-tag { padding: 2px 8px; border-radius: 10px; font-size: 0.72rem; font-weight: 600; }
+    .status-ACTIVE, .status-VERIFIED { background: #d4edda; color: #155724; }
+    .status-CANDIDATE, .status-DISCOVERED { background: #e2e3e5; color: #383d41; }
+    .status-DEGRADED { background: #fff3cd; color: #856404; }
+    .status-STALE, .status-QUARANTINED, .status-DISABLED { background: #f8d7da; color: #721c24; }
+    form.search-filters { background: white; border: 1px solid #ddd; border-radius: 8px; padding: 0.75rem 1rem; margin: 1rem 0; display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; }
+    form.search-filters select, form.search-filters input { padding: 4px; }
+    a.portal-link { color: #205081; text-decoration: none; }
+    a.portal-link:hover { text-decoration: underline; }
   </style>
 </head>
 <body>
-  <p><a href="/">&larr; back to dashboard</a> · <a href="/providers">Providers</a></p>
+  <p><a href="/">&larr; back to dashboard</a> · <a href="/providers">Providers</a> · <a href="/registry/doctor">Registry doctor</a></p>
   <h1>Company / ATS Tenant Registry</h1>
   <p>Foundation for Phase 4's mass importer -- SQLite-backed so scaling to 10k-100k+ rows is a data load, not a code change.</p>
 
@@ -71,5 +84,69 @@
       {% endfor %}
     </tbody>
   </table>
+
+  <h2 style="margin-top:2.5rem;">Phase 4: Acquisition / Verification Registry</h2>
+  <p>Companies and candidate career portals go through DISCOVERED &rarr; CANDIDATE &rarr; VERIFIED &rarr; ACTIVE
+     (or DEGRADED/STALE/QUARANTINED/DISABLED) before an <strong>ACTIVE</strong> portal is mirrored into the
+     operational polling table above. Real DB-derived counts only.</p>
+
+  <div class="cards">
+    {% for label, key in [("Companies","companies"), ("Portals","portals"), ("Verified","verified"),
+                           ("Active","active"), ("Healthy","healthy"), ("Candidate","candidate"),
+                           ("Quarantined","quarantined"), ("Stale","stale")] %}
+    <div class="card"><div class="n">{{ snapshot[key] }}</div><div class="l">{{ label }}</div></div>
+    {% endfor %}
+  </div>
+
+  <form class="search-filters" method="get" action="/registry">
+    <input type="text" name="search" placeholder="Search company / domain / tenant" value="{{ search }}">
+    <select name="provider">
+      <option value="">All providers</option>
+      {% for p in provider_names %}<option value="{{ p }}" {{ 'selected' if provider_filter == p else '' }}>{{ p }}</option>{% endfor %}
+    </select>
+    <select name="portal_status">
+      <option value="">All statuses</option>
+      {% for s in portal_statuses %}<option value="{{ s }}" {{ 'selected' if portal_status_filter == s else '' }}>{{ s }}</option>{% endfor %}
+    </select>
+    <select name="support_level">
+      <option value="">All support levels</option>
+      {% for s in support_levels %}<option value="{{ s }}" {{ 'selected' if support_level_filter == s else '' }}>{{ s }}</option>{% endfor %}
+    </select>
+    <select name="portal_enabled">
+      <option value="">Enabled + disabled</option>
+      <option value="yes" {{ 'selected' if portal_enabled_filter == 'yes' else '' }}>Enabled only</option>
+      <option value="no" {{ 'selected' if portal_enabled_filter == 'no' else '' }}>Disabled only</option>
+    </select>
+    <button type="submit">Filter</button>
+  </form>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Company</th><th>Domain</th><th>Provider</th><th>Tenant</th><th>Support</th>
+        <th>Status</th><th>Confidence</th><th>Enabled</th><th>Last verified</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in portal_rows %}
+      {% set p = row.portal %}
+      <tr>
+        <td>{{ row.company.display_name if row.company else 'unknown' }}</td>
+        <td>{{ row.company.primary_domain if row.company else '' }}</td>
+        <td>{{ p.provider or '(undetected)' }}</td>
+        <td>{{ p.tenant_identifier or '-' }}</td>
+        <td>{{ p.support_level.value }}</td>
+        <td><span class="status-tag status-{{ p.verification_status.value }}">{{ p.verification_status.value }}</span></td>
+        <td>{{ p.confidence }}</td>
+        <td>{{ 'Yes' if p.enabled else 'No' }}</td>
+        <td>{{ p.last_verified_at or 'never' }}</td>
+        <td><a class="portal-link" href="/registry/portals/{{ p.id }}">Details &rarr;</a></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="10">No Phase 4 registry portals yet. Use <code>python -m app.registry.cli import &lt;file&gt;</code> to bulk-import companies/portals.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p style="color:#666; font-size:0.8rem;">Showing up to 200 portals matching the current filters (bounded query -- see docs/registry-scaling.md).</p>
 </body>
 </html>

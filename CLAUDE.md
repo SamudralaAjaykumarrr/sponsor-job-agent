@@ -282,3 +282,33 @@ coverage scales toward Phase 4's 10,000–100,000+ tenant registry:
   (freshness fallback to `first_seen_at`, sponsorship `UNKNOWN`) handle the gap safely.
 - One failing tenant/provider must never abort discovery for any other tenant/provider in
   the same cycle.
+
+## Registry Architecture Rules (recorded after Phase 4, apply to all future phases)
+
+- A `registry_portals` row only becomes `VERIFIED`/`ACTIVE` — and only then gets mirrored into
+  the operational `company_registry` table that the discovery cycle actually polls — after the
+  live verification pipeline (`app/registry/verification.py`) confirms it. Bulk import
+  (`app/registry/importers.py`) and page discovery (`app/registry/page_discovery.py`) may only
+  ever produce `DISCOVERED`/`CANDIDATE` rows. Never skip verification to inflate registry counts.
+- Verification's structural probe (`app/registry/probe.py`) must raise on failure rather than
+  swallow it, unlike `JobProvider.fetch_jobs()` (which deliberately isolates per-tenant errors
+  for the discovery cycle's sake) — these are different concerns and must stay separate
+  mechanisms; do not collapse them back into one.
+- Permanent failures (400/401/403/404/410) and temporary ones (429/5xx/timeout/connection) are
+  classified separately. Only permanent failures, repeated past
+  `REGISTRY_STALE_AFTER_PERMANENT_FAILURES`, ever demote a portal (`STALE`/`QUARANTINED`).
+  Temporary failures are recorded but never count toward that threshold — never permanently
+  discard a portal over one bad network moment.
+- A company-identity mismatch observed during verification quarantines a portal
+  (`AMBIGUOUS` → `QUARANTINED`); it never gets silently ACTIVE-ed anyway.
+- An ATS-migration record (`registry_migrations`) is only created when an existing portal is
+  already `STALE` on a different provider than a newly `VERIFIED`/`ACTIVE` one for the same
+  company — a company legitimately running two ATSes at once (both healthy) must never produce a
+  false migration record.
+- Every registry list/query is bounded (`LIMIT` + keyset pagination) — never `SELECT *` over the
+  whole table, regardless of registry size. Synthetic benchmark data (`scripts/
+  registry_benchmark.py`) must only ever be written to an isolated temp DB, never the real
+  registry, and must use a provider name (`benchmark-fixture`) that can never collide with a
+  real one.
+- Company/portal identity dedup always requires domain (or an explicit provider+tenant pair) —
+  normalized *name* alone is never sufficient to merge two registry companies.

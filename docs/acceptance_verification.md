@@ -102,3 +102,83 @@ criteria specific to Phase 3.
 - The company registry ships empty by default (an optional two-row illustrative seed exists
   behind `REGISTRY_SEED_DEMO_DATA=false`) — a real Phase 4 bulk importer is required to
   populate it at scale.
+
+## Phase 4 — Company/career-portal registry (verified 2026-08-21)
+
+Full detail in `docs/phase4-company-registry.md`, `docs/registry-import.md`,
+`docs/registry-verification.md`, `docs/registry-operations.md`, `docs/registry-scaling.md`.
+
+| Criterion | Evidence |
+|---|---|
+| `pytest` passes | `pytest tests/ -q` -> **312 passed** (205 Phase 3, unmodified in behavior, + 107 new Phase 4 tests), 0 failures, ~50s |
+| Company normalization | `tests/test_registry_normalize.py` — legal-suffix stripping, whitespace/case, domain host/scheme/www/trailing-slash normalization, similar-name-different-domain non-collision |
+| Portal URL canonicalization | `tests/test_registry_normalize.py` — tracking-param stripping while preserving tenant-identifying params (e.g. `gh_jid`), Workday tenant/site path preserved exactly, www/host-case normalization |
+| Bulk CSV/JSON/JSONL import, idempotency, provenance | `tests/test_registry_import.py` (12 tests) — 100-row CSV import + re-import with zero duplicates, dry-run writes nothing, invalid rows reported not dropped, company-only rows create no portal, scenario C (ambiguous URL never gets a fabricated tenant) |
+| Company/portal dedup, identity-mismatch quarantine | `tests/test_registry_store.py`, `tests/test_registry_verification.py::test_verify_portal_identity_mismatch_is_ambiguous` |
+| Tenant extraction | Reuses/extends `tests/test_provider_detector.py` (Phase 3, unmodified) via `app.registry.importers` |
+| Verification (permanent vs. temporary failure, unsupported) | `tests/test_registry_verification.py`, `tests/test_registry_probe.py` — 404 -> `FAILED`, timeout -> `TEMPORARY_FAILURE`, no tenant -> `FAILED` without a network call, `UNSUPPORTED` provider short-circuits cleanly |
+| Registry quality score | `app/registry/quality.py`, exercised in `tests/test_registry_import.py` (confidence computed on import) and shown live in the seed data below |
+| Migration detection, stale lifecycle | `tests/test_registry_verification.py`, `tests/test_acceptance_scenarios_phase4.py::test_scenario_f_*`/`test_scenario_e_*`/`test_scenario_g_*`/`test_scenario_h_*` |
+| Adaptive scheduling (portal-level) | Reuses Phase 3 `app/registry/scheduling.py` unchanged, via `app/registry/sync.py`'s mirror into `company_registry` |
+| Deterministic sharding | `tests/test_registry_sharding.py` — exactly-one-shard-per-id, no overlap, reasonable distribution, up to 2,000 ids |
+| Due-portal batching, cycle budget | `tests/test_acceptance_scenarios_phase4.py::test_scenario_i_*` (5,000-row bounded due-query) + `scripts/registry_benchmark.py` (50k/100k) |
+| Registry analytics | `tests/test_registry_analytics_export.py` — real DB-derived snapshot + per-provider breakdown, verified against a known mixed-status registry |
+| Dashboard filters, portal detail, POST actions | `tests/test_registry_dashboard_phase4.py` (9 tests) — summary cards, status filter, portal detail page (provenance shown), enable/disable/quarantine actions, GET-not-allowed on a mutating route (405) |
+| Export | `tests/test_registry_analytics_export.py` — JSONL/JSON, streamed, provenance included, no candidate-data strings present |
+| Registry doctor | `tests/test_registry_doctor.py` (7 tests) — every check triggered individually + a clean-registry zero-issues case; live run against the real populated registry also returned 0 serious / 0 warnings |
+| Safe migration | `app/db.py` — all Phase 4 tables are `CREATE TABLE IF NOT EXISTS`, zero `ALTER TABLE` on any existing table; `pytest` includes the unmodified Phase 3 `test_registry.py::test_migration_preserves_existing_jobs_and_state` |
+| 100k-scale synthetic benchmark | `scripts/registry_benchmark.py --sizes 1000,10000,50000 --include-100k`, isolated temp DB only — see exact numbers in `docs/registry-scaling.md` |
+| Limited live validation | See below |
+
+### Live validation (real network, real public companies, `2026-08-21`)
+
+`data/registry_seed/real_companies_seed.csv` — 20 real, independently-known public companies
+across 3 provider families (15 Greenhouse, 4 Ashby, 1 Workday), each row carrying
+`source=live_verification_2026-08-21` and the exact API URL tested as `source_url`.
+
+1. `python -m app.registry.cli import data/registry_seed/real_companies_seed.csv` -> 20/20 rows
+   created, 0 invalid, 20 companies created.
+2. `python -m app.registry.cli verify --limit 25` -> live network run against real endpoints.
+   **Caught a real bug during this run**: the Greenhouse structural probe originally requested
+   `content=true` (full HTML job descriptions for every posting), which pushed two large tenants
+   (Cloudflare, Databricks) over the 5MB response-size cap and mis-classified them as
+   `TEMPORARY_FAILURE`. Fixed (`app/registry/probe.py`) to omit `content=true` for the structural
+   probe (job descriptions aren't needed to confirm the endpoint works) — re-run succeeded for
+   both.
+3. Final live result: **19/20 -> `ACTIVE`** (mirrored into the operational `company_registry`
+   table), **1/20 -> `QUARANTINED`** (`greenhouse/scaleai`: the live response's company name
+   `"Scaleai"` didn't token-overlap with registry name `"Scale AI"` — the identity-safety check
+   correctly refused to auto-activate an ambiguous match rather than silently accepting it; see
+   the "Known limitation" note in `docs/registry-verification.md`).
+4. `python -m app.registry.cli doctor` on the resulting real registry -> **0 serious issues, 0
+   warnings**.
+5. `python -m app.registry.cli stats` on the resulting real registry:
+   ```
+   Companies: 20  Portals: 20  Verified: 19  Active: 19  Healthy: 19
+   Candidate: 0   Quarantined: 1  Stale: 0    Degraded: 0
+   ```
+6. Safe page discovery (`app/registry/page_discovery.py`) was also live-tested against
+   `gitlab.com` and `retool.com`: correctly found each site's real careers-page link
+   (`about.gitlab.com/jobs/`) among the harvested candidates, but neither site's careers page
+   links to its ATS via a plain server-rendered `<a href>` (both render that link client-side via
+   JavaScript), so `best_match` was `None` for both — an honest, expected limitation of a
+   JS-free, non-stealth discovery mechanism, not a defect; documented in
+   `docs/registry-operations.md`.
+7. No live-network attempt above was allowed to affect the automated `pytest` suite's pass/fail
+   status, per policy — all fixture-based tests use `httpx.MockTransport`.
+8. Confirmed no side effects outside registry scope: the `jobs` table row count was unchanged
+   before/after this session's registry work (Phase 4 is registry-only, not job discovery), and
+   `candidate_data/profile.json` was not read or modified by any registry code path.
+
+### Known Phase 4 limitations
+
+- The real seed (20 companies) is deliberately small, per CLAUDE.md's no-fake-scale policy —
+  reaching 50,000+ *verified* portals is now an operational bulk-import/verify exercise using the
+  tooling built here, not something this session pretends already exists.
+- Company-identity verification is a naive token-set comparison (see `scaleai` false-positive
+  above) — correct in intent (never silently trust an ambiguous match) but occasionally requires
+  one human click to clear a benign case.
+- Safe page discovery cannot see JavaScript-rendered careers links (by design — no stealth
+  browser). CSV/JSON bulk import remains the reliable acquisition path for such companies.
+- No distributed poller exists yet — sharding is groundwork only. See `docs/registry-scaling.md`
+  "What remains" for the full list.

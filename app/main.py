@@ -29,6 +29,13 @@ from app.registry.models import CompanyRegistryEntry
 from app.registry.repo import insert_entry, list_entries, provider_health_summary, seed_demo_entries
 from app.registry.scheduling import compute_health
 
+from app.registry import analytics as registry_analytics
+from app.registry import doctor as registry_doctor
+from app.registry import lifecycle as registry_lifecycle
+from app.registry import store as registry_store
+from app.registry import sync as registry_sync
+from app.registry.verification import verify_portal
+
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
@@ -122,15 +129,46 @@ def providers_page(request: Request):
 
 
 @app.get("/registry", response_class=HTMLResponse)
-def registry_page(request: Request, provider: str = ""):
+def registry_page(
+    request: Request,
+    provider: str = "",
+    portal_status: str = "",
+    support_level: str = "",
+    portal_enabled: str = "",
+    search: str = "",
+):
     entries = list_entries(provider=provider or None)
     rows = [
         {"entry": e, "health": compute_health(e.consecutive_failures, e.last_success_at).value}
         for e in entries
     ]
+
+    enabled_filter = None
+    if portal_enabled == "yes":
+        enabled_filter = True
+    elif portal_enabled == "no":
+        enabled_filter = False
+
+    portals = registry_store.list_portals(
+        provider=provider, verification_status=portal_status, support_level=support_level,
+        enabled=enabled_filter, search=search, limit=200,
+    )
+    portal_rows = []
+    for p in portals:
+        company = registry_store.get_company(p.company_id)
+        portal_rows.append({"portal": p, "company": company})
+
     return templates.TemplateResponse(
         request, "registry.html",
-        {"rows": rows, "provider_filter": provider, "provider_names": all_provider_names()},
+        {
+            "rows": rows, "provider_filter": provider, "provider_names": all_provider_names(),
+            "portal_rows": portal_rows,
+            "portal_status_filter": portal_status, "support_level_filter": support_level,
+            "portal_enabled_filter": portal_enabled, "search": search,
+            "snapshot": registry_analytics.snapshot(),
+            "portal_statuses": ["DISCOVERED", "CANDIDATE", "VERIFIED", "ACTIVE", "DEGRADED", "STALE", "QUARANTINED", "DISABLED"],
+            "support_levels": ["FULL", "PARTIAL", "EXPERIMENTAL", "UNSUPPORTED"],
+        },
     )
 
 
@@ -148,6 +186,86 @@ def registry_add(
     )
     insert_entry(entry)
     return RedirectResponse(url="/registry", status_code=303)
+
+
+@app.get("/registry/doctor", response_class=HTMLResponse)
+def registry_doctor_page(request: Request):
+    report = registry_doctor.run_doctor()
+    return templates.TemplateResponse(request, "registry_doctor.html", {"report": report})
+
+
+@app.get("/registry/portals/{portal_id}", response_class=HTMLResponse)
+def portal_detail(request: Request, portal_id: int):
+    portal = registry_store.get_portal(portal_id)
+    if portal is None:
+        raise HTTPException(404, "portal not found")
+    company = registry_store.get_company(portal.company_id)
+    provenance = registry_store.list_provenance_for_portal(portal_id)
+    migrations = registry_lifecycle.list_migrations_for_company(portal.company_id)
+    sibling_portals = [p for p in registry_store.list_portals_for_company(portal.company_id) if p.id != portal_id]
+    return templates.TemplateResponse(
+        request, "portal_detail.html",
+        {
+            "portal": portal, "company": company, "provenance": provenance,
+            "migrations": migrations, "sibling_portals": sibling_portals,
+        },
+    )
+
+
+def _portal_action_redirect(portal_id: int):
+    return RedirectResponse(url=f"/registry/portals/{portal_id}", status_code=303)
+
+
+@app.post("/registry/portals/{portal_id}/verify")
+def portal_verify(portal_id: int):
+    portal = registry_store.get_portal(portal_id)
+    if portal is None:
+        raise HTTPException(404, "portal not found")
+    company = registry_store.get_company(portal.company_id)
+    outcome = verify_portal(portal, company_display_name=company.display_name if company else "")
+    registry_lifecycle.apply_verification_outcome(portal_id, outcome)
+    registry_lifecycle.maybe_detect_migration(portal.company_id, registry_store.get_portal(portal_id))
+    registry_sync.sync_portal_to_operational_registry(portal_id)
+    return _portal_action_redirect(portal_id)
+
+
+# Alias for the dashboard's "Recheck careers page" action -- same underlying
+# bounded live verification, just a distinct route name for clarity in the UI.
+@app.post("/registry/portals/{portal_id}/recheck")
+def portal_recheck(portal_id: int):
+    return portal_verify(portal_id)
+
+
+@app.post("/registry/portals/{portal_id}/enable")
+def portal_enable(portal_id: int):
+    portal = registry_store.get_portal(portal_id)
+    if portal is None:
+        raise HTTPException(404, "portal not found")
+    registry_store.update_portal(portal_id, enabled=True)
+    registry_sync.sync_portal_to_operational_registry(portal_id)
+    return _portal_action_redirect(portal_id)
+
+
+@app.post("/registry/portals/{portal_id}/disable")
+def portal_disable(portal_id: int):
+    portal = registry_store.get_portal(portal_id)
+    if portal is None:
+        raise HTTPException(404, "portal not found")
+    registry_store.update_portal(portal_id, enabled=False)
+    registry_sync.sync_portal_to_operational_registry(portal_id)
+    return _portal_action_redirect(portal_id)
+
+
+@app.post("/registry/portals/{portal_id}/quarantine")
+def portal_quarantine(portal_id: int):
+    from app.registry.models import PortalStatus
+
+    portal = registry_store.get_portal(portal_id)
+    if portal is None:
+        raise HTTPException(404, "portal not found")
+    registry_store.update_portal(portal_id, verification_status=PortalStatus.QUARANTINED.value)
+    registry_sync.sync_portal_to_operational_registry(portal_id)
+    return _portal_action_redirect(portal_id)
 
 
 @app.get("/discovery-log")
