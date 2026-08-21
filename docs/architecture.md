@@ -79,3 +79,44 @@ except two intentional state-machine renames noted below):
 - Dashboard: agent ON/OFF status bar with last/next cycle + counters, `Fresh <6h` filter,
   `Review Required` filter, job-detail score breakdown table, pipeline history, and
   Regenerate Resume / Open Application actions.
+
+## Phase 3 — ATS coverage expansion + provider infrastructure
+
+See `docs/phase3-ats-coverage.md` for the full writeup. Summary of what was added on top
+of Phase 2, without weakening any existing safety rule (all 87 Phase 2 tests still pass
+unmodified):
+
+- `app/providers/capabilities.py` — `ProviderCapabilities`/`SupportLevel`, the single
+  source of truth every connector declares (`docs/provider-capabilities.md`).
+- `app/providers/http_client.py`, `concurrency.py` — centralized bounded
+  timeout/retry/backoff/response-size-cap HTTP behavior and bounded per-provider
+  concurrency, used by every connector.
+- 11 new connectors (`ashby.py`, `workable.py`, `smartrecruiters.py`, `bamboohr.py`,
+  `recruitee.py`, `breezy.py`, `comeet.py`, `workday.py`, `unsupported.py` for
+  Teamtailor/Jobvite/Pinpoint/JazzHR/iCIMS/Oracle).
+- `app/providers/detector.py` — URL → likely-ATS detection with confidence + tenant
+  extraction, never overclaiming certainty.
+- `app/registry/` (`models.py`, `repo.py`, `scheduling.py`) — SQLite-backed company/tenant
+  registry with deterministic adaptive polling and health computation
+  (`docs/company-registry.md`); foundation for Phase 4's mass importer.
+- `app/discovery/dedup.py::canonicalize_url` — URL canonicalization (strips tracking
+  params, normalizes host/trailing-slash) for cross-provider dedup; fingerprint fallback
+  now only applies when a job has no URL at all, to avoid wrongly merging two distinct
+  requisitions that happen to share title/company/location text.
+- `app/jobs_repo.py::record_provenance`/`list_provenance` — every source a job was
+  discovered from is retained (new `job_provenance` table), even after dedup.
+- New tables (all additive): `company_registry`, `job_provenance`, `discovery_log`.
+  `jobs` gained additive columns for the expanded normalized model (`company_identifier,
+  city, state, country, remote_status, department, team, office, source_url,
+  canonical_url, salary_currency, salary_period, provider_metadata, freshness_source`).
+  `discovery_cycles` is now allocated at cycle start and finalized at the end
+  (`start_discovery_cycle`/`finalize_discovery_cycle`) so per-tenant provenance/log rows
+  can reference the in-progress cycle.
+- `app/agent/cycle.py::run_discovery_cycle` now runs two phases per cycle: the unchanged
+  Phase 2 static-config path, then a registry-driven adaptive-polling path
+  (`_discover_from_registry`) that processes every due `company_registry` tenant, isolates
+  per-tenant failures (one failing tenant never blocks another), and records
+  latency/yield/health per tenant.
+- Dashboard: `/providers` (capability matrix + live tenant health), `/registry`
+  (per-tenant table + add-entry form + provider filter), `/discovery-log` (JSON), and a
+  "Source provenance" section on the job detail page.

@@ -62,3 +62,43 @@ resumes were exercised in this verification pass, not just the synthetic test fi
 - Default example sources (`GREENHOUSE_BOARD_TOKENS=gitlab`, `LEVER_COMPANY_SLUGS=leverdemo`) are illustrative only — most real postings on a general company board won't be CS/STEM roles or explicitly confirm sponsorship, and Lever's public demo account is fake data, not real jobs. Add real target-company board tokens/slugs in `.env` for meaningful discovery.
 - Neither Greenhouse nor Lever reliably expose structured salary or sponsorship fields; the compensation gate falls back to a regex JD-text extractor, and sponsorship still relies on explicit JD phrasing or the local known-sponsor list per the original hard-gate rules.
 - `MIN_MATCH_SCORE`/`FRESHNESS_MAX_DAYS`/board selection are blunt, user-tunable knobs, not adaptive.
+
+## Phase 3 — ATS coverage expansion (verified 2026-08-21)
+
+Full detail in `docs/phase3-ats-coverage.md`. This section covers only the acceptance
+criteria specific to Phase 3.
+
+| Criterion | Evidence |
+|---|---|
+| `pytest` passes | `pytest tests/ -q` -> **205 passed** (87 Phase 2, unmodified in behavior, + 118 new Phase 3 tests), 0 failures |
+| Provider capability model | `tests/test_provider_capabilities.py` — every provider's declared support level matches the documented matrix; no provider claims `submission_supported` |
+| HTTP hardening (timeout/retry/backoff/size-cap/no-infinite-retry) | `tests/test_http_client.py` — bounded retries verified to stop at exactly `max_retries+1` attempts, `Retry-After` respected, response-size cap enforced by both header and actual body length |
+| Provider detection + tenant extraction | `tests/test_provider_detector.py` (21 tests) — every target ATS's URL pattern, plus malformed/unknown-URL "no match" cases and confidence-never-overclaimed checks |
+| Ashby / Workable / SmartRecruiters connectors | `tests/test_ashby_provider.py`, `tests/test_workable_provider.py`, `tests/test_smartrecruiters_provider.py` — normalization, per-tenant error isolation, malformed payloads, pagination (Workable/SmartRecruiters), max_jobs respected |
+| Other ATS connectors (BambooHR/Recruitee/Breezy/Comeet) + unsupported stubs | `tests/test_other_ats_providers.py` — including BambooHR's documented no-description limitation and unsupported providers always returning `[]` without raising |
+| Workday connector | `tests/test_workday_provider.py` — normalization, pagination, detail fetch, `postedOn` never fabricated into a timestamp, clean failure on a blocked/403 tenant (scenario G) |
+| Company/tenant registry | `tests/test_registry.py` (16 tests) — CRUD, due-for-poll query, adaptive interval rules (speed up/slow down/back off), health thresholds, provider health aggregation, additive-migration safety with real pre-existing data |
+| Registry demo seed | `tests/test_registry_seed.py` — off by default, idempotent |
+| Cross-provider dedup + URL canonicalization | `tests/test_dedup_phase3.py` — tracking-param stripping, host/trailing-slash normalization, stable fingerprint; acceptance **scenario D** (same requisition from two providers -> one job, two provenance records); regression test proving two genuinely different requisitions with matching title/company/location are **not** wrongly merged when their stable IDs/URLs differ |
+| Freshness source | `tests/test_dedup_phase3.py` — **scenario F**: no `published_at` -> `freshness_source=FIRST_SEEN` |
+| Registry-driven adaptive discovery + tenant health | `tests/test_discovery_registry_cycle.py` — due-tenant processing, discovery_log rows, disabled tenants never polled, backoff prevents immediate repoll, **scenario E** (failing tenant marked degraded/failing, healthy tenant still processed same cycle), 25-tenant scheduling scale test |
+| Bounded concurrency | `tests/test_concurrency.py` — order preserved, concurrency cap actually enforced under a real thread-timing test |
+| Dashboard provider/registry routes | `tests/test_dashboard_phase3.py` — `/providers`, `/registry`, `/registry/add`, provider filter, `/discovery-log`, nav links present |
+| Full acceptance scenarios A/B/C/G | `tests/test_acceptance_scenarios_phase3.py` — Ashby/Workable/SmartRecruiters fixtures driven through the complete pipeline to `READY_TO_APPLY`/`REVIEW_REQUIRED` with provenance recorded and re-run dedup verified; Workday 403/blocked tenant produces zero jobs and zero fabricated errors |
+| DB migration safety | `tests/test_registry.py::test_migration_preserves_existing_jobs_and_state` — inserts a job + a discovery cycle, runs `init_db()` twice more, asserts both rows unchanged; new tables (`company_registry`, `job_provenance`, `discovery_log`) confirmed present via `sqlite_master` |
+| Live smoke tests | Real public endpoints, `max_jobs=5`, no auth/anti-bot bypass: **Greenhouse (gitlab), Lever (leverdemo), Ashby (ashby), SmartRecruiters (SmartRecruiters), Breezy (breezy), Workday (workday.wd5.myworkdayjobs.com/Workday)** all confirmed fetching + normalizing real live postings. Workable/Recruitee/BambooHR were attempted against guessed tenant names that did not resolve to a real account — fixture tests pass, but these three are **not** live-verified this session; do not claim they work against a real account until confirmed. No test-suite failure resulted from any live attempt (per policy, live results never gate the automated suite). |
+| `./start.sh` still works | Started directly; `/health`, `/`, `/providers`, `/registry` all returned HTTP 200; process cleanly stopped afterward |
+| No secrets committed | `candidate_data/`, `data/app.db`, `.env` all still gitignored (`git check-ignore -v` re-verified); `git status`/`git diff` reviewed — no data/output/secrets staged; nothing committed by this session (explicitly not asked to commit) |
+
+### Known Phase 3 limitations
+
+- Workable, Recruitee, and BambooHR connectors are verified only against fixtures in this
+  session — no live account was confirmed. Comeet requires a manually-sourced public embed
+  token and was not exercised live at all.
+- Teamtailor, Jobvite, Pinpoint, JazzHR, iCIMS, and Oracle Recruiting Cloud remain
+  UNSUPPORTED for discovery (detection + registry representation only) — no safe public
+  unauthenticated interface was found; see `docs/provider-capabilities.md` for the exact
+  reasoning per provider.
+- The company registry ships empty by default (an optional two-row illustrative seed exists
+  behind `REGISTRY_SEED_DEMO_DATA=false`) — a real Phase 4 bulk importer is required to
+  populate it at scale.

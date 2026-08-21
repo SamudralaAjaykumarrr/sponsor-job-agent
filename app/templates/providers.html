@@ -1,0 +1,63 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Providers — Sponsor Job Agent</title>
+  <style>
+    body { font-family: -apple-system, Arial, sans-serif; margin: 2rem; background: #f7f7f9; color: #1a1a1a; }
+    table { width: 100%; border-collapse: collapse; background: white; }
+    th, td { padding: 8px 10px; border-bottom: 1px solid #eee; text-align: left; font-size: 0.85rem; vertical-align: top; }
+    th { background: #fafafa; }
+    .tag { padding: 2px 8px; border-radius: 10px; font-size: 0.75rem; font-weight: 600; }
+    .tag-full { background: #d4edda; color: #155724; }
+    .tag-partial { background: #fff3cd; color: #856404; }
+    .tag-experimental { background: #e2d9f3; color: #4a2e8a; }
+    .tag-unsupported { background: #f8d7da; color: #721c24; }
+    .yes { color: #155724; }
+    .no { color: #999; }
+    .notes { max-width: 320px; color: #555; }
+    .health-healthy { color: #155724; }
+    .health-degraded { color: #856404; }
+    .health-failing { color: #721c24; }
+  </style>
+</head>
+<body>
+  <p><a href="/">&larr; back to dashboard</a> · <a href="/registry">Company registry</a></p>
+  <h1>Providers</h1>
+  <p>Runtime capability values, as actually implemented by this build -- not aspirational.</p>
+  <table>
+    <thead>
+      <tr>
+        <th>Provider</th><th>Support</th><th>Discovery</th><th>Detail fetch</th>
+        <th>Location</th><th>Published at</th><th>Salary</th><th>Employment type</th>
+        <th>Public / no creds</th><th>Tenants (healthy/degraded/failing)</th><th>Last success</th><th>Notes</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for p in providers %}
+      <tr>
+        <td><strong>{{ p.provider_name }}</strong></td>
+        <td><span class="tag tag-{{ p.support_level.lower() }}">{{ p.support_level }}</span></td>
+        <td class="{{ 'yes' if p.discovery_supported else 'no' }}">{{ 'Yes' if p.discovery_supported else 'No' }}</td>
+        <td class="{{ 'yes' if p.detail_fetch_supported else 'no' }}">{{ 'Yes' if p.detail_fetch_supported else 'No' }}</td>
+        <td class="{{ 'yes' if p.structured_location_supported else 'no' }}">{{ 'Yes' if p.structured_location_supported else 'No' }}</td>
+        <td class="{{ 'yes' if p.structured_published_at_supported else 'no' }}">{{ 'Yes' if p.structured_published_at_supported else 'No' }}</td>
+        <td class="{{ 'yes' if p.structured_salary_supported else 'no' }}">{{ 'Yes' if p.structured_salary_supported else 'No' }}</td>
+        <td class="{{ 'yes' if p.structured_employment_type_supported else 'no' }}">{{ 'Yes' if p.structured_employment_type_supported else 'No' }}</td>
+        <td class="{{ 'yes' if (p.public_interface and not p.requires_credentials) else 'no' }}">
+          {{ 'Yes' if (p.public_interface and not p.requires_credentials) else 'No' }}
+        </td>
+        <td>
+          {% if p.health %}
+            {{ p.health.tenants }}
+            (<span class="health-healthy">{{ p.health.healthy }}</span>/<span class="health-degraded">{{ p.health.degraded }}</span>/<span class="health-failing">{{ p.health.failing }}</span>)
+          {% else %}0{% endif %}
+        </td>
+        <td>{{ p.health.last_success_at if p.health else 'n/a' }}</td>
+        <td class="notes">{{ p.notes }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</body>
+</html>

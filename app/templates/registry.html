@@ -1,0 +1,75 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Company Registry — Sponsor Job Agent</title>
+  <style>
+    body { font-family: -apple-system, Arial, sans-serif; margin: 2rem; background: #f7f7f9; color: #1a1a1a; }
+    table { width: 100%; border-collapse: collapse; background: white; margin-top: 1rem; }
+    th, td { padding: 8px 10px; border-bottom: 1px solid #eee; text-align: left; font-size: 0.85rem; }
+    th { background: #fafafa; }
+    .tag { padding: 2px 8px; border-radius: 10px; font-size: 0.75rem; font-weight: 600; }
+    .tag-healthy { background: #d4edda; color: #155724; }
+    .tag-degraded { background: #fff3cd; color: #856404; }
+    .tag-failing { background: #f8d7da; color: #721c24; }
+    form.add { background: white; border: 1px solid #ddd; border-radius: 8px; padding: 1rem; margin-bottom: 1rem; }
+    form.add input, form.add select { padding: 4px; margin-right: 0.5rem; }
+    .filters a { margin-right: 0.75rem; padding: 4px 10px; border-radius: 14px; background: #eee; text-decoration: none; color: #333; font-size: 0.85rem; }
+    .filters a.active { background: #333; color: white; }
+  </style>
+</head>
+<body>
+  <p><a href="/">&larr; back to dashboard</a> · <a href="/providers">Providers</a></p>
+  <h1>Company / ATS Tenant Registry</h1>
+  <p>Foundation for Phase 4's mass importer -- SQLite-backed so scaling to 10k-100k+ rows is a data load, not a code change.</p>
+
+  <form class="add" method="post" action="/registry/add">
+    <h3>Add a company/tenant</h3>
+    <input type="text" name="company_name" placeholder="Company name" required>
+    <select name="provider" required>
+      {% for p in provider_names %}<option value="{{ p }}">{{ p }}</option>{% endfor %}
+    </select>
+    <input type="text" name="tenant_identifier" placeholder="Tenant identifier (board token / slug / etc.)" required>
+    <input type="text" name="careers_url" placeholder="Careers URL (optional)">
+    <input type="text" name="country" placeholder="Country (optional)">
+    <button type="submit">Add</button>
+  </form>
+
+  <div class="filters">
+    <a href="/registry" class="{{ 'active' if not provider_filter else '' }}">All</a>
+    {% for p in provider_names %}
+    <a href="/registry?provider={{ p }}" class="{{ 'active' if provider_filter == p else '' }}">{{ p }}</a>
+    {% endfor %}
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Company</th><th>Provider</th><th>Tenant</th><th>Enabled</th><th>Support</th>
+        <th>Health</th><th>Last success</th><th>Last failure</th><th>Consecutive failures</th>
+        <th>Avg yield</th><th>Next poll</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      {% set e = row.entry %}
+      <tr>
+        <td>{{ e.company_name }}</td>
+        <td>{{ e.provider }}</td>
+        <td>{{ e.tenant_identifier }}</td>
+        <td>{{ 'Yes' if e.enabled else 'No' }}</td>
+        <td>{{ e.support_level.value }}</td>
+        <td><span class="tag tag-{{ row.health.lower() }}">{{ row.health }}</span></td>
+        <td>{{ e.last_success_at or 'never' }}</td>
+        <td>{{ e.last_failure_at or 'never' }}</td>
+        <td>{{ e.consecutive_failures }}</td>
+        <td>{{ e.average_job_yield }}</td>
+        <td>{{ e.next_poll_at or 'due now' }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="11">No registry entries yet. Add one above, or wait for a future Phase 4 bulk importer.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</body>
+</html>

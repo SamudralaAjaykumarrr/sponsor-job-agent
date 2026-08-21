@@ -89,6 +89,16 @@
     <p style="font-size:0.8rem;color:#666;">Opening the external application link never marks a job Applied automatically -- use this form once you've actually applied.</p>
   </div>
 
+  {% if provenance %}
+  <div class="card">
+    <h3>Source provenance</h3>
+    {% for p in provenance %}
+    <div class="history-item">{{ p.provider }} · job_id={{ p.provider_job_id or 'n/a' }} · first seen {{ p.first_seen_at }} · last seen {{ p.last_seen_at }}
+      {% if p.source_url %} · <a href="{{ p.source_url }}" target="_blank" rel="noopener">source</a>{% endif %}</div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
   {% if history %}
   <div class="card">
     <h3>Pipeline history</h3>

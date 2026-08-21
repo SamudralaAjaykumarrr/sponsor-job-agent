@@ -9,7 +9,10 @@ _COLUMNS = [
     "title", "company", "location", "description", "url", "source",
     "provider", "external_job_id", "employment_type", "salary_min", "salary_max",
     "dedup_fingerprint",
-    "published_at", "first_seen_at", "last_seen_at",
+    "company_identifier", "city", "state", "country", "remote_status",
+    "department", "team", "office", "source_url", "canonical_url",
+    "salary_currency", "salary_period", "provider_metadata",
+    "published_at", "first_seen_at", "last_seen_at", "freshness_source",
     "work_arrangement", "sponsorship_status", "sponsorship_evidence",
     "freshness_tier", "freshness_minutes",
     "technical_match_score", "matched_skills", "gap_skills", "score_breakdown",
@@ -72,6 +75,20 @@ def get_job_by_fingerprint(fingerprint: str) -> Optional[Job]:
         row = conn.execute(
             "SELECT * FROM jobs WHERE dedup_fingerprint = ? ORDER BY id ASC LIMIT 1",
             (fingerprint,),
+        ).fetchone()
+        return _row_to_job(row) if row else None
+
+
+def get_job_by_canonical_url(canonical_url: str) -> Optional[Job]:
+    """Cross-provider dedup key: the same requisition syndicated from two
+    sources (or migrated to a new ATS) should still resolve to one job row
+    when its canonical apply/source URL matches."""
+    if not canonical_url:
+        return None
+    with db_session() as conn:
+        row = conn.execute(
+            "SELECT * FROM jobs WHERE canonical_url = ? ORDER BY id ASC LIMIT 1",
+            (canonical_url,),
         ).fetchone()
         return _row_to_job(row) if row else None
 
@@ -140,6 +157,47 @@ def insert_discovery_cycle(summary: dict) -> int:
         return cur.lastrowid
 
 
+def start_discovery_cycle(started_at: str, providers: list[str]) -> int:
+    """Allocates a discovery_cycles row up front (before providers are
+    fetched) so per-tenant provenance/discovery_log rows can reference a
+    cycle_id while the cycle is still running. finalize_discovery_cycle fills
+    in the final stats once the cycle completes."""
+    with db_session() as conn:
+        cur = conn.execute(
+            """INSERT INTO discovery_cycles (started_at, providers, errors)
+               VALUES (?, ?, '[]')""",
+            (started_at, ",".join(providers)),
+        )
+        return cur.lastrowid
+
+
+def finalize_discovery_cycle(cycle_id: int, summary: dict) -> None:
+    with db_session() as conn:
+        conn.execute(
+            """UPDATE discovery_cycles SET
+               finished_at = ?, providers = ?, jobs_fetched = ?, jobs_new = ?,
+               jobs_deduplicated = ?, jobs_analyzed = ?, confirmed_sponsors = ?,
+               likely_sponsors = ?, hard_skips = ?, packages_generated = ?,
+               errors = ?, duration_seconds = ?
+               WHERE id = ?""",
+            (
+                summary.get("finished_at"),
+                ",".join(summary.get("providers", [])),
+                summary.get("jobs_fetched", 0),
+                summary.get("jobs_new", 0),
+                summary.get("jobs_deduplicated", 0),
+                summary.get("jobs_analyzed", 0),
+                summary.get("confirmed_sponsors", 0),
+                summary.get("likely_sponsors", 0),
+                summary.get("hard_skips", 0),
+                summary.get("packages_generated", 0),
+                json.dumps(summary.get("errors", [])),
+                summary.get("duration_seconds", 0.0),
+                cycle_id,
+            ),
+        )
+
+
 def list_discovery_cycles(limit: int = 20) -> list[dict]:
     with db_session() as conn:
         rows = conn.execute(
@@ -168,4 +226,76 @@ def get_state_history(job_id: int) -> list[dict]:
             "SELECT * FROM application_state_history WHERE job_id = ? ORDER BY id ASC",
             (job_id,),
         ).fetchall()
+        return [dict(r) for r in rows]
+
+
+# --- Provenance: retain every source a job was discovered from, even when it
+# dedupes into one canonical job row. ---------------------------------------
+
+def record_provenance(
+    job_id: int,
+    provider: str,
+    provider_job_id: str,
+    source_url: str = "",
+    registry_id: Optional[int] = None,
+    discovery_cycle_id: Optional[int] = None,
+) -> None:
+    now = utcnow()
+    with db_session() as conn:
+        existing = conn.execute(
+            "SELECT id FROM job_provenance WHERE job_id = ? AND provider = ? AND provider_job_id = ?",
+            (job_id, provider, provider_job_id),
+        ).fetchone()
+        if existing:
+            conn.execute(
+                "UPDATE job_provenance SET last_seen_at = ?, discovery_cycle_id = ? WHERE id = ?",
+                (now, discovery_cycle_id, existing["id"]),
+            )
+            return
+        conn.execute(
+            """INSERT INTO job_provenance
+               (job_id, provider, registry_id, source_url, provider_job_id,
+                discovery_cycle_id, first_seen_at, last_seen_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (job_id, provider, registry_id, source_url, provider_job_id, discovery_cycle_id, now, now),
+        )
+
+
+def list_provenance(job_id: int) -> list[dict]:
+    with db_session() as conn:
+        rows = conn.execute(
+            "SELECT * FROM job_provenance WHERE job_id = ? ORDER BY id ASC", (job_id,)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+# --- Discovery log: per-tenant/provider observability for one cycle. -------
+
+def insert_discovery_log(entry: dict) -> int:
+    with db_session() as conn:
+        cur = conn.execute(
+            """INSERT INTO discovery_log
+               (cycle_id, provider, company, tenant, started_at, finished_at,
+                latency_ms, jobs_received, jobs_new, jobs_duplicate, jobs_filtered, error_type)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                entry.get("cycle_id"), entry.get("provider", ""), entry.get("company", ""),
+                entry.get("tenant", ""), entry.get("started_at"), entry.get("finished_at"),
+                entry.get("latency_ms", 0.0), entry.get("jobs_received", 0), entry.get("jobs_new", 0),
+                entry.get("jobs_duplicate", 0), entry.get("jobs_filtered", 0), entry.get("error_type", ""),
+            ),
+        )
+        return cur.lastrowid
+
+
+def list_discovery_log(limit: int = 50, provider: Optional[str] = None) -> list[dict]:
+    query = "SELECT * FROM discovery_log"
+    params: list = []
+    if provider:
+        query += " WHERE provider = ?"
+        params.append(provider)
+    query += " ORDER BY id DESC LIMIT ?"
+    params.append(limit)
+    with db_session() as conn:
+        rows = conn.execute(query, params).fetchall()
         return [dict(r) for r in rows]

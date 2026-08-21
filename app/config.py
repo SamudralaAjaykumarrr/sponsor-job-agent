@@ -61,6 +61,16 @@ def _env_list(name: str, default: list[str]) -> list[str]:
     return [x.strip() for x in v.split(",") if x.strip()]
 
 
+def _env_float(name: str, default: float) -> float:
+    v = os.getenv(name)
+    if v is None or not v.strip():
+        return default
+    try:
+        return float(v)
+    except ValueError:
+        return default
+
+
 # --- Autonomous agent configuration -----------------------------------------
 # Safe defaults: agent OFF until the user opts in (per "Default mode should be
 # ASSIST, not blind auto-apply" and "Keep safe defaults").
@@ -76,3 +86,43 @@ ENABLED_PROVIDERS = _env_list("ENABLED_PROVIDERS", ["greenhouse", "lever"])
 # relying on them; add/remove company slugs in .env as desired.
 GREENHOUSE_BOARD_TOKENS = _env_list("GREENHOUSE_BOARD_TOKENS", ["gitlab"])
 LEVER_COMPANY_SLUGS = _env_list("LEVER_COMPANY_SLUGS", ["leverdemo"])
+
+# Phase 3 additional connectors -- comma-separated tenant identifiers per
+# provider. Empty by default; the provider only does anything if both
+# enabled (ENABLED_PROVIDERS) AND given at least one tenant identifier here.
+ASHBY_JOB_BOARD_NAMES = _env_list("ASHBY_JOB_BOARD_NAMES", [])
+WORKABLE_ACCOUNT_SUBDOMAINS = _env_list("WORKABLE_ACCOUNT_SUBDOMAINS", [])
+SMARTRECRUITERS_COMPANY_IDS = _env_list("SMARTRECRUITERS_COMPANY_IDS", [])
+BAMBOOHR_SUBDOMAINS = _env_list("BAMBOOHR_SUBDOMAINS", [])
+RECRUITEE_SUBDOMAINS = _env_list("RECRUITEE_SUBDOMAINS", [])
+BREEZY_SUBDOMAINS = _env_list("BREEZY_SUBDOMAINS", [])
+TEAMTAILOR_SUBDOMAINS = _env_list("TEAMTAILOR_SUBDOMAINS", [])
+# Comeet requires the public embed token shown on the company's own careers
+# page (not a secret) -- configure as "company:token" pairs.
+COMEET_COMPANY_TOKENS = _env_list("COMEET_COMPANY_TOKENS", [])
+# Workday tenants vary too much to guess a URL pattern -- each entry is a full
+# base URL of the form "https://{tenant}.{wdHost}/wday/cxs/{tenant}/{site}".
+WORKDAY_TENANT_BASE_URLS = _env_list("WORKDAY_TENANT_BASE_URLS", [])
+
+# --- Provider HTTP / pagination / scheduling hardening ----------------------
+PROVIDER_HTTP_TIMEOUT_SECONDS = _env_float("PROVIDER_HTTP_TIMEOUT_SECONDS", 10.0)
+PROVIDER_MAX_RETRIES = _env_int("PROVIDER_MAX_RETRIES", 2)
+PROVIDER_MAX_RESPONSE_BYTES = _env_int("PROVIDER_MAX_RESPONSE_BYTES", 5_000_000)
+PROVIDER_CONCURRENCY_LIMIT = _env_int("PROVIDER_CONCURRENCY_LIMIT", 5)
+PROVIDER_USER_AGENT = os.getenv(
+    "PROVIDER_USER_AGENT",
+    "SponsorJobAgent/1.0 (+local job-discovery agent; contact=candidate; respects robots/ToS)",
+)
+
+MAX_PAGES_PER_PROVIDER = _env_int("MAX_PAGES_PER_PROVIDER", 20)
+MAX_JOBS_PER_PROVIDER = _env_int("MAX_JOBS_PER_PROVIDER", 500)
+
+PROVIDER_DEFAULT_POLL_MINUTES = _env_int("PROVIDER_DEFAULT_POLL_MINUTES", 15)
+PROVIDER_MIN_POLL_MINUTES = _env_int("PROVIDER_MIN_POLL_MINUTES", 10)
+PROVIDER_MAX_POLL_MINUTES = _env_int("PROVIDER_MAX_POLL_MINUTES", 240)
+
+# Whether to auto-populate a handful of illustrative demo entries into the
+# company_registry table on first init. Off by default -- the registry is
+# meant to be populated deliberately (Phase 4 importer), not with fabricated
+# example companies in a real deployment.
+REGISTRY_SEED_DEMO_DATA = _env_bool("REGISTRY_SEED_DEMO_DATA", False)

@@ -78,11 +78,28 @@ login, CAPTCHA-bypass, or anti-bot evasion are explicitly out of scope and will 
 
 ### Adding a new provider
 
+See `docs/provider-development.md` for the full Phase 3 checklist (capability model,
+hardened HTTP client, pagination safety, required tests). Short version:
+
 1. Subclass `JobProvider` in a new `app/providers/<name>.py`, implement
-   `fetch_jobs(self, max_jobs) -> list[RawJobPosting]`, and isolate your own per-source errors
-   internally (try/except per board/company, log + continue).
-2. Register a factory in `app/providers/registry.py::_PROVIDER_FACTORIES`.
-3. Add the name to `ENABLED_PROVIDERS` in `.env`.
+   `fetch_jobs(self, max_jobs) -> list[RawJobPosting]`, isolate your own per-source errors
+   internally (try/except per board/company, log + continue), and declare a
+   `ProviderCapabilities` class attribute that matches what the code actually does.
+2. Register a factory in `app/providers/registry.py::_PROVIDER_FACTORIES` (and the class in
+   `_PROVIDER_CLASSES`).
+3. Add the name to `ENABLED_PROVIDERS` and its tenant-list variable in `.env`.
+
+## Phase 3 — expanded provider coverage
+
+Phase 2 shipped Greenhouse + Lever. Phase 3 (`docs/phase3-ats-coverage.md`) added Ashby,
+Workable, SmartRecruiters, BambooHR, Recruitee, Breezy HR, Comeet, and Workday (varying
+support levels — see `docs/provider-capabilities.md`), plus a provider-detector, a
+SQLite-backed company/tenant registry with adaptive per-tenant polling
+(`docs/company-registry.md`), and cross-provider dedup with provenance tracking. The
+discovery cycle unchanged for the static `ENABLED_PROVIDERS` path described above; it
+additionally now polls any `company_registry` tenants that are due, in the same cycle,
+with per-tenant failure isolation and health tracking. None of this touches sponsorship
+semantics, ASSIST-only behavior, or the hard gates described below.
 
 ## Sponsorship semantics (unchanged, strengthened)
 

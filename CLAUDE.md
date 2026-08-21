@@ -259,3 +259,26 @@ Do not ask routine coding questions.
 Only stop if a genuinely personal factual answer is required.
 
 Never report a feature as working unless it was actually tested.
+
+## Provider Architecture Rules (recorded after Phase 3, apply to all future phases)
+
+These are durable rules the provider/discovery-infrastructure layer must keep obeying as
+coverage scales toward Phase 4's 10,000–100,000+ tenant registry:
+
+- Every provider connector declares a `ProviderCapabilities` (`app/providers/capabilities.py`)
+  that must match what the code actually does. A provider is FULL/PARTIAL/EXPERIMENTAL only
+  if its discovery has been implemented and tested; otherwise it is UNSUPPORTED with a
+  documented reason. Never inflate a support level to look more complete than it is.
+  `submission_supported` is always `False` — this layer discovers jobs, it never submits.
+- Only public, unauthenticated, ToS-respecting interfaces are implemented. No CAPTCHA
+  bypass, no anti-bot circumvention, no credential theft, no stealth browsing, no
+  auth/rate-limit evasion, no falsified headers/tokens — for any provider, at any scale.
+- Cross-provider dedup checks stable provider ID first, then canonical URL, and falls back
+  to a company/title/location fingerprint **only when a job has no URL at all** — a
+  fingerprint match must never override a mismatched stable ID or canonical URL, since two
+  genuinely different requisitions can share identical title/company/location text.
+- A provider/tenant must never fabricate a field it doesn't actually expose (e.g. a relative
+  "Posted 3 days ago" string is not a timestamp) — leave it null and let downstream logic
+  (freshness fallback to `first_seen_at`, sponsorship `UNKNOWN`) handle the gap safely.
+- One failing tenant/provider must never abort discovery for any other tenant/provider in
+  the same cycle.

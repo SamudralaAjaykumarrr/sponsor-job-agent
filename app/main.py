@@ -13,14 +13,28 @@ from app.applications.tracker import can_transition
 from app.candidate.profile import load_profile, missing_fields
 from app.config import BASE_DIR
 from app.db import init_db
-from app.jobs_repo import get_job, get_state_history, list_discovery_cycles, list_jobs, record_state_change
+from app.jobs_repo import (
+    get_job,
+    get_state_history,
+    list_discovery_cycles,
+    list_discovery_log,
+    list_jobs,
+    list_provenance,
+    record_state_change,
+)
 from app.models import ApplicationMode, ApplicationState, Job
 from app.pipeline import generate_assist_outputs, ingest_and_process
+from app.providers.registry import all_capabilities, all_provider_names
+from app.registry.models import CompanyRegistryEntry
+from app.registry.repo import insert_entry, list_entries, provider_health_summary, seed_demo_entries
+from app.registry.scheduling import compute_health
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
+    if config.REGISTRY_SEED_DEMO_DATA:
+        seed_demo_entries()
     scheduler.start()
     yield
     await scheduler.stop()
@@ -89,10 +103,56 @@ def job_detail(request: Request, job_id: int):
         except json.JSONDecodeError:
             score_breakdown = {}
     history = get_state_history(job_id)
+    provenance = list_provenance(job_id)
     return templates.TemplateResponse(
         request, "job_detail.html",
-        {"job": job, "score_breakdown": score_breakdown, "history": history},
+        {"job": job, "score_breakdown": score_breakdown, "history": history, "provenance": provenance},
     )
+
+
+@app.get("/providers", response_class=HTMLResponse)
+def providers_page(request: Request):
+    health_by_provider = {h["provider"]: h for h in provider_health_summary()}
+    rows = []
+    for cap in all_capabilities():
+        d = cap.as_dict()
+        d["health"] = health_by_provider.get(cap.provider_name)
+        rows.append(d)
+    return templates.TemplateResponse(request, "providers.html", {"providers": rows})
+
+
+@app.get("/registry", response_class=HTMLResponse)
+def registry_page(request: Request, provider: str = ""):
+    entries = list_entries(provider=provider or None)
+    rows = [
+        {"entry": e, "health": compute_health(e.consecutive_failures, e.last_success_at).value}
+        for e in entries
+    ]
+    return templates.TemplateResponse(
+        request, "registry.html",
+        {"rows": rows, "provider_filter": provider, "provider_names": all_provider_names()},
+    )
+
+
+@app.post("/registry/add")
+def registry_add(
+    company_name: str = Form(...),
+    provider: str = Form(...),
+    tenant_identifier: str = Form(...),
+    careers_url: str = Form(""),
+    country: str = Form(""),
+):
+    entry = CompanyRegistryEntry(
+        company_name=company_name, provider=provider, tenant_identifier=tenant_identifier,
+        careers_url=careers_url, country=country,
+    )
+    insert_entry(entry)
+    return RedirectResponse(url="/registry", status_code=303)
+
+
+@app.get("/discovery-log")
+def discovery_log_view(provider: str = "", limit: int = 50):
+    return JSONResponse(list_discovery_log(limit=limit, provider=provider or None))
 
 
 @app.post("/jobs/ingest")

@@ -31,6 +31,11 @@ class FreshnessTier(str, Enum):
     LOWER = "LOWER"           # older / unknown
 
 
+class FreshnessSource(str, Enum):
+    PUBLISHED_AT = "PUBLISHED_AT"
+    FIRST_SEEN = "FIRST_SEEN"
+
+
 class ApplicationState(str, Enum):
     NEW = "NEW"
     DISCOVERED = "DISCOVERED"
@@ -91,9 +96,26 @@ class Job(BaseModel):
     salary_max: Optional[float] = None
     dedup_fingerprint: str = ""
 
+    # Phase 3 normalized-model fields, all optional -- None/"" when a provider
+    # doesn't expose the field. Never fabricated.
+    company_identifier: str = ""
+    city: str = ""
+    state: str = ""
+    country: str = ""
+    remote_status: str = ""
+    department: str = ""
+    team: str = ""
+    office: str = ""
+    source_url: str = ""
+    canonical_url: str = ""
+    salary_currency: str = ""
+    salary_period: str = ""
+    provider_metadata: str = "{}"  # JSON-encoded, provider-specific extras
+
     published_at: Optional[str] = None
     first_seen_at: str = Field(default_factory=utcnow)
     last_seen_at: str = Field(default_factory=utcnow)
+    freshness_source: FreshnessSource = FreshnessSource.FIRST_SEEN
 
     work_arrangement: WorkArrangement = WorkArrangement.UNKNOWN
     sponsorship_status: SponsorshipStatus = SponsorshipStatus.UNKNOWN

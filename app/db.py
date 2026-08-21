@@ -71,6 +71,71 @@ CREATE TABLE IF NOT EXISTS application_state_history (
     changed_at TEXT NOT NULL,
     actor TEXT DEFAULT 'system'
 );
+
+CREATE TABLE IF NOT EXISTS company_registry (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    company_name TEXT NOT NULL,
+    company_domain TEXT DEFAULT '',
+    provider TEXT NOT NULL,
+    tenant_identifier TEXT NOT NULL,
+    careers_url TEXT DEFAULT '',
+    country TEXT DEFAULT '',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    verified_at TEXT,
+    last_success_at TEXT,
+    last_failure_at TEXT,
+    last_error TEXT DEFAULT '',
+    consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    support_level TEXT NOT NULL DEFAULT 'FULL',
+    notes TEXT DEFAULT '',
+
+    last_polled_at TEXT,
+    next_poll_at TEXT,
+    average_job_yield REAL DEFAULT 0.0,
+    average_latency_ms REAL DEFAULT 0.0,
+    poll_interval_minutes INTEGER DEFAULT 15,
+
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_registry_provider_tenant
+    ON company_registry (provider, tenant_identifier);
+CREATE INDEX IF NOT EXISTS idx_registry_next_poll_at ON company_registry (next_poll_at);
+
+CREATE TABLE IF NOT EXISTS job_provenance (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id INTEGER NOT NULL,
+    provider TEXT NOT NULL,
+    registry_id INTEGER,
+    source_url TEXT DEFAULT '',
+    provider_job_id TEXT DEFAULT '',
+    discovery_cycle_id INTEGER,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    UNIQUE(job_id, provider, provider_job_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_provenance_job_id ON job_provenance (job_id);
+
+CREATE TABLE IF NOT EXISTS discovery_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    cycle_id INTEGER,
+    provider TEXT NOT NULL,
+    company TEXT DEFAULT '',
+    tenant TEXT DEFAULT '',
+    started_at TEXT NOT NULL,
+    finished_at TEXT,
+    latency_ms REAL DEFAULT 0.0,
+    jobs_received INTEGER DEFAULT 0,
+    jobs_new INTEGER DEFAULT 0,
+    jobs_duplicate INTEGER DEFAULT 0,
+    jobs_filtered INTEGER DEFAULT 0,
+    error_type TEXT DEFAULT ''
+);
+
+CREATE INDEX IF NOT EXISTS idx_discovery_log_provider ON discovery_log (provider);
+CREATE INDEX IF NOT EXISTS idx_discovery_log_cycle_id ON discovery_log (cycle_id);
 """
 
 # Additive columns introduced after the initial `jobs` table shipped. Applied
@@ -85,6 +150,21 @@ JOBS_ADDITIVE_COLUMNS = [
     ("last_seen_at", "TEXT"),
     ("freshness_minutes", "REAL"),
     ("score_breakdown", "TEXT DEFAULT '{}'"),
+    # Phase 3 additive columns.
+    ("company_identifier", "TEXT DEFAULT ''"),
+    ("city", "TEXT DEFAULT ''"),
+    ("state", "TEXT DEFAULT ''"),
+    ("country", "TEXT DEFAULT ''"),
+    ("remote_status", "TEXT DEFAULT ''"),
+    ("department", "TEXT DEFAULT ''"),
+    ("team", "TEXT DEFAULT ''"),
+    ("office", "TEXT DEFAULT ''"),
+    ("source_url", "TEXT DEFAULT ''"),
+    ("canonical_url", "TEXT DEFAULT ''"),
+    ("salary_currency", "TEXT DEFAULT ''"),
+    ("salary_period", "TEXT DEFAULT ''"),
+    ("provider_metadata", "TEXT DEFAULT '{}'"),
+    ("freshness_source", "TEXT DEFAULT 'FIRST_SEEN'"),
 ]
 
 
@@ -105,6 +185,10 @@ def _migrate_jobs_table(conn: sqlite3.Connection) -> None:
         "ON jobs (provider, external_job_id) WHERE external_job_id != ''"
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_dedup_fingerprint ON jobs (dedup_fingerprint)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_canonical_url ON jobs (canonical_url)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_first_seen_at ON jobs (first_seen_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_published_at ON jobs (published_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_jobs_application_state ON jobs (application_state)")
     conn.execute(
         "UPDATE jobs SET last_seen_at = first_seen_at WHERE last_seen_at IS NULL"
     )
