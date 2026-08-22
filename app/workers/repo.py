@@ -4,13 +4,12 @@ store (Phase 3/4 domain tables) -- this module is purely about *execution*
 bookkeeping. All list functions are bounded (LIMIT), per CLAUDE.md's
 high-volume-operations rules carried forward from Phase 4."""
 
-import json
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
 from app.db import db_session
-from app.workers.models import AttemptRecord, AttemptStatus, WorkerStatus
+from app.workers.models import AttemptRecord, AttemptStatus
 
 _MAX_ATTEMPTS_PER_PORTAL = 100
 

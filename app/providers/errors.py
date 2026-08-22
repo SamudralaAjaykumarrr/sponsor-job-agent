@@ -34,7 +34,7 @@ always constructs a single-tenant instance), that is exactly precise: one
 tenant, one outcome, unambiguous."""
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional

@@ -19,7 +19,7 @@ NAVIGATION_SAFE apply-entry hop -- the same one-hop-at-a-time, freshly-
 re-validated safety model `app.applications.browser_assist.
 _advance_through_apply_entry` already uses for a real session."""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
 from urllib.parse import urlparse

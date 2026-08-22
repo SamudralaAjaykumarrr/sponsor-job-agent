@@ -24,7 +24,7 @@ Every row here must be updated only from a genuine, dated observation (a
 live browser open + `app.applications.browser_runtime._detect_fields()`
 result, or an honest "not attempted") -- never inflated."""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 
 

@@ -5,7 +5,6 @@ Every number here is a live query; nothing is estimated or extrapolated."""
 
 from datetime import datetime, timedelta, timezone
 from statistics import quantiles
-from typing import Optional
 
 from app.db import db_session
 from app.registry import repo as registry_repo

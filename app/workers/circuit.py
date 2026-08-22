@@ -21,7 +21,6 @@ from typing import Optional
 
 from app import config
 from app.db import db_session
-from app.workers.models import CircuitState
 
 # Rolling-window sample size for the failure-rate evaluation. Deliberately a
 # fixed internal constant (not user-configurable) -- CLAUDE.md's exposed

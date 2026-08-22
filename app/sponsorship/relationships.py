@@ -6,7 +6,6 @@ module exists for display (dashboard/company page) and doctor contradiction
 checks only."""
 
 from datetime import datetime, timezone
-from typing import Optional
 
 from app.db import db_session
 from app.sponsorship.schema import RelationshipType

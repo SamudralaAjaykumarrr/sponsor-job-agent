@@ -7,7 +7,7 @@ the shared backend is actually the one configured -- i.e. can this process
 actually do useful work right now. Never leaks DB credentials (readiness
 details expose backend kind and schema version only, never the DSN)."""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from app import migrations
 from app.db import backend as db_backend

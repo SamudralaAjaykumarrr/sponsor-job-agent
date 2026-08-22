@@ -14,7 +14,7 @@ other capability-tracking module in this project (CLAUDE.md Phase 11 section
 43's "never auto-disable a known-safe capability", extended here)."""
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 

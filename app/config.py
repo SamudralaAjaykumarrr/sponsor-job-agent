@@ -485,3 +485,20 @@ ASSIST_PROVIDER_MAX_RETRIES = _env_int("ASSIST_PROVIDER_MAX_RETRIES", 2)
 RESUME_OPTIMIZATION_ENABLED = _env_bool("RESUME_OPTIMIZATION_ENABLED", False)
 RESUME_OPTIMIZATION_INTERVAL_SECONDS = _env_int("RESUME_OPTIMIZATION_INTERVAL_SECONDS", 300)
 RESUME_OPTIMIZATION_BATCH_SIZE = _env_int("RESUME_OPTIMIZATION_BATCH_SIZE", 5)
+
+# =============================================================================
+# CLAUDE.md Phase 15: dashboard result bounding.
+# =============================================================================
+
+# CLAUDE.md Phase 15 section 42/44: a Phase 15 large-state benchmark
+# (scripts/phase15_release_benchmark.py) measured the unified dashboard's
+# rendered pipeline table growing unboundedly with total job count -- 24MB
+# of HTML / 5.7s render at 50,000 synthetic jobs. Summary card counts
+# (app.pipeline_dashboard.compute_pipeline_summary) still scan every job --
+# that's a deliberate, documented Phase 14 tradeoff for this project's
+# realistic single-user scale (see that function's own docstring) and is
+# NOT capped here. This constant only bounds the actual rendered table rows
+# (already sorted by priority_score DESC, so capping keeps the top-N most
+# relevant/actionable jobs) -- the dashboard shows a "showing top N of M"
+# note when the true matching count exceeds this.
+DASHBOARD_MAX_TABLE_ROWS = _env_int("DASHBOARD_MAX_TABLE_ROWS", 500)

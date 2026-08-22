@@ -177,7 +177,7 @@ def dashboard(
     job_ids = [j.id for j in jobs if j.id is not None]
     quality_by_job = resume_optimizer_repo.get_quality_reports_for_jobs(job_ids)
     variant_by_job = resume_optimizer_repo.get_current_variants_for_jobs(job_ids)
-    active_execution_by_job = {jid: applications_repo.get_active_execution_for_job(jid) for jid in job_ids}
+    active_execution_by_job = applications_repo.get_active_executions_for_jobs(job_ids)
 
     def resume_status_of(jid: int) -> str:
         variant = variant_by_job.get(jid)
@@ -187,6 +187,16 @@ def dashboard(
         jobs = [j for j in jobs if resume_status_of(j.id) == resume_status]
     if needs_action_only:
         jobs = [j for j in jobs if (active_execution_by_job.get(j.id) or {}).get("requires_user_action")]
+
+    # CLAUDE.md Phase 15 section 42/44: bound the rendered table to the
+    # top-N matching jobs (already priority-sorted) rather than rendering
+    # every match -- a large-state benchmark measured unbounded rendering
+    # growing to tens of MB of HTML at high job counts. Applied last, after
+    # every filter above, so resume_status/needs_action_only still search
+    # the full matching set, never just the first page of it.
+    total_matching = len(jobs)
+    if total_matching > config.DASHBOARD_MAX_TABLE_ROWS:
+        jobs = jobs[: config.DASHBOARD_MAX_TABLE_ROWS]
 
     pipeline_rows = [
         {
@@ -205,6 +215,8 @@ def dashboard(
         {
             "jobs": jobs, "pipeline_rows": pipeline_rows, "filters": filters,
             "summary": summary,
+            "total_matching": total_matching,
+            "table_row_cap": config.DASHBOARD_MAX_TABLE_ROWS,
             "missing_profile_fields": missing[:10],
             "missing_profile_count": len(missing),
             "agent": agent_state.get_status(),
@@ -1134,6 +1146,17 @@ def readiness():
         },
         status_code=status_code,
     )
+
+
+@app.get("/version")
+def version_endpoint():
+    """Release/build metadata (CLAUDE.md Phase 15 sections 17-18). No host
+    secrets, no DSN, no DATABASE_URL -- app.version.release_info() only ever
+    assembles identifiers already computed from source (schema version,
+    optimizer/classifier versions, provider capability fingerprint)."""
+    from app.version import release_info
+
+    return release_info()
 
 
 @app.get("/metrics")

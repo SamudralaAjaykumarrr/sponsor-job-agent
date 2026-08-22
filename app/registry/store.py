@@ -15,12 +15,8 @@ from app.db import db_session
 from app.registry.models import (
     CareerPortal,
     Company,
-    DiscoveryStatus,
-    IdentityStatus,
-    PortalStatus,
     RegistryProvenance,
 )
-from app.providers.capabilities import SupportLevel
 
 
 def utcnow() -> str:

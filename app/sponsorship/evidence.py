@@ -24,7 +24,7 @@ from pydantic import BaseModel, Field
 
 from app.db import db_session
 from app.registry.normalize import normalize_company_name, normalize_domain
-from app.sponsorship.schema import SourceQuality, SourceType, source_quality_for
+from app.sponsorship.schema import SourceType, source_quality_for
 
 # Bounded -- never store an unbounded raw snippet.
 _SNIPPET_MAX_CHARS = 500

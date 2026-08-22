@@ -7,7 +7,6 @@ without any caller code changing. See docs/worker-architecture.md's "Future
 queue backend" section for exactly what that swap would involve."""
 
 from abc import ABC, abstractmethod
-from typing import Optional
 
 from app.workers import leasing
 from app.workers.models import LeasedWorkItem, PortalType

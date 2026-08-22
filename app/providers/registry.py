@@ -92,7 +92,6 @@ def workday_base_url(tenant_identifier: str) -> str:
 def build_provider_for_tenant(provider_name: str, tenant_identifier: str) -> JobProvider | None:
     """Builds a single-tenant provider instance for a company_registry row,
     for the adaptive per-tenant discovery path."""
-    factory = _PROVIDER_FACTORIES.get(provider_name.strip().lower())
     cls = _PROVIDER_CLASSES.get(provider_name.strip().lower())
     if cls is None:
         return None

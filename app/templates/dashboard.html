@@ -153,6 +153,13 @@
     <a href="/?full_time_only=false">Include non-full-time (audit)</a>
   </div>
 
+  {% if total_matching is defined and total_matching > pipeline_rows|length %}
+  <p style="font-size:0.85rem;color:#666;">
+    Showing top {{ pipeline_rows|length }} of {{ total_matching }} matching jobs (sorted by priority) --
+    use filters above to narrow further.
+  </p>
+  {% endif %}
+
   <table>
     <thead>
       <tr>

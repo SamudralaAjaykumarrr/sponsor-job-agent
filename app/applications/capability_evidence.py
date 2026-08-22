@@ -10,7 +10,7 @@ auto-disables a known-safe capability (CLAUDE.md Phase 11 section 43) --
 staleness is surfaced for review, not acted on automatically."""
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
 

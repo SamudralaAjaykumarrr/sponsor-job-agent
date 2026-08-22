@@ -4,7 +4,6 @@ evidence (never on a single transient blip), bounded health-event history,
 and deterministic ATS-migration detection. See CLAUDE.md Phase 4 sections
 11, 17, 18, 24."""
 
-import json
 import logging
 from datetime import datetime, timezone
 from typing import Optional

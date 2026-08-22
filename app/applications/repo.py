@@ -97,6 +97,24 @@ def get_active_execution_for_job(job_id: int) -> Optional[dict]:
         return dict(row) if row else None
 
 
+def get_active_executions_for_jobs(job_ids: list[int]) -> dict[int, dict]:
+    """Batched version of get_active_execution_for_job for dashboard list
+    rendering -- one query for N jobs, never N queries (CLAUDE.md Phase 14
+    section 55's "cached/indexed state, never recomputed live" principle,
+    already applied to resume_optimizer_repo.get_current_variants_for_jobs/
+    get_quality_reports_for_jobs -- this mirrors that exact pattern for the
+    third per-job dashboard lookup, which a Phase 15 large-state benchmark
+    found was still doing one query per job)."""
+    if not job_ids:
+        return {}
+    placeholders = ",".join("?" for _ in job_ids)
+    with db_session() as conn:
+        rows = conn.execute(
+            f"SELECT * FROM application_executions WHERE job_id IN ({placeholders}) AND active = 1", job_ids
+        ).fetchall()
+        return {r["job_id"]: dict(r) for r in rows}
+
+
 def list_executions_for_job(job_id: int) -> list[dict]:
     with db_session() as conn:
         rows = conn.execute(

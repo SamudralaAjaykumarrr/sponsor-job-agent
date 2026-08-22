@@ -20,8 +20,6 @@ from datetime import datetime, timezone
 
 from app.db import backend as db_backend
 from app.db import db_session
-from app.registry import repo as registry_repo
-from app.workers import circuit as circuit_mod
 from app.workers import leasing as leasing_mod
 from app.workers import repo as workers_repo
 from app.workers import schema_drift_repo

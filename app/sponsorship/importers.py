@@ -201,7 +201,6 @@ def _run_import(
     last_index = skip_rows - 1
 
     def flush():
-        nonlocal ambiguous, unmatched
         if not batch:
             return
         created, skipped = bulk_record_evidence_idempotent(batch)

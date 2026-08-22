@@ -40,7 +40,6 @@ backends for the same reason -- the Python code already treats them as ints.
 
 import re
 from typing import Any, Optional
-from urllib.parse import urlparse
 
 from app.db import (
     COMPANY_REGISTRY_ADDITIVE_COLUMNS,

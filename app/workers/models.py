@@ -3,7 +3,7 @@ layer. Kept separate from app.registry.models (Phase 4 lifecycle) since these
 describe *execution* concepts (leases, attempts, worker status) rather than
 portal lifecycle state."""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional
