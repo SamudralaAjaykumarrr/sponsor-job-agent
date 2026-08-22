@@ -373,3 +373,85 @@ SQLite and real PostgreSQL (`pgserver`), not assumed.
 
 See `docs/phase7-sponsorship-intelligence.md`'s "Exact limitations" and
 "Recommended Phase 8" sections for the full, unabridged list.
+
+## Phase 8 acceptance verification
+
+Verified 2026-08-21/22. Every item below was actually executed against real
+SQLite, real PostgreSQL (`pgserver`), and a real, running dashboard process
+(`uvicorn`) hitting the live `data/app.db` (read-only checks only — no
+synthetic/mock job was ever inserted into the real database).
+
+| Criterion | Evidence |
+|---|---|
+| SQLite backward compatibility | Full pre-Phase-8 suite (634 tests incl. all Phase 1-7) run against SQLite: 634 passed |
+| FULL_TIME hard gate | `tests/test_applications_gates.py` (17 tests): positive classification for every `EmploymentType`, structured-field vs. free-text signal precedence, negative-signal-wins-over-coincidental-positive-text |
+| Eligibility gate | Same file: US-location/CS-STEM/seniority/compensation/match-score/resume-artifact/answer-completeness/terminal-state checks, CONFIRMED vs LIKELY vs UNKNOWN vs NO_SPONSORSHIP branching |
+| Field mapping engine | `tests/test_applications_mapping.py` (10 tests): EXACT/HIGH/MEDIUM/LOW confidence tiers, and the structural guarantee that legal/demographic fields can never resolve via the fuzzy MEDIUM path |
+| Mock ATS + demographic defaults | `tests/test_applications_mock_ats.py` (3 tests): decline-to-self-identify default when unanswered, truthful answer when stated, missing-required-file-upload blocks auto-submit |
+| Greenhouse adapter (fixture, real-shaped) | `tests/test_applications_providers_greenhouse.py` (3 tests) using a fixture payload modeled on a REAL live response (see below) |
+| Provider capability matrix honesty | `tests/test_applications_provider_capabilities.py` (5 tests): only `mock_ats` claims `submission_supported`, Lever/generic honestly `UNSUPPORTED` |
+| Rate limits | `tests/test_applications_rate_limits.py` (3 tests): hourly cap, per-company-per-day cap |
+| Distributed duplicate-submission lock | `tests/test_applications_concurrency.py` (1 test): 8 real threads racing `queue_application()` for the SAME job produce exactly ONE execution row |
+| Application doctor | `tests/test_applications_doctor.py` (3 tests): clean-after-normal-flow, catches a corrupted `APPLIED`-without-confirmation row, catches an orphaned execution |
+| CLI | `tests/test_applications_cli.py` (4 tests): validate/prepare/status/doctor |
+| Dashboard | `tests/test_applications_dashboard.py` (4 tests): `/applications`, `/applications/doctor`, executor-disabled 400, full prepare-to-APPLIED flow via HTTP |
+| Postgres compatibility | `tests/test_applications_postgres.py` (real Postgres, 4 tests): schema creation, partial-unique-index duplicate guard, execution lifecycle, distributed queue claim (second worker gets nothing) |
+| End-to-end acceptance scenarios A-J | `tests/test_acceptance_scenarios_phase8.py` (10 tests) — every lettered scenario in CLAUDE.md Phase 8 section 53, all passing on first real run after fixing test-setup issues (see "Real bugs" below) |
+| Live dashboard verification | Started the real app against the real `data/app.db` (444 real jobs from Phases 1-7): `/`, `/jobs/{id}` (with the new Application execution card), `/applications`, `/applications/doctor`, `/api/applications/metrics`, `/health`, `/readiness` (schema_version 20/20) all returned 200 |
+| Live doctor runs (real data) | `python -m app.applications.cli doctor` / `registry.cli doctor` / `sponsorship.cli doctor`: 0 serious issues each, against the real, unmodified `data/app.db` |
+| No secrets/private data committed | `git status` shows no `.env`, no `data/app.db`, no `candidate_data/profile.json` staged (all gitignored, confirmed via `git check-ignore`) |
+| `pytest -m "not postgres"` | 634 passed, 28 deselected |
+| `pytest -m postgres` | 28 passed, 634 deselected |
+
+### Live network validation (honest, bounded)
+
+`https://boards-api.greenhouse.io/v1/boards/gitlab/jobs/{id}?questions=true`
+(the real, public, documented Greenhouse Job Board API) was fetched live
+during development and confirmed to return genuine structured application
+fields, including a real sponsorship question and EEOC demographic
+questions with decline-to-self-identify choices. `https://api.lever.co/v0/postings/leverdemo?mode=json`
+was also fetched live and confirmed to expose NO structured question schema
+(only `hostedUrl`/`applyUrl`) — this is why Lever is honestly `UNSUPPORTED`
+for form discovery rather than guessed. **No submission request was ever
+sent to any real ATS** — `GreenhouseApplicationProvider.submit()` is not
+implemented (base class refusal only), matching CLAUDE.md's explicit
+instruction not to submit real applications during development.
+
+### Real bugs this phase caught and fixed
+
+1. **`automation_policy` never persisted on the successful auto-submit
+   path**: every branch that stopped short of submitting (`not validation.ok`,
+   `not auto_ok`, rate-limited) correctly wrote `automation_policy`/
+   `policy_reasons` to the execution row, but the actual successful-submit
+   path fell straight through to `SUBMITTING`/`SUBMITTED`/`APPLIED` without
+   ever writing them — leaving a genuinely-`PERMITTED_AUTO`-submitted
+   execution's `automation_policy` column blank. Caught by
+   `tests/test_applications_doctor.py`'s `submitted_without_permitted_policy`
+   check firing on the FIRST real end-to-end APPLIED run, not by a unit
+   test written to specifically probe it. Fixed by persisting both fields
+   on the `SUBMITTING` transition.
+2. **A bare structured `employment_type_raw` value of "Contract" wasn't
+   classified**: the CONTRACT signal list only contained compound phrases
+   ("contract-to-hire", "contractor", etc.), so a plain ATS field value of
+   exactly `"Contract"` fell through to `UNKNOWN` instead of `CONTRACT`.
+   Caught immediately by `tests/test_applications_gates.py`'s very first
+   run. Fixed by adding the bare token.
+3. **Test-design bugs, not product bugs, worth recording**: the first draft
+   of the duplicate-application acceptance scenario (G) tried to insert two
+   `jobs` rows with the identical `(provider, external_job_id)`, which
+   correctly violates the Phase 3 unique index — the test was wrong, not
+   the product; fixed by using a different `external_job_id` with the same
+   company/title/location (a realistic manual-re-paste duplicate) instead.
+
+### Known Phase 8 limitations
+
+See `docs/phase8-application-executor.md`'s "Honest limitations" section and
+`docs/application-operations.md`'s "Worker capabilities" section for the
+full list — in short: only Greenhouse has live-verified form discovery
+(submission still `ASSIST_ONLY` for it); Lever/Ashby/Workable/
+SmartRecruiters/BambooHR/Breezy/Recruitee/Comeet/Teamtailor/Workday are
+apply-URL-only; no real ATS submission was implemented or attempted; a
+standalone distributed executor-worker daemon was not built (the atomic
+claim primitives are implemented/tested, but `queue_application()`/
+`process_execution()` run synchronously today via CLI/dashboard, not a
+long-running worker loop) — see the recommended Phase 9 list.

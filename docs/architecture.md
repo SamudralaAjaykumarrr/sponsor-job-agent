@@ -288,3 +288,70 @@ See `docs/phase7-sponsorship-intelligence.md` for the full map. Summary:
   `docs/sponsorship-review-operations.md`.
 - `scripts/sponsorship_benchmark.py` — synthetic 10k/100k(+500k/1M optional)
   evidence-import/profile/lookup benchmark, isolated temp SQLite DB only.
+
+## Phase 8: safe ATS application executor
+
+See `docs/phase8-application-executor.md`, `docs/application-provider-interface.md`,
+`docs/application-field-mapping.md`, `docs/application-safety.md`,
+`docs/application-state-machine.md`, `docs/application-operations.md`.
+
+- `app/applications/models.py` — `ExecutionStatus` (the fine-grained,
+  per-attempt state machine, stored on `application_executions.status`),
+  `ExecutionMode` (ASSIST/AUTO_PERMITTED), `AutomationPolicy`/`PolicyReason`,
+  `FieldCategory`/`FieldConfidence`, `ApplicationField`,
+  `ApplicationCapabilities`, `FormSnapshot`/`FormField`, and the
+  submit/confirmation result dataclasses.
+- `app/applications/eligibility.py` — the pre-execution gate: FULL_TIME hard
+  gate (unconditional, first check), US-location, CS/STEM role, seniority,
+  compensation, technical-match threshold, sponsorship-status branching,
+  resume-artifact presence, answer completeness, terminal-state check.
+  Re-derives every check independently of `jobs.application_state`.
+- `app/applications/schema.py` — maps `candidate_data/profile.json` (the
+  ONLY candidate truth source) into the generic `ApplicationField` schema;
+  legal/attestation fields are always `needs_user_input=True` (never present
+  in the profile schema by design).
+- `app/applications/mapping.py` — deterministic label/alias field-matching
+  engine (EXACT/HIGH/MEDIUM); the MEDIUM token-overlap fallback never
+  applies to legal/demographic/consent/signature field categories.
+- `app/applications/provider.py` + `provider_registry.py` — the
+  `ApplicationProvider` interface (separate from `app.providers.base.
+  JobProvider`) and its registry. Adapters: `providers_greenhouse.py`
+  (form discovery live-verified against the real public Job Board API,
+  submission NOT implemented — ASSIST_ONLY), `providers_lever.py` (live-
+  checked: no structured question schema available — UNSUPPORTED),
+  `providers_generic.py` (fallback for every other known ATS — apply-URL
+  only), `mock_ats.py` (deterministic in-process fixture ATS — the only
+  provider with `submission_supported=True`, used for executor-mechanics
+  testing only).
+- `app/applications/executor.py` — `queue_application()` (the safe front
+  door: eligibility + duplicate + executor-enabled checks, creates an
+  `application_executions` row) and `process_execution()` (prepare → map →
+  fill → validate → (submit) → confirm, synchronous).
+- `app/applications/repo.py` — persistence for `application_executions`
+  (partial-unique-indexed on `job_id WHERE active=1` — the actual
+  distributed duplicate-submission guard), `application_answer_snapshots`,
+  `application_audit_log`, and `mirror_job_state()` (the two-layer state
+  bridge onto `jobs.application_state`).
+- `app/applications/queue.py` — atomic lease-claim queue for
+  `application_executions`, same `UPDATE ... WHERE` pattern as
+  `app.workers.leasing`.
+- `app/applications/duplicate.py`, `rate_limit.py`, `reconcile.py`,
+  `doctor.py`, `metrics.py`, `cli.py` — duplicate-application protection,
+  hourly/daily/per-company rate limits (DB-query-based, already fleet-wide),
+  explicit human reconciliation for `SUBMISSION_STATUS_UNKNOWN`, the
+  read-only "application doctor" integrity checker, `/metrics` additions,
+  and the operational CLI.
+- `app/applications/fingerprint.py` — application-form structural
+  fingerprinting + `application_form_baselines` drift detection, distinct
+  from Phase 6's discovery-payload `provider_schema_drift`.
+- `app/matching/employment_type.py` (extended) — `classify_employment_type()`,
+  a POSITIVE classifier (`EmploymentType` enum in `app.models`) distinct
+  from the existing permissive `is_full_time()` boolean (kept unchanged,
+  still used by `app.agent.cycle`'s discovery-time filter).
+- Dashboard: `/applications` (bucketed queue view + live metrics + executor
+  on/off banner), `/applications/doctor`, a job-detail "Application
+  execution" card with Prepare/Queue/Retry/Reconcile actions, and 3 new
+  JSON API endpoints (`/api/applications/metrics`, `/api/jobs/{id}/eligibility`,
+  `/api/executions/{id}`).
+- `APPLICATION_EXECUTOR_ENABLED` / `AUTO_SUBMIT_ENABLED` — both default
+  `false`; printed on every startup (never silently enabled).

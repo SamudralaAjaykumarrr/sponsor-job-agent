@@ -496,3 +496,67 @@ current-role/current-JD evidence.
   DB-only, never-collide-with-a-real-name convention as every prior phase's benchmark
   (`benchmark-fixture` dataset name) — never write synthetic rows into the real registry or a
   developer's real `data/app.db`.
+
+## Application Executor Rules (recorded after Phase 8, apply to all future phases)
+
+**No automated application submission may occur unless the job has been positively classified
+as FULL_TIME.** `app.matching.employment_type.classify_employment_type()` must return exactly
+`EmploymentType.FULL_TIME` — `UNKNOWN` is never treated as FULL_TIME for submission purposes,
+even though it is still allowed to enter the queue for ASSIST-only preparation. This is the
+first, unconditional check in `app.applications.eligibility.evaluate_executor_eligibility()`
+and must remain first; no downstream executor code path may bypass it.
+
+- `app.applications.provider.ApplicationProvider` (submission/form-filling) and
+  `app.providers.base.JobProvider` (discovery) are permanently separate interfaces — a provider
+  fully supported for discovery may be `UNSUPPORTED`/`ASSIST_ONLY` for application (this is
+  true today for Lever, live-verified: its public API exposes no structured question schema).
+  `submission_supported=True` may only ever be set on a provider that has been genuinely tested
+  end-to-end; as of Phase 8 that is only the deterministic in-process `MockATSProvider` — no
+  real ATS adapter may set it without the same bar of actual, tested, explicitly-permitted
+  submission automation.
+- `AUTO_PERMITTED` execution mode may only actually submit when ALL of: FULL_TIME (positive),
+  `sponsorship_status == CONFIRMED_SPONSOR`, resume claim-check passed, the selected provider's
+  `automation_policy == PERMITTED_AUTO` for this specific draft, no CAPTCHA/MFA/auth-required
+  flag, no unresolved required field (especially `LEGAL_ATTESTATION`/`DEMOGRAPHICS`, which are
+  never guessed — see `app.applications.schema` and `app.applications.mapping`'s
+  `_STRICT_FIELD_IDS`), no duplicate, and `AUTO_SUBMIT_ENABLED=true`. Any single failed
+  condition falls back to ASSIST/`NEEDS_USER_ACTION` — never a partial or "best effort" submit.
+  There is no generic "force submit" flag anywhere in `app/applications/`.
+- `application_executions(job_id) WHERE active=1` is a partial UNIQUE index — the actual,
+  atomic, cross-worker guard against two concurrent executions for the same job (CLAUDE.md
+  section 61). `app.applications.repo.create_execution()` observes this as
+  `DuplicateExecutionError`; never replace this with an application-level check-then-insert.
+  `active` flips to 0 only when `app.applications.models.TERMINAL_STATUSES` is reached —
+  `SUBMISSION_STATUS_UNKNOWN`/`NEEDS_USER_ACTION` deliberately stay `active=1` so a second
+  concurrent execution attempt is blocked while a human resolves them too.
+- A job is marked `APPLIED` only via `app.applications.repo.update_execution()` reaching
+  `ExecutionStatus.APPLIED`, which requires a `ConfirmationResult.confirmed=True` from
+  `ApplicationProvider.verify_confirmation()` — a `submit()` success alone is never sufficient
+  (see `SUBMITTED` vs `APPLIED` in the state machine). A submission whose outcome could not be
+  determined (timeout, dropped connection) becomes `SUBMISSION_STATUS_UNKNOWN` and is never
+  auto-retried; `app.applications.reconcile.reconcile_execution()` is the only path that resolves
+  it, and it is always an explicit human/operator action.
+- `app.applications.eligibility.evaluate_executor_eligibility()` re-derives every check
+  independently of whatever `jobs.application_state` the pipeline already computed — this is
+  deliberate defense in depth, not redundant code to be simplified away.
+- `jobs.application_state` stays the coarse, dashboard-facing summary; the fine-grained,
+  versioned execution status machine lives only in `application_executions.status`
+  (`app.applications.models.ExecutionStatus`), mirrored onto the job row by
+  `app.applications.repo.mirror_job_state()`. Do not repurpose an existing Phase 1-7
+  `ApplicationState` value for executor mechanics, and do not write `ExecutionStatus` values
+  directly into `jobs.application_state`.
+- `APPLICATION_EXECUTOR_ENABLED` and `AUTO_SUBMIT_ENABLED` both default to `false` and are
+  independent switches — discovery/analysis/resume generation must never be gated by either one.
+  `app.applications.executor.queue_application()` raises rather than silently no-op-ing when the
+  relevant flag is off, so a caller can show an honest message instead of jobs quietly never
+  progressing.
+- Rate limits (`MAX_APPLICATIONS_PER_HOUR`/`_PER_DAY`/`_PER_COMPANY_PER_DAY`) are enforced by
+  querying `application_audit_log`'s `submit_attempted` events directly against the shared
+  database (`app.applications.rate_limit`) — already fleet-wide the moment `DATABASE_URL` points
+  at shared Postgres, matching Phase 6's distributed-rate-limiting principle. Never add a
+  separate in-memory/per-process counter for this.
+- `app.applications.doctor` (the "application doctor") must never be extended to auto-repair —
+  read-only reporting only, same as `app.registry.doctor`/`app.sponsorship.doctor`.
+- Synthetic/fixture data for this layer (the mock ATS, `mock_scenario` provider_metadata keys)
+  must only ever be exercised via `provider == "mock_ats"` jobs, which can never collide with a
+  real provider name — never write a real job's provider/external_job_id through the mock path.

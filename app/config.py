@@ -253,3 +253,36 @@ STRUCTURED_LOGGING_ENABLED = _env_bool("STRUCTURED_LOGGING_ENABLED", False)
 # breaker mechanism.
 SCHEMA_DRIFT_CIRCUIT_TENANT_THRESHOLD = _env_int("SCHEMA_DRIFT_CIRCUIT_TENANT_THRESHOLD", 3)
 SCHEMA_DRIFT_WINDOW_HOURS = _env_float("SCHEMA_DRIFT_WINDOW_HOURS", 1.0)
+
+# --- Phase 8: safe ATS application executor ---------------------------------
+# See docs/phase8-application-executor.md, docs/application-safety.md.
+#
+# Safe defaults (CLAUDE.md Phase 8 sections 63-64): BOTH off until the user
+# explicitly opts in. Discovery/analysis/resume generation continue exactly
+# as before regardless of these two flags -- only queuing/executing/
+# submitting applications is gated by them.
+APPLICATION_EXECUTOR_ENABLED = _env_bool("APPLICATION_EXECUTOR_ENABLED", False)
+AUTO_SUBMIT_ENABLED = _env_bool("AUTO_SUBMIT_ENABLED", False)
+
+# Minimum technical match score (0-100) required to enter the application
+# executor queue at all -- a distinct, and may be set stricter than,
+# MIN_MATCH_SCORE above (which only gates resume generation).
+MIN_APPLICATION_MATCH_SCORE = _env_int("MIN_APPLICATION_MATCH_SCORE", MIN_MATCH_SCORE)
+
+# Rate limiting (CLAUDE.md Phase 8 sections 46, 62): enforced by querying
+# application_executions timestamps directly (no separate counter table),
+# so this is already fleet-wide the moment DATABASE_URL points at a shared
+# Postgres instance -- same principle as Phase 6's distributed rate limiting.
+MAX_APPLICATIONS_PER_HOUR = _env_int("MAX_APPLICATIONS_PER_HOUR", 5)
+MAX_APPLICATIONS_PER_DAY = _env_int("MAX_APPLICATIONS_PER_DAY", 20)
+MAX_APPLICATIONS_PER_COMPANY_PER_DAY = _env_int("MAX_APPLICATIONS_PER_COMPANY_PER_DAY", 2)
+
+# How long an application-execution lease is held before another
+# executor-capable worker may reclaim it (same lease-expiry-only recovery
+# model as Phase 5 -- no heartbeat/crash-detection logic).
+APPLICATION_LEASE_SECONDS = _env_int("APPLICATION_LEASE_SECONDS", 300)
+APPLICATION_WORKER_CONCURRENCY = _env_int("APPLICATION_WORKER_CONCURRENCY", 2)
+
+# ANALYZE / ASSIST / AUTO_PERMITTED. ASSIST remains the default -- see
+# CLAUDE.md Phase 8 section 3 ("ASSIST remains default").
+APPLICATION_DEFAULT_MODE = os.getenv("APPLICATION_DEFAULT_MODE", "ASSIST").strip().upper() or "ASSIST"

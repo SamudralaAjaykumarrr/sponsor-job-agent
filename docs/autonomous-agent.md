@@ -138,7 +138,9 @@ candidate profile fields.
 - Every `REVIEW_REQUIRED` job (LIKELY_SPONSOR): verify sponsorship before applying.
 - Every `CLAIM_VALIDATION_FAILED` job: a resume claim didn't trace back to the verified
   profile -- check `candidate_data/profile.json` coverage, then use "Regenerate Resume".
-- All actual submission: the agent prepares, the user applies.
+- All actual submission to a real ATS: the agent prepares, the user applies. (Phase 8 adds an
+  `AUTO_PERMITTED` execution mode, but no real ATS adapter has `submission_supported=True` yet —
+  only the deterministic test-only mock ATS does. See `docs/application-safety.md`.)
 - Provider/company selection: `GREENHOUSE_BOARD_TOKENS` / `LEVER_COMPANY_SLUGS` are a manual
   choice, not something the agent infers. As of Phase 4, `company_registry` tenants can also
   arrive automatically via the acquisition/verification pipeline (`docs/registry-import.md`,
@@ -163,3 +165,13 @@ number of Phase 5 workers can safely run at the same time without double-polling
 reuse the exact same `app.agent.cycle.process_raw_job` pipeline described in this document. See
 `docs/phase5-distributed-polling.md` for the full picture, and `docs/fleet-operations.md` for how
 to actually run a fleet of workers locally.
+
+## Phase 8: what happens after a job reaches READY_TO_APPLY/REVIEW_REQUIRED
+
+This document (and the scheduler/cycle it describes) stops at resume/answers
+generation, exactly as before -- discovery and analysis are never gated by
+the Phase 8 executor flags. Phase 8 adds a separate, opt-in stage after this
+one: `app.applications.executor.queue_application()` /
+`process_execution()`, gated by `APPLICATION_EXECUTOR_ENABLED`
+(off by default). See `docs/phase8-application-executor.md` and
+`docs/application-safety.md` for the full executor design.

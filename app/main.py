@@ -9,6 +9,17 @@ from fastapi.templating import Jinja2Templates
 from app import config
 from app.agent import state as agent_state
 from app.agent.scheduler import scheduler
+from app.applications import doctor as applications_doctor
+from app.applications import metrics as applications_metrics
+from app.applications import repo as applications_repo
+from app.applications.eligibility import evaluate_executor_eligibility
+from app.applications.executor import (
+    AutoSubmitDisabledError,
+    ExecutorDisabledError,
+    process_execution,
+    queue_application,
+)
+from app.applications.reconcile import reconcile_execution
 from app.applications.tracker import can_transition
 from app.candidate.profile import load_profile, missing_fields
 from app.config import BASE_DIR
@@ -64,6 +75,10 @@ async def lifespan(_: FastAPI):
     init_db()
     if config.REGISTRY_SEED_DEMO_DATA:
         seed_demo_entries()
+    # CLAUDE.md Phase 8 section 66: never silently enable the executor --
+    # print its actual on/off state on every startup.
+    print(f"Application executor: {'ON' if config.APPLICATION_EXECUTOR_ENABLED else 'OFF'}")
+    print(f"Auto submit:          {'ON' if config.AUTO_SUBMIT_ENABLED else 'OFF'}")
     scheduler.start()
     yield
     await scheduler.stop()
@@ -137,11 +152,17 @@ def job_detail(request: Request, job_id: int):
     provenance = list_provenance(job_id)
     decision_history = list_decision_history(job_id)
     latest_decision = decision_history[-1] if decision_history else None
+    executions = applications_repo.list_executions_for_job(job_id)
+    active_execution = applications_repo.get_active_execution_for_job(job_id)
+    eligibility = evaluate_executor_eligibility(job)
     return templates.TemplateResponse(
         request, "job_detail.html",
         {
             "job": job, "score_breakdown": score_breakdown, "history": history, "provenance": provenance,
             "latest_decision": latest_decision, "decision_history": decision_history,
+            "executions": executions, "active_execution": active_execution, "eligibility": eligibility,
+            "executor_enabled": config.APPLICATION_EXECUTOR_ENABLED,
+            "auto_submit_enabled": config.AUTO_SUBMIT_ENABLED,
         },
     )
 
@@ -480,6 +501,115 @@ def regenerate_resume(job_id: int):
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     return RedirectResponse(url=f"/jobs/{job_id}", status_code=303)
+
+
+# --- Phase 8: safe ATS application executor ---------------------------------
+
+@app.get("/applications", response_class=HTMLResponse)
+def applications_page(
+    request: Request, bucket: str = "", company: str = "", provider: str = "",
+    work_arrangement: str = "", sponsorship_status: str = "",
+):
+    rows = applications_repo.list_executions_with_jobs(
+        bucket=bucket, company=company, provider=provider,
+        work_arrangement=work_arrangement, sponsorship_status=sponsorship_status, limit=200,
+    )
+    return templates.TemplateResponse(
+        request, "applications.html",
+        {
+            "rows": rows, "filters": {
+                "bucket": bucket, "company": company, "provider": provider,
+                "work_arrangement": work_arrangement, "sponsorship_status": sponsorship_status,
+            },
+            "buckets": list(applications_repo.DASHBOARD_BUCKETS.keys()),
+            "executor_enabled": config.APPLICATION_EXECUTOR_ENABLED,
+            "auto_submit_enabled": config.AUTO_SUBMIT_ENABLED,
+            "metrics": applications_metrics.collect(),
+        },
+    )
+
+
+@app.get("/applications/doctor", response_class=HTMLResponse)
+def applications_doctor_page(request: Request):
+    report = applications_doctor.run_doctor()
+    return templates.TemplateResponse(request, "applications_doctor.html", {"report": report})
+
+
+@app.get("/api/applications/metrics")
+def api_applications_metrics():
+    return JSONResponse(applications_metrics.collect())
+
+
+@app.get("/api/jobs/{job_id}/eligibility")
+def api_job_eligibility(job_id: int):
+    job = get_job(job_id)
+    if job is None:
+        raise HTTPException(404, "job not found")
+    return JSONResponse(evaluate_executor_eligibility(job).as_dict())
+
+
+@app.get("/api/executions/{execution_id}")
+def api_execution_detail(execution_id: str):
+    execution = applications_repo.get_execution(execution_id)
+    if execution is None:
+        raise HTTPException(404, "execution not found")
+    return JSONResponse({
+        "execution": execution,
+        "answers": applications_repo.list_answer_snapshot(execution_id),
+        "audit_log": applications_repo.list_audit_log(execution_id=execution_id),
+    })
+
+
+@app.post("/jobs/{job_id}/applications/queue")
+def application_queue(job_id: int, mode: str = Form("ASSIST")):
+    try:
+        result = queue_application(job_id, mode=mode)
+    except (ExecutorDisabledError, AutoSubmitDisabledError) as exc:
+        raise HTTPException(400, str(exc))
+    if not result.queued:
+        raise HTTPException(400, f"not queued: {result.reason}")
+    return RedirectResponse(url=f"/jobs/{job_id}", status_code=303)
+
+
+@app.post("/jobs/{job_id}/applications/prepare")
+def application_prepare(job_id: int, mode: str = Form("ASSIST")):
+    """Queue + synchronously run one pass of the executor -- CLAUDE.md Phase
+    8 section 43 "Prepare Application". Never bypasses any gate; identical
+    logic to `python -m app.applications.cli prepare`."""
+    try:
+        result = queue_application(job_id, mode=mode)
+    except (ExecutorDisabledError, AutoSubmitDisabledError) as exc:
+        raise HTTPException(400, str(exc))
+    if result.queued and result.execution_id:
+        process_execution(result.execution_id)
+    return RedirectResponse(url=f"/jobs/{job_id}", status_code=303)
+
+
+@app.post("/jobs/{job_id}/applications/retry")
+def application_retry(job_id: int):
+    """CLAUDE.md Phase 8 section 43 "Retry Preparation"/"Mark User Action
+    Completed" -- re-runs the executor pipeline for the job's existing
+    active execution (e.g. after the candidate updated their profile to
+    resolve a NEEDS_USER_ACTION gap). Never creates a second execution row
+    while one is still active."""
+    execution = applications_repo.get_active_execution_for_job(job_id)
+    if execution is None:
+        raise HTTPException(400, "no active execution for this job -- use Prepare Application first")
+    process_execution(execution["execution_id"])
+    return RedirectResponse(url=f"/jobs/{job_id}", status_code=303)
+
+
+@app.post("/executions/{execution_id}/reconcile")
+def execution_reconcile(
+    execution_id: str, resolution: str = Form(...), confirmation_id: str = Form(""), note: str = Form(""),
+):
+    execution = applications_repo.get_execution(execution_id)
+    if execution is None:
+        raise HTTPException(404, "execution not found")
+    result = reconcile_execution(execution_id, resolution, confirmation_id=confirmation_id, note=note)
+    if not result.ok:
+        raise HTTPException(400, result.detail)
+    return RedirectResponse(url=f"/jobs/{execution['job_id']}", status_code=303)
 
 
 @app.get("/jobs/{job_id}/download/{file_key}")

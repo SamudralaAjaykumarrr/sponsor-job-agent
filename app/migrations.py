@@ -412,6 +412,148 @@ def _m015_jobs_sponsorship_decision_columns(conn, backend: str) -> None:
     ])
 
 
+def _m016_application_executions_table(conn, backend: str) -> None:
+    """CLAUDE.md Phase 8 section 5: persistent execution record. `active`
+    (1 while the execution is in any non-terminal ExecutionStatus, 0 once it
+    reaches a terminal one) backs a partial unique index that is the actual
+    distributed duplicate-submission guard (section 61/32) -- two workers
+    racing to start an execution for the same job_id can never both succeed,
+    because the second INSERT's unique-index violation is what serializes
+    them, not application-level locking. No secrets/passwords/tokens are
+    ever columns here (section 5's explicit "no secrets, no passwords")."""
+    id_column = "id BIGSERIAL PRIMARY KEY" if backend == "postgres" else "id INTEGER PRIMARY KEY AUTOINCREMENT"
+    conn.execute(
+        f"""CREATE TABLE IF NOT EXISTS application_executions (
+            {id_column},
+            execution_id TEXT NOT NULL UNIQUE,
+            job_id INTEGER NOT NULL,
+            provider TEXT NOT NULL DEFAULT '',
+            mode TEXT NOT NULL DEFAULT 'ASSIST',
+            status TEXT NOT NULL DEFAULT 'QUEUED',
+            active INTEGER NOT NULL DEFAULT 1,
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            form_fingerprint TEXT DEFAULT '',
+            resume_artifact_path TEXT DEFAULT '',
+            resume_artifact_hash TEXT DEFAULT '',
+            cover_letter_artifact_path TEXT DEFAULT '',
+            answers_version INTEGER DEFAULT 0,
+            submission_method TEXT DEFAULT '',
+            confirmation_id TEXT DEFAULT '',
+            confirmation_url TEXT DEFAULT '',
+            confirmation_text_fingerprint TEXT DEFAULT '',
+            error_type TEXT DEFAULT '',
+            error_message_safe TEXT DEFAULT '',
+            requires_user_action INTEGER NOT NULL DEFAULT 0,
+            user_action_reason TEXT DEFAULT '',
+            automation_policy TEXT DEFAULT '',
+            policy_reasons TEXT DEFAULT '[]',
+            correlation_id TEXT DEFAULT '',
+            lease_owner TEXT,
+            lease_attempt_id TEXT,
+            lease_acquired_at TEXT,
+            lease_expires_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_application_executions_job_active "
+        "ON application_executions (job_id) WHERE active = 1"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_application_executions_job ON application_executions (job_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_application_executions_status ON application_executions (status)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_application_executions_lease "
+        "ON application_executions (lease_expires_at) WHERE active = 1"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_application_executions_started ON application_executions (started_at)"
+    )
+
+
+def _m017_application_answer_snapshots_table(conn, backend: str) -> None:
+    """CLAUDE.md Phase 8 section 18: per-execution, versioned answer
+    snapshot -- if the candidate profile changes later, an already-submitted
+    execution's recorded answers stay exactly as they were at submission
+    time. `value` is minimized for sensitive fields (see
+    app.applications.repo.snapshot_answers -- a sensitive field stores only
+    a bounded fingerprint, never the raw demographic/legal answer text, per
+    section 51's "do not print demographic answers/legal answers" logging
+    rule extended to storage)."""
+    id_column = "id BIGSERIAL PRIMARY KEY" if backend == "postgres" else "id INTEGER PRIMARY KEY AUTOINCREMENT"
+    conn.execute(
+        f"""CREATE TABLE IF NOT EXISTS application_answer_snapshots (
+            {id_column},
+            execution_id TEXT NOT NULL,
+            field_id TEXT NOT NULL,
+            value TEXT DEFAULT '',
+            source TEXT DEFAULT '',
+            source_version TEXT DEFAULT '',
+            verified INTEGER NOT NULL DEFAULT 0,
+            sensitive INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_answer_snapshots_execution ON application_answer_snapshots (execution_id)"
+    )
+
+
+def _m018_application_audit_log_table(conn, backend: str) -> None:
+    """CLAUDE.md Phase 8 section 49: append-only audit trail, correlation-id
+    linked. Never logs field values (see app.applications.repo.log_event)."""
+    id_column = "id BIGSERIAL PRIMARY KEY" if backend == "postgres" else "id INTEGER PRIMARY KEY AUTOINCREMENT"
+    conn.execute(
+        f"""CREATE TABLE IF NOT EXISTS application_audit_log (
+            {id_column},
+            execution_id TEXT NOT NULL,
+            job_id INTEGER NOT NULL,
+            event_type TEXT NOT NULL,
+            detail TEXT DEFAULT '',
+            correlation_id TEXT DEFAULT '',
+            created_at TEXT NOT NULL
+        )"""
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_log_execution ON application_audit_log (execution_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_log_job ON application_audit_log (job_id)")
+
+
+def _m019_application_form_baselines_table(conn, backend: str) -> None:
+    """CLAUDE.md Phase 8 sections 16-17: per-posting form fingerprint
+    baseline, distinct from Phase 6's provider_schema_drift (that table is
+    about DISCOVERY payload shape; this one is about the APPLICATION FORM's
+    field structure for one specific posting) -- never conflated, never
+    reused across the two concerns."""
+    id_column = "id BIGSERIAL PRIMARY KEY" if backend == "postgres" else "id INTEGER PRIMARY KEY AUTOINCREMENT"
+    conn.execute(
+        f"""CREATE TABLE IF NOT EXISTS application_form_baselines (
+            {id_column},
+            provider TEXT NOT NULL,
+            tenant_identifier TEXT NOT NULL DEFAULT '',
+            external_job_id TEXT NOT NULL DEFAULT '',
+            fingerprint TEXT NOT NULL,
+            field_signature TEXT DEFAULT '[]',
+            first_seen_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_form_baselines_identity "
+        "ON application_form_baselines (provider, tenant_identifier, external_job_id)"
+    )
+
+
+def _m020_workers_capabilities_column(conn, backend: str) -> None:
+    """CLAUDE.md Phase 8 section 39: a worker's declared capability set
+    (DISCOVERY / REGISTRY_VERIFY / APPLICATION_PREPARE / APPLICATION_SUBMIT).
+    Additive, defaults to empty -- an existing Phase 5-7 worker row/process
+    that never sets this is simply capability-less for the new queues, so a
+    discovery-only worker can never accidentally claim submission work."""
+    add_columns_if_missing(conn, backend, "workers", [("capabilities", "TEXT DEFAULT '[]'")])
+
+
 MIGRATIONS: list[tuple[int, str, Callable]] = [
     (2, "phase6_worker_identity_columns", _m002_worker_identity_columns),
     (3, "phase6_schema_drift_table", _m003_schema_drift_table),
@@ -427,6 +569,11 @@ MIGRATIONS: list[tuple[int, str, Callable]] = [
     (13, "phase7_sponsorship_decisions_table", _m013_sponsorship_decisions_table),
     (14, "phase7_employer_identity_review_table", _m014_employer_identity_review_table),
     (15, "phase7_jobs_sponsorship_decision_columns", _m015_jobs_sponsorship_decision_columns),
+    (16, "phase8_application_executions_table", _m016_application_executions_table),
+    (17, "phase8_application_answer_snapshots_table", _m017_application_answer_snapshots_table),
+    (18, "phase8_application_audit_log_table", _m018_application_audit_log_table),
+    (19, "phase8_application_form_baselines_table", _m019_application_form_baselines_table),
+    (20, "phase8_workers_capabilities_column", _m020_workers_capabilities_column),
 ]
 
 # Version 1 is the implicit Phase 1-5 baseline schema, applied by

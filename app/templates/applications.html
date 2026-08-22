@@ -1,0 +1,95 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Applications — Sponsor Job Agent</title>
+  <style>
+    body { font-family: -apple-system, Arial, sans-serif; margin: 2rem; background: #f7f7f9; color: #1a1a1a; }
+    table { width: 100%; border-collapse: collapse; background: white; }
+    th, td { padding: 8px 10px; border-bottom: 1px solid #eee; text-align: left; font-size: 0.85rem; }
+    th { background: #fafafa; }
+    .tag { padding: 2px 8px; border-radius: 10px; font-size: 0.75rem; font-weight: 600; }
+    .tag-applied { background: #d4edda; color: #155724; }
+    .tag-needs_action { background: #f8d7da; color: #721c24; }
+    .tag-ready { background: #d1ecf1; color: #0c5460; }
+    .tag-failed { background: #f8d7da; color: #721c24; }
+    .tag-default { background: #eee; color: #333; }
+    form.filters { display: flex; gap: 0.5rem; margin-bottom: 1rem; flex-wrap: wrap; }
+    .banner { padding: 0.75rem 1rem; border-radius: 6px; margin-bottom: 1rem; font-size: 0.9rem; }
+    .banner-off { background: #fff3cd; color: #856404; }
+    .banner-on { background: #d4edda; color: #155724; }
+    .metrics { display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 1rem; }
+    .metric { background: white; border: 1px solid #ddd; border-radius: 6px; padding: 0.5rem 0.75rem; font-size: 0.8rem; }
+    .metric b { display: block; font-size: 1.1rem; }
+  </style>
+</head>
+<body>
+  <p><a href="/">&larr; back to dashboard</a> · <a href="/applications/doctor">Application Doctor</a></p>
+  <h1>Applications</h1>
+
+  <div class="banner {{ 'banner-on' if executor_enabled else 'banner-off' }}">
+    Application executor: <strong>{{ 'ON' if executor_enabled else 'OFF' }}</strong> ·
+    Auto submit: <strong>{{ 'ON' if auto_submit_enabled else 'OFF' }}</strong>
+    {% if not executor_enabled %}— set APPLICATION_EXECUTOR_ENABLED=true to allow queuing applications.{% endif %}
+  </div>
+
+  <div class="metrics">
+    {% for key in ["applications_ready", "applications_queued", "applications_prepared", "applications_needs_user_action", "applications_submitted", "applications_confirmed", "applications_failed", "applications_duplicate_blocked", "submission_unknown"] %}
+    <div class="metric"><b>{{ metrics[key] }}</b>{{ key.replace('applications_', '').replace('_', ' ') }}</div>
+    {% endfor %}
+  </div>
+
+  <form class="filters" method="get" action="/applications">
+    <select name="bucket">
+      <option value="">All buckets</option>
+      {% for b in buckets %}
+      <option value="{{ b }}" {{ 'selected' if filters.bucket == b else '' }}>{{ b }}</option>
+      {% endfor %}
+    </select>
+    <input type="text" name="company" placeholder="Company" value="{{ filters.company }}">
+    <select name="provider">
+      <option value="">Any provider</option>
+      {% for p in ["greenhouse", "lever", "mock_ats", "generic"] %}
+      <option value="{{ p }}" {{ 'selected' if filters.provider == p else '' }}>{{ p }}</option>
+      {% endfor %}
+    </select>
+    <select name="work_arrangement">
+      <option value="">Any arrangement</option>
+      {% for w in ["REMOTE", "HYBRID", "ONSITE"] %}
+      <option value="{{ w }}" {{ 'selected' if filters.work_arrangement == w else '' }}>{{ w }}</option>
+      {% endfor %}
+    </select>
+    <select name="sponsorship_status">
+      <option value="">Any sponsorship</option>
+      {% for s in ["CONFIRMED_SPONSOR", "LIKELY_SPONSOR", "UNKNOWN", "NO_SPONSORSHIP"] %}
+      <option value="{{ s }}" {{ 'selected' if filters.sponsorship_status == s else '' }}>{{ s }}</option>
+      {% endfor %}
+    </select>
+    <button type="submit">Filter</button>
+  </form>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Job</th><th>Company</th><th>Provider</th><th>Status</th><th>Mode</th>
+        <th>Sponsorship</th><th>Started</th><th>Action needed</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in rows %}
+      <tr>
+        <td><a href="/jobs/{{ r.job_id }}">{{ r.job_title }}</a></td>
+        <td>{{ r.job_company }}</td>
+        <td>{{ r.provider }}</td>
+        <td><span class="tag tag-default">{{ r.status }}</span></td>
+        <td>{{ r.mode }}</td>
+        <td>{{ r.job_sponsorship_status }}</td>
+        <td>{{ r.started_at }}</td>
+        <td>{{ r.user_action_reason or '' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% if not rows %}<p>No application executions match these filters.</p>{% endif %}
+</body>
+</html>

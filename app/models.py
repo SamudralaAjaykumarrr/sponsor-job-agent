@@ -52,11 +52,43 @@ class ApplicationState(str, Enum):
     INTERVIEW = "INTERVIEW"
     REJECTED = "REJECTED"
 
+    # --- Phase 8 (CLAUDE.md Phase 8 section 4): coarse, dashboard-facing
+    # execution states. These mirror (never replace) the fine-grained,
+    # versioned app.applications.models.ExecutionStatus machine recorded per
+    # application_executions row -- see docs/phase8-application-executor.md
+    # "Two-layer state model". Every existing state above keeps its exact
+    # prior meaning; nothing here is repurposed.
+    EXECUTION_QUEUED = "EXECUTION_QUEUED"
+    NEEDS_USER_ACTION = "NEEDS_USER_ACTION"
+    SUBMITTING = "SUBMITTING"
+    SUBMISSION_STATUS_UNKNOWN = "SUBMISSION_STATUS_UNKNOWN"
+    SUBMISSION_FAILED = "SUBMISSION_FAILED"
+    DUPLICATE_APPLICATION_BLOCKED = "DUPLICATE_APPLICATION_BLOCKED"
+    WITHDRAWN = "WITHDRAWN"
+
 
 class ApplicationMode(str, Enum):
     ANALYZE = "ANALYZE"
     ASSIST = "ASSIST"
     AUTO = "AUTO"
+
+
+class EmploymentType(str, Enum):
+    """Positive employment-type classification (CLAUDE.md Phase 8 section 1)
+    -- distinct from the older, deliberately permissive
+    app.matching.employment_type.is_full_time() boolean (kept unchanged, still
+    used by the discovery-time filter in app.agent.cycle). The executor's
+    hard gate requires FULL_TIME to be POSITIVELY established; UNKNOWN is
+    never treated as FULL_TIME for submission purposes."""
+    FULL_TIME = "FULL_TIME"
+    CONTRACT = "CONTRACT"
+    C2C = "C2C"
+    PART_TIME = "PART_TIME"
+    INTERNSHIP = "INTERNSHIP"
+    TEMPORARY = "TEMPORARY"
+    SEASONAL = "SEASONAL"
+    FREELANCE = "FREELANCE"
+    UNKNOWN = "UNKNOWN"
 
 
 class PriorityTier(str, Enum):

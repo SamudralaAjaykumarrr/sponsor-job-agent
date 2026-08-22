@@ -1,0 +1,83 @@
+"""CLAUDE.md Phase 8 sections 42-43: /applications dashboard page and job
+detail action routes."""
+
+import json
+
+from fastapi.testclient import TestClient
+
+from app import config
+from app.agent import state as agent_state
+from app.candidate.profile import save_profile
+from app.main import app
+from app.models import ApplicationMode, Job
+from app.pipeline import ingest_and_process
+
+JD_TEXT = (
+    "We are hiring a Backend Software Engineer to build REST APIs in Python using FastAPI. "
+    "This is a full-time position. H-1B sponsorship is available for this role."
+)
+
+
+def _mock_job(**overrides) -> Job:
+    defaults = dict(
+        title="Backend Software Engineer", company="Acme Corp", location="Remote - US",
+        description=JD_TEXT, employment_type="Full-time", provider="mock_ats",
+        external_job_id="dash-1", provider_metadata=json.dumps({"mock_scenario": "simple"}),
+        mode=ApplicationMode.ASSIST,
+    )
+    defaults.update(overrides)
+    return Job(**defaults)
+
+
+def test_applications_page_loads_and_shows_executor_state(tmp_env, sample_profile, monkeypatch):
+    agent_state.set_enabled(False)
+    save_profile(sample_profile)
+    monkeypatch.setattr(config, "APPLICATION_EXECUTOR_ENABLED", False)
+    client = TestClient(app)
+    resp = client.get("/applications")
+    assert resp.status_code == 200
+    assert "Application executor" in resp.text
+    assert "OFF" in resp.text
+
+
+def test_applications_doctor_page_loads(tmp_env, sample_profile):
+    agent_state.set_enabled(False)
+    save_profile(sample_profile)
+    client = TestClient(app)
+    resp = client.get("/applications/doctor")
+    assert resp.status_code == 200
+
+
+def test_executor_disabled_returns_400_on_queue_action(tmp_env, sample_profile, monkeypatch):
+    agent_state.set_enabled(False)
+    save_profile(sample_profile)
+    monkeypatch.setattr(config, "APPLICATION_EXECUTOR_ENABLED", False)
+    job = ingest_and_process(_mock_job())
+    client = TestClient(app)
+    resp = client.post(f"/jobs/{job.id}/applications/queue", data={"mode": "ASSIST"})
+    assert resp.status_code == 400
+
+
+def test_prepare_application_via_dashboard_reaches_applied(tmp_env, sample_profile, monkeypatch):
+    agent_state.set_enabled(False)
+    save_profile(sample_profile)
+    monkeypatch.setattr(config, "APPLICATION_EXECUTOR_ENABLED", True)
+    monkeypatch.setattr(config, "AUTO_SUBMIT_ENABLED", True)
+    job = ingest_and_process(_mock_job())
+    client = TestClient(app)
+
+    resp = client.post(
+        f"/jobs/{job.id}/applications/prepare", data={"mode": "AUTO_PERMITTED"}, follow_redirects=False,
+    )
+    assert resp.status_code == 303
+
+    job_detail = client.get(f"/jobs/{job.id}")
+    assert job_detail.status_code == 200
+    assert "APPLIED" in job_detail.text
+
+    api_resp = client.get(f"/api/jobs/{job.id}/eligibility")
+    assert api_resp.status_code == 200
+
+    metrics_resp = client.get("/api/applications/metrics")
+    assert metrics_resp.status_code == 200
+    assert metrics_resp.json()["applications_confirmed"] >= 1

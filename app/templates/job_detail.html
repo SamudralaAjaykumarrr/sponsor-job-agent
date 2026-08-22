@@ -99,6 +99,51 @@
   </div>
 
   <div class="card">
+    <h3>Application execution</h3>
+    <p>Executor: <strong>{{ 'ON' if executor_enabled else 'OFF' }}</strong> ·
+       Auto submit: <strong>{{ 'ON' if auto_submit_enabled else 'OFF' }}</strong> ·
+       Eligible for queue: <strong>{{ eligibility.enters_queue }}</strong>
+       {% if eligibility.hard_skip %}(hard skip: {{ eligibility.blocking_category }}){% endif %}</p>
+    {% for r in eligibility.reasons %}<p style="font-size:0.8rem;color:#666;">{{ r }}</p>{% endfor %}
+
+    {% if active_execution %}
+    <p>Active execution <code>{{ active_execution.execution_id }}</code>: status=<strong>{{ active_execution.status }}</strong>
+       (provider={{ active_execution.provider }}, mode={{ active_execution.mode }})</p>
+    {% if active_execution.requires_user_action %}
+    <p style="color:#a94442;">Needs user action: {{ active_execution.user_action_reason }}</p>
+    {% endif %}
+    {% if active_execution.confirmation_id %}
+    <p>Confirmation: {{ active_execution.confirmation_id }}
+       {% if active_execution.confirmation_url %}(<a href="{{ active_execution.confirmation_url }}" target="_blank" rel="noopener">receipt</a>){% endif %}</p>
+    {% endif %}
+    <form method="post" action="/jobs/{{ job.id }}/applications/retry" style="display:inline;">
+      <button class="btn" type="submit">Retry Preparation</button>
+    </form>
+    {% if active_execution.status == 'SUBMISSION_STATUS_UNKNOWN' %}
+    <form method="post" action="/executions/{{ active_execution.execution_id }}/reconcile" style="margin-top:0.5rem;">
+      <select name="resolution">
+        <option value="confirmed_applied">Confirmed: was submitted</option>
+        <option value="confirmed_not_submitted">Confirmed: was NOT submitted</option>
+      </select>
+      <input type="text" name="confirmation_id" placeholder="confirmation id (if known)">
+      <button type="submit">Reconcile Submission</button>
+    </form>
+    {% endif %}
+    {% else %}
+    <form method="post" action="/jobs/{{ job.id }}/applications/prepare" style="display:inline;">
+      <select name="mode">
+        <option value="ASSIST">ASSIST</option>
+        <option value="AUTO_PERMITTED">AUTO_PERMITTED</option>
+      </select>
+      <button class="btn" type="submit">Prepare Application</button>
+    </form>
+    <form method="post" action="/jobs/{{ job.id }}/applications/queue" style="display:inline;">
+      <button class="btn" type="submit">Queue Application</button>
+    </form>
+    {% endif %}
+  </div>
+
+  <div class="card">
     <h3>Update state</h3>
     <form class="state" method="post" action="/jobs/{{ job.id }}/state">
       <select name="target_state">

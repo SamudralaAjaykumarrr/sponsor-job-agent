@@ -28,23 +28,32 @@ def new_attempt_id() -> str:
 def upsert_worker(
     worker_id: str, *, hostname: str, pid: int, shard_index: int, shard_count: int, status: str,
     worker_version: str = "", schema_version: int = 0, capability_version: str = "", backend: str = "",
+    capabilities: str = "",
 ) -> None:
+    """`capabilities` (CLAUDE.md Phase 8 section 39): JSON-encoded list of
+    app.applications.worker_capabilities.WorkerCapability values this worker
+    process declares (e.g. '["DISCOVERY"]' or '["APPLICATION_PREPARE",
+    "APPLICATION_SUBMIT"]'). Additive, defaults to '' (no application-executor
+    capabilities) so every existing Phase 5-7 caller is unaffected -- a
+    discovery-only worker that never passes this can never claim executor
+    work."""
     now = utcnow()
     with db_session() as conn:
         conn.execute(
             """INSERT INTO workers (worker_id, hostname, pid, shard_index, shard_count,
                                      started_at, last_heartbeat_at, status, updated_at,
-                                     worker_version, schema_version, capability_version, backend)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                     worker_version, schema_version, capability_version, backend, capabilities)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(worker_id) DO UPDATE SET
                  hostname=excluded.hostname, pid=excluded.pid, shard_index=excluded.shard_index,
                  shard_count=excluded.shard_count, status=excluded.status,
                  last_heartbeat_at=excluded.last_heartbeat_at, updated_at=excluded.updated_at,
                  worker_version=excluded.worker_version, schema_version=excluded.schema_version,
-                 capability_version=excluded.capability_version, backend=excluded.backend""",
+                 capability_version=excluded.capability_version, backend=excluded.backend,
+                 capabilities=excluded.capabilities""",
             (
                 worker_id, hostname, pid, shard_index, shard_count, now, now, status, now,
-                worker_version, schema_version, capability_version, backend,
+                worker_version, schema_version, capability_version, backend, capabilities,
             ),
         )
 
