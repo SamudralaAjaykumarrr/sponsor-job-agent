@@ -22,6 +22,7 @@ class RequirementCategory(str, Enum):
     DATA_ML = "DATA_ML"
     TOOL = "TOOL"
     METHODOLOGY = "METHODOLOGY"
+    OBSERVABILITY = "OBSERVABILITY"
     RESPONSIBILITY = "RESPONSIBILITY"
     DOMAIN = "DOMAIN"
     EDUCATION = "EDUCATION"
@@ -39,7 +40,7 @@ SKILL_CATEGORIES = frozenset({
     RequirementCategory.CLOUD, RequirementCategory.DEVOPS, RequirementCategory.MESSAGING,
     RequirementCategory.TESTING, RequirementCategory.SECURITY, RequirementCategory.ARCHITECTURE,
     RequirementCategory.FRONTEND, RequirementCategory.BACKEND, RequirementCategory.DATA_ML,
-    RequirementCategory.TOOL, RequirementCategory.METHODOLOGY,
+    RequirementCategory.TOOL, RequirementCategory.METHODOLOGY, RequirementCategory.OBSERVABILITY,
 })
 
 # CLAUDE.md section 8 "transferable experience safety": a category is only
@@ -48,12 +49,18 @@ SKILL_CATEGORIES = frozenset({
 # use of the missing item. Deliberately EXCLUDES LANGUAGE (claiming Python
 # experience is "transferable" to a missing Go/Java requirement is a stretch
 # that risks misleading), ARCHITECTURE (too abstract to responsibly claim
-# analogy), and SECURITY (domain-specific enough that analogy claims are
-# risky) -- a missing item in one of those categories is always MISSING
-# rather than TRANSFERABLE (CLAUDE.md acceptance scenario B: "JD asks
-# unsupported Go -> Go remains missing").
+# analogy), SECURITY (domain-specific enough that analogy claims are
+# risky), and OBSERVABILITY (post-release bug fix: deploying containers/IaC
+# tools -- Docker/Kubernetes/Terraform -- is not a semantically defensible
+# analogy for monitoring/observability experience the candidate doesn't
+# actually have; a real Airbnb Payments JD caught this being mapped as
+# TRANSFERABLE via shared DEVOPS-category membership before OBSERVABILITY
+# was split out) -- a missing item in one of those categories is always
+# MISSING rather than TRANSFERABLE (CLAUDE.md acceptance scenario B: "JD
+# asks unsupported Go -> Go remains missing").
 TRANSFERABLE_ELIGIBLE_CATEGORIES = SKILL_CATEGORIES - frozenset({
     RequirementCategory.LANGUAGE, RequirementCategory.ARCHITECTURE, RequirementCategory.SECURITY,
+    RequirementCategory.OBSERVABILITY,
 })
 
 
@@ -115,6 +122,12 @@ class JDRequirementItem:
     confidence: float = 1.0
     negated: bool = False
     conditional: bool = False
+    # Post-release bug fix (real Airbnb Payments JD): "Proficient in at
+    # least one major programming language (preferably Java/Kotlin/Python)"
+    # is ONE requirement satisfiable by ANY one of its alternatives, never
+    # three separate mandatory requirements. Empty for an ordinary
+    # single-term requirement.
+    alternatives: list[str] = field(default_factory=list)
 
 
 @dataclass

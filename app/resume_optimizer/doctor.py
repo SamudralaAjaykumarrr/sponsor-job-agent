@@ -85,13 +85,15 @@ def _check_claim_checker_failures_current(conn, report: DoctorReport) -> None:
 
 
 def _check_unsupported_skill_inserted(conn, report: DoctorReport) -> None:
+    import json
+
     from app.candidate.profile import load_profile
     from app.resume_optimizer.models import SKILL_CATEGORIES
 
     verified = {s.lower() for s in load_profile().skills}
     skill_category_names = {c.value for c in SKILL_CATEGORIES}
     rows = conn.execute(
-        """SELECT rv.job_id, rel.variant_id, rel.requirement_text FROM resume_evidence_links rel
+        """SELECT rv.job_id, rel.variant_id, rel.requirement_text, rel.evidence_ids FROM resume_evidence_links rel
            JOIN resume_variants rv ON rv.variant_id = rel.variant_id
            WHERE rel.status = 'MATCHED' AND rel.requirement_category IN ({})""".format(
             ",".join("?" for _ in skill_category_names)
@@ -99,12 +101,24 @@ def _check_unsupported_skill_inserted(conn, report: DoctorReport) -> None:
         list(skill_category_names),
     ).fetchall()
     for r in rows:
-        # A MATCHED skill requirement's text must always trace back to a
-        # verified profile skill -- this is the doctor-level truthfulness
-        # firewall behind CLAUDE.md section 66's "unsupported skill inserted"
-        # check, distinct from (and in addition to) the resume-content-level
+        # A MATCHED skill requirement must always trace back to a verified
+        # profile skill -- this is the doctor-level truthfulness firewall
+        # behind CLAUDE.md section 66's "unsupported skill inserted" check,
+        # distinct from (and in addition to) the resume-content-level
         # claim_checker firewall in app.resume.claim_checker.
-        if r["requirement_text"].lower() not in verified:
+        #
+        # Post-release bug fix (real Airbnb Payments JD): an alternative
+        # requirement's requirement_text is the whole "Java/Kotlin/Python"
+        # phrase, which is never itself a verified skill even when
+        # genuinely satisfied by one of its alternatives -- the actual claim
+        # is backed by the specific alternative recorded in evidence_ids
+        # (e.g. "skill:python"), which is what must trace to a verified
+        # skill. Falls back to requirement_text for an ordinary
+        # single-term match, where the two are identical anyway.
+        evidence_ids = json.loads(r["evidence_ids"] or "[]")
+        skill_ids = [e.split("skill:", 1)[1] for e in evidence_ids if e.startswith("skill:")]
+        checked = skill_ids if skill_ids else [r["requirement_text"].lower()]
+        if not any(c.lower() in verified for c in checked):
             report.issues.append(Issue("serious", "unsupported_skill_inserted",
                                         f"variant {r['variant_id']} (job {r['job_id']}) marked '{r['requirement_text']}' MATCHED "
                                         "but it is not a verified candidate skill."))

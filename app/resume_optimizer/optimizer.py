@@ -83,7 +83,7 @@ def generate_optimized_resume_content(
             RequirementCategory.CLOUD, RequirementCategory.DEVOPS, RequirementCategory.MESSAGING,
             RequirementCategory.TESTING, RequirementCategory.SECURITY, RequirementCategory.ARCHITECTURE,
             RequirementCategory.FRONTEND, RequirementCategory.BACKEND, RequirementCategory.DATA_ML,
-            RequirementCategory.TOOL, RequirementCategory.METHODOLOGY,
+            RequirementCategory.TOOL, RequirementCategory.METHODOLOGY, RequirementCategory.OBSERVABILITY,
         ) and m.status == MatchStatus.MISSING
     ]
 

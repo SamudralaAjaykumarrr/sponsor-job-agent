@@ -5,7 +5,7 @@ classifies the strength of that evidence so the optimizer/matcher can never
 claim more than what's actually verified."""
 
 from app.candidate.schema import CandidateProfile
-from app.resume_optimizer.jd_analysis import SKILL_VOCAB
+from app.resume_optimizer.jd_analysis import SKILL_VOCAB, domain_signal_present
 from app.resume_optimizer.models import EvidenceGraph, EvidenceLevel, RequirementCategory, SkillEvidence
 
 _SKILL_CATEGORY = {phrase: category for phrase, category in SKILL_VOCAB}
@@ -69,7 +69,7 @@ def build_evidence_graph(profile: CandidateProfile) -> EvidenceGraph:
     domain_text = " ".join(
         [b for b, _s in all_bullets] + [p.description for p in profile.projects] + [e.title for e in profile.employment]
     ).lower()
-    graph.domains = [d for d in DOMAIN_SIGNALS if d in domain_text]
+    graph.domains = [d for d in DOMAIN_SIGNALS if domain_signal_present(domain_text, d)]
 
     return graph
 

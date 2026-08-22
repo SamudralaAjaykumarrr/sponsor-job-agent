@@ -18,7 +18,55 @@ from app.resume_optimizer.models import (
 )
 
 
+def _match_alternative_requirement(req: JDRequirementItem, graph: EvidenceGraph) -> RequirementMatch:
+    """Post-release bug fix (real Airbnb Payments JD): "Proficient in at
+    least one major programming language (preferably Java/Kotlin/Python)" is
+    ONE requirement satisfied by ANY verified alternative -- never three
+    separate MISSING items just because only one alternative is verified."""
+    alts = req.alternatives
+    direct = [a for a in alts if (e := graph.skills.get(a)) and e.level == EvidenceLevel.DIRECT_VERIFIED]
+    if direct:
+        chosen = direct[0]
+        evidence = graph.skills[chosen]
+        return RequirementMatch(
+            requirement=req, status=MatchStatus.MATCHED,
+            evidence_ids=[f"skill:{chosen}"],
+            explanation=(
+                f"Alternative requirement ({' / '.join(alts)}) satisfied via directly verified "
+                f"'{evidence.skill}' ({', '.join(evidence.supporting_sources) or 'candidate profile'})."
+            ),
+        )
+    familiar = [a for a in alts if (e := graph.skills.get(a)) and e.level == EvidenceLevel.FAMILIAR_ONLY]
+    if familiar:
+        return RequirementMatch(
+            requirement=req, status=MatchStatus.PARTIAL,
+            evidence_ids=[f"skill:{a}" for a in familiar],
+            explanation=(
+                f"Alternative requirement ({' / '.join(alts)}): only familiar-level evidence "
+                f"for {', '.join(familiar)}, no specific employment/project bullet backs it."
+            ),
+        )
+    transferable = transferable_evidence_for_category(graph, req.category)
+    if transferable and req.category in TRANSFERABLE_ELIGIBLE_CATEGORIES:
+        names = ", ".join(sorted({t.skill for t in transferable})[:3])
+        return RequirementMatch(
+            requirement=req, status=MatchStatus.TRANSFERABLE,
+            evidence_ids=[f"skill:{t.skill.lower()}" for t in transferable],
+            explanation=(
+                f"No direct evidence for alternative requirement ({' / '.join(alts)}); transferable "
+                f"experience via verified {req.category.value.lower()} work with {names} "
+                f"(never claimed as hands-on {' / '.join(alts)})."
+            ),
+        )
+    return RequirementMatch(
+        requirement=req, status=MatchStatus.MISSING,
+        explanation=f"No verified evidence of any alternative in ({' / '.join(alts)}) in candidate profile.",
+    )
+
+
 def _match_skill_requirement(req: JDRequirementItem, graph: EvidenceGraph) -> RequirementMatch:
+    if req.alternatives:
+        return _match_alternative_requirement(req, graph)
     skill_lower = req.normalized_value.lower().strip()
     evidence = graph.skills.get(skill_lower)
 
@@ -56,6 +104,22 @@ def _match_skill_requirement(req: JDRequirementItem, graph: EvidenceGraph) -> Re
     )
 
 
+# Post-release bug fix (real Airbnb Payments JD, section 4): a bare
+# RESPONSIBILITY_SIGNALS word like "testing" previously only ever matched
+# literal bullet TEXT containing that exact word -- it never consulted the
+# candidate's own verified TESTING-category SKILL evidence (e.g. "Unit
+# Testing", "Integration Testing"). A real candidate's bullets commonly use
+# a morphological variant ("wrote unit tests", "integration test suites")
+# rather than the bare noun, so genuine verified testing evidence was
+# reported as MISSING. Maps a responsibility signal to genuinely equivalent
+# verified-skill terms; only ever surfaces evidence that is already
+# DIRECT_VERIFIED (skills_used membership or a real supporting bullet) --
+# never fabricated.
+_RESPONSIBILITY_SKILL_EQUIVALENTS: dict[str, tuple[str, ...]] = {
+    "testing": ("unit testing", "integration testing", "automated testing", "test automation", "tdd", "pytest", "junit"),
+}
+
+
 def _match_responsibility(req: JDRequirementItem, graph: EvidenceGraph) -> RequirementMatch:
     matches = graph.responsibility_evidence.get(req.normalized_value, [])
     if matches:
@@ -64,9 +128,20 @@ def _match_responsibility(req: JDRequirementItem, graph: EvidenceGraph) -> Requi
             evidence_ids=[f"responsibility:{req.normalized_value}"],
             explanation=f"Verified bullet evidence: \"{matches[0]}\"",
         )
+    for equiv_skill in _RESPONSIBILITY_SKILL_EQUIVALENTS.get(req.normalized_value, ()):
+        evidence = graph.skills.get(equiv_skill)
+        if evidence and evidence.level == EvidenceLevel.DIRECT_VERIFIED:
+            return RequirementMatch(
+                requirement=req, status=MatchStatus.MATCHED,
+                evidence_ids=[f"skill:{equiv_skill}"],
+                explanation=(
+                    f"Verified via directly verified skill '{evidence.skill}' "
+                    f"({', '.join(evidence.supporting_sources) or 'candidate profile'})."
+                ),
+            )
     return RequirementMatch(
         requirement=req, status=MatchStatus.MISSING,
-        explanation=f"No verified bullet demonstrates '{req.text}'.",
+        explanation=f"No verified bullet or equivalent skill evidence demonstrates '{req.text}'.",
     )
 
 

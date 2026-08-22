@@ -26,6 +26,7 @@ ANALYZER_VERSION = "jd-analysis-v1"
 SKILL_VOCAB: list[tuple[str, RequirementCategory]] = [
     ("python", RequirementCategory.LANGUAGE),
     ("java", RequirementCategory.LANGUAGE),
+    ("kotlin", RequirementCategory.LANGUAGE),
     ("go", RequirementCategory.LANGUAGE),
     ("golang", RequirementCategory.LANGUAGE),
     ("c++", RequirementCategory.LANGUAGE),
@@ -107,11 +108,24 @@ SKILL_VOCAB: list[tuple[str, RequirementCategory]] = [
     ("oauth", RequirementCategory.SECURITY),
     ("jwt", RequirementCategory.SECURITY),
     ("security", RequirementCategory.SECURITY),
-    ("monitoring", RequirementCategory.DEVOPS),
-    ("observability", RequirementCategory.DEVOPS),
-    ("grafana", RequirementCategory.DEVOPS),
-    ("prometheus", RequirementCategory.DEVOPS),
+    # Post-release bug fix: kept OUT of DEVOPS deliberately. Docker/
+    # Kubernetes/Terraform are container/IaC tools, not monitoring
+    # evidence -- sharing a category with them let a candidate with only
+    # container-deployment experience get an unearned TRANSFERABLE
+    # "observability" claim (a real Airbnb Payments JD caught this). See
+    # RequirementCategory.OBSERVABILITY / TRANSFERABLE_ELIGIBLE_CATEGORIES.
+    ("monitoring", RequirementCategory.OBSERVABILITY),
+    ("observability", RequirementCategory.OBSERVABILITY),
+    ("grafana", RequirementCategory.OBSERVABILITY),
+    ("prometheus", RequirementCategory.OBSERVABILITY),
 ]
+
+# Fast lookups built once from SKILL_VOCAB -- used by alternative-group
+# detection and by the longest-phrase-wins overlap dedup in
+# _extract_skill_requirements (CLAUDE.md post-release bug-fix section:
+# "deduplicate semantically duplicated requirements").
+_SKILL_VOCAB_CATEGORY: dict[str, RequirementCategory] = {phrase: category for phrase, category in SKILL_VOCAB}
+_SKILL_VOCAB_BY_LENGTH_DESC: list[tuple[str, RequirementCategory]] = sorted(SKILL_VOCAB, key=lambda pc: -len(pc[0]))
 
 RESPONSIBILITY_SIGNALS = [
     "rest apis", "distributed systems", "message queues", "message queue",
@@ -129,6 +143,31 @@ DOMAIN_SIGNALS = [
     "real estate", "travel", "telecom", "energy", "manufacturing",
 ]
 
+# Post-release bug fix (real Airbnb Payments JD): a JD commonly says
+# "Payments" while a candidate's own verified bullets describe the same
+# domain with the singular/adjectival form ("payment routing", "payment-
+# processing systems") -- a bare literal-word match on "payments" (plural
+# only) missed genuine payments-domain evidence on the candidate side and
+# reported Domain alignment = NO_EVIDENCE despite real evidence existing.
+# This is a general singular/plural pattern override, not anything specific
+# to Airbnb or any one candidate -- applied identically to both the JD-side
+# and candidate-side domain scan (see `domain_signal_present`).
+_DOMAIN_SIGNAL_PATTERN_OVERRIDES: dict[str, str] = {
+    "payments": r"\bpayments?\b",
+}
+
+
+def _domain_pattern(domain: str) -> str:
+    return _DOMAIN_SIGNAL_PATTERN_OVERRIDES.get(domain, r"\b" + re.escape(domain) + r"\b")
+
+
+def domain_signal_present(text_lower: str, domain: str) -> bool:
+    """Shared by JD-side (`_extract_domain_signals`) and candidate-side
+    (`app.resume_optimizer.evidence.build_evidence_graph`) domain scanning so
+    both sides recognize the same singular/plural forms consistently."""
+    return bool(re.search(_domain_pattern(domain), text_lower))
+
+
 _REQUIRED_MARKERS = [
     "required qualifications", "required skills", "requirements:", "required:", "must have",
     "must-have", "minimum qualifications", "minimum requirements", "you have",
@@ -137,7 +176,8 @@ _REQUIRED_MARKERS = [
 _PREFERRED_MARKERS = [
     "preferred qualifications", "preferred skills", "preferred:", "nice to have", "nice-to-have",
     "bonus points", "bonus if", "desired", "a plus", "pluses", "would be great",
-    "ideally you", "it's a plus",
+    "ideally you", "it's a plus", "preferably", "familiarity with", "exposure to",
+    "huge plus", "big plus", "great plus", "not required but",
 ]
 
 _NEGATION_WINDOW_CHARS = 60
@@ -230,12 +270,43 @@ def _is_conditional(text: str, match_start: int, match_end: int | None = None) -
     return any(re.search(p, window, re.IGNORECASE) for p in _CONDITIONAL_PATTERNS)
 
 
-_LOCAL_WINDOW_CHARS = 45
+# Post-release bug fix (real Airbnb Payments JD): 45 chars was too small to
+# reach a trailing preference phrase across a parenthetical aside --
+# "React (or any equivalent JS library) would be nice to have." has ~60
+# chars between the matched term and "nice to have". Widened to 80; the
+# clause-boundary stop ('.'/';'/':' in `_local_priority_override` itself)
+# still prevents this from reaching into an unrelated adjacent sentence.
+_LOCAL_WINDOW_CHARS = 80
 _LOCAL_REQUIRED_PHRASES = [r"\bis required\b", r"\brequired\b", r"\bmust\b", r"\bmandatory\b"]
+# Post-release bug fix (real Airbnb Payments JD): "preferably", "familiarity",
+# "exposure", "huge/big plus", and hyphenated "nice-to-have" were previously
+# missing from this list, so a preference phrase right next to the matched
+# term fell through to the (REQUIRED-by-default) section priority instead of
+# overriding it -- e.g. "(preferably Java/Kotlin/Python)" and "would be nice
+# to have" were both silently treated as REQUIRED. `\bplus\b` alone
+# (replacing the narrower "a plus"/"is a plus") catches "a plus", "huge
+# plus", "big plus", etc. without needing to enumerate every intensifier.
 _LOCAL_PREFERRED_PHRASES = [
-    r"\bis a plus\b", r"\ba plus\b", r"\bpreferred\b", r"\bnice to have\b", r"\bbonus\b",
-    r"\boptional\b", r"\bideally\b", r"\bdesired\b",
+    r"\bplus\b", r"\bpreferred\b", r"\bnice[- ]to[- ]have\b", r"\bbonus\b",
+    r"\boptional\b", r"\bideally\b", r"\bdesired\b", r"\bpreferably\b",
+    r"\bfamiliarity\b", r"\bfamiliar with\b", r"\bexposure\b",
 ]
+
+
+def _negated_after_override(
+    text_lower: str, start: int, end: int, priority_override: "RequirementPriority | None",
+) -> bool:
+    """A local preference phrase (e.g. "would be a huge plus, but not
+    required") always wins over a co-occurring hard-negation phrase --
+    "not required" there means "optional", not "this JD item does not
+    exist at all" (the case the negation patterns exist for, e.g. "Java is
+    not required. Python is required."). Only treat a match as hard-negated
+    (dropped entirely) when no preference phrase is already overriding it
+    to PREFERRED. Real Airbnb Payments JD regression: "huge plus, but not
+    required" was previously dropped entirely instead of kept as PREFERRED."""
+    if priority_override == RequirementPriority.PREFERRED:
+        return False
+    return _is_negated(text_lower, start, end)
 
 
 def _local_priority_override(text_lower: str, match_start: int, match_end: int) -> RequirementPriority | None:
@@ -295,15 +366,68 @@ def _extract_years(text: str) -> float | None:
     return None
 
 
-def _extract_skill_requirements(text: str, text_lower: str) -> list[JDRequirementItem]:
+# Post-release bug fix (real Airbnb Payments JD): "Proficient in at least
+# one major programming language (preferably Java/Kotlin/Python)" must
+# become ONE alternative requirement (satisfied by ANY verified alternative),
+# never three separate mandatory REQUIRED items. Matches a slash-separated
+# run of 2+ tokens (e.g. "Java/Kotlin/Python", "AWS/Azure/GCP",
+# "SQL/PostgreSQL/MySQL") where at least 2 of the tokens are recognized
+# SKILL_VOCAB phrases -- a single recognized token in a slash list (e.g.
+# "Node.js/Express" where only "node.js" is vocab) is left to the ordinary
+# single-term extraction path instead of being force-grouped.
+_ALT_GROUP_PATTERN = re.compile(r"\b[a-z][a-z0-9+#.]*(?:\s*/\s*[a-z][a-z0-9+#.]*)+\b")
+
+
+def _extract_alternative_groups(text: str, text_lower: str) -> tuple[list[JDRequirementItem], list[tuple[int, int]]]:
     items: list[JDRequirementItem] = []
-    for phrase, category in SKILL_VOCAB:
+    consumed: list[tuple[int, int]] = []
+    for m in _ALT_GROUP_PATTERN.finditer(text_lower):
+        tokens = [t.strip() for t in m.group(0).split("/")]
+        recognized = [(t, _SKILL_VOCAB_CATEGORY[t]) for t in tokens if t in _SKILL_VOCAB_CATEGORY]
+        if len(recognized) < 2:
+            continue
+        consumed.append((m.start(), m.end()))
+        priority_override = _local_priority_override(text_lower, m.start(), m.end())
+        if _negated_after_override(text_lower, m.start(), m.end(), priority_override):
+            continue
+        conditional = _is_conditional(text_lower, m.start(), m.end())
+        priority = priority_override or _section_priority_for_offset(text_lower, m.start())
+        categories = [c for _, c in recognized]
+        category = max(set(categories), key=categories.count)
+        alt_names = [t for t, _ in recognized]
+        span_start = max(0, m.start() - 40)
+        span_end = min(len(text), m.end() + 40)
+        items.append(JDRequirementItem(
+            text=text[m.start():m.end()], normalized_value="|".join(alt_names), category=category,
+            priority=priority, evidence_span=text[span_start:span_end].strip(),
+            confidence=0.9 if not conditional else 0.6, conditional=conditional, alternatives=alt_names,
+        ))
+    return items, consumed
+
+
+def _extract_skill_requirements(
+    text: str, text_lower: str, consumed_spans: list[tuple[int, int]] = (),
+) -> list[JDRequirementItem]:
+    items: list[JDRequirementItem] = []
+    # Post-release bug fix: iterate longest phrase first and track occupied
+    # spans so an overlapping shorter phrase (e.g. "rest" inside an
+    # already-matched "rest apis") never produces a second, semantically
+    # duplicated requirement for the same JD text -- "deduplicate
+    # semantically duplicated requirements". Spans already claimed by an
+    # alternative group (e.g. "python" inside "Java/Kotlin/Python") are
+    # excluded here too, so that term is never ALSO extracted as its own
+    # separate mandatory requirement.
+    occupied: list[tuple[int, int]] = list(consumed_spans)
+    for phrase, category in _SKILL_VOCAB_BY_LENGTH_DESC:
         pattern = r"\b" + re.escape(phrase) + r"\b"
         for m in re.finditer(pattern, text_lower):
-            if _is_negated(text_lower, m.start(), m.end()):
+            if any(s <= m.start() and m.end() <= e for s, e in occupied):
+                continue
+            priority_override = _local_priority_override(text_lower, m.start(), m.end())
+            if _negated_after_override(text_lower, m.start(), m.end(), priority_override):
                 continue
             conditional = _is_conditional(text_lower, m.start(), m.end())
-            priority = _local_priority_override(text_lower, m.start(), m.end()) or _section_priority_for_offset(text_lower, m.start())
+            priority = priority_override or _section_priority_for_offset(text_lower, m.start())
             span_start = max(0, m.start() - 40)
             span_end = min(len(text), m.end() + 40)
             items.append(JDRequirementItem(
@@ -311,6 +435,7 @@ def _extract_skill_requirements(text: str, text_lower: str) -> list[JDRequiremen
                 priority=priority, evidence_span=text[span_start:span_end].strip(),
                 confidence=0.9 if not conditional else 0.6, conditional=conditional,
             ))
+            occupied.append((m.start(), m.end()))
             break  # one requirement item per distinct skill phrase per JD
     return items
 
@@ -362,16 +487,37 @@ def _extract_certifications(text: str, text_lower: str) -> tuple[list[str], list
     return found, items
 
 
-def _extract_responsibilities(text_lower: str) -> list[str]:
-    found = []
+def _extract_responsibilities(text: str, text_lower: str) -> tuple[list[str], list[JDRequirementItem]]:
+    found: list[str] = []
+    items: list[JDRequirementItem] = []
     for phrase in RESPONSIBILITY_SIGNALS:
-        if re.search(r"\b" + re.escape(phrase) + r"\b", text_lower):
-            found.append(phrase)
-    return found
+        m = re.search(r"\b" + re.escape(phrase) + r"\b", text_lower)
+        if not m:
+            continue
+        priority_override = _local_priority_override(text_lower, m.start(), m.end())
+        # Post-release bug fix (real Airbnb Payments JD, section 2/3):
+        # responsibility items were previously hardcoded REQUIRED regardless
+        # of surrounding text -- a responsibility mentioned in a "nice to
+        # have" section or clause was still forced REQUIRED. Now respects
+        # the same local/section priority signal every other requirement
+        # category already uses.
+        if _negated_after_override(text_lower, m.start(), m.end(), priority_override):
+            continue
+        found.append(phrase)
+        priority = priority_override or _section_priority_for_offset(text_lower, m.start())
+        conditional = _is_conditional(text_lower, m.start(), m.end())
+        span_start = max(0, m.start() - 40)
+        span_end = min(len(text), m.end() + 40)
+        items.append(JDRequirementItem(
+            text=phrase, normalized_value=phrase, category=RequirementCategory.RESPONSIBILITY,
+            priority=priority, evidence_span=text[span_start:span_end].strip(),
+            confidence=0.9 if not conditional else 0.6, conditional=conditional,
+        ))
+    return found, items
 
 
 def _extract_domain_signals(text_lower: str) -> list[str]:
-    return [d for d in DOMAIN_SIGNALS if re.search(r"\b" + re.escape(d) + r"\b", text_lower)]
+    return [d for d in DOMAIN_SIGNALS if domain_signal_present(text_lower, d)]
 
 
 def _extract_sponsorship_language(text_lower: str) -> bool:
@@ -389,7 +535,9 @@ def analyze_jd(job_title: str, description: str) -> JDAnalysisResult:
     text_lower = text.lower()
 
     requirements: list[JDRequirementItem] = []
-    requirements.extend(_extract_skill_requirements(text, text_lower))
+    alt_items, alt_consumed_spans = _extract_alternative_groups(text, text_lower)
+    requirements.extend(alt_items)
+    requirements.extend(_extract_skill_requirements(text, text_lower, consumed_spans=alt_consumed_spans))
 
     education_found, edu_items = _extract_education(text_lower)
     requirements.extend(edu_items)
@@ -404,12 +552,8 @@ def analyze_jd(job_title: str, description: str) -> JDAnalysisResult:
             priority=RequirementPriority.REQUIRED, evidence_span=f"{years:g}+ years experience",
         ))
 
-    responsibilities = _extract_responsibilities(text_lower)
-    for r in responsibilities:
-        requirements.append(JDRequirementItem(
-            text=r, normalized_value=r, category=RequirementCategory.RESPONSIBILITY,
-            priority=RequirementPriority.REQUIRED, evidence_span=r,
-        ))
+    responsibilities, resp_items = _extract_responsibilities(text, text_lower)
+    requirements.extend(resp_items)
 
     return JDAnalysisResult(
         job_title=job_title,
