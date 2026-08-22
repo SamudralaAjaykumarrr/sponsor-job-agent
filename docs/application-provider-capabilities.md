@@ -66,3 +66,11 @@ browser-capability-matrix` — see `docs/browser-assist-sessions.md` and
 `docs/phase10-real-ats-assist.md`. Discovery support, this table's application-provider support,
 and the browser-assist table are three deliberately independent axes; none is ever inferred from
 another.
+
+## Phase 11: no real provider gained submission_supported
+
+`app.applications.doctor` gained a new static check this phase,
+`_check_real_provider_capability_auto_without_authorization`, asserting exactly the rule this
+section already stated: `mock_ats` remains the only provider with `submission_supported=True`.
+Apply-first-click (`docs/apply-entry-navigation.md`) is a PRE-FORM navigation aid, not a
+submission mechanism — it never changes any provider's `ApplicationCapabilities` row.

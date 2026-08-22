@@ -380,3 +380,27 @@ BROWSER_RUNTIME_DIR = Path(os.getenv("BROWSER_RUNTIME_DIR", "") or str(BROWSER_A
 # section 63) -- same lease-expiry-only recovery model as every other queue
 # in this project, no heartbeat/crash-detection logic.
 BROWSER_SESSION_LEASE_SECONDS = _env_int("BROWSER_SESSION_LEASE_SECONDS", 600)
+
+# --- Phase 11: real ATS flow hardening ---------------------------------------
+# See docs/phase11-ats-flow-hardening.md.
+#
+# Whether resume_session() is allowed to safely reopen a fresh browser at a
+# session's saved application_url when the original browser/process is gone
+# (CLAUDE.md Phase 11 section 25 "reconstruct-and-resume, not process
+# reattachment"). True by default -- this is the SAME safe fallback Phase 10
+# already implemented unconditionally; the flag exists so an operator can
+# force AWAITING/pre-submission sessions to require an explicit human restart
+# instead, without touching code.
+BROWSER_SESSION_RECONSTRUCT_ENABLED = _env_bool("BROWSER_SESSION_RECONSTRUCT_ENABLED", True)
+
+# How many days a LIVE_PUBLIC capability-evidence observation stays fresh
+# before app.applications.capability_evidence.is_stale() flags it for
+# revalidation (CLAUDE.md Phase 11 section 43) -- never auto-disables the
+# capability, only surfaces it in the doctor/dashboard.
+CAPABILITY_EVIDENCE_MAX_AGE_DAYS = _env_int("CAPABILITY_EVIDENCE_MAX_AGE_DAYS", 30)
+
+# Gates scripts/phase11_live_validation.py's actual network+browser
+# validation run (CLAUDE.md Phase 11 sections 47-49) -- off by default, same
+# "never a default or implicit dependency" principle as BROWSER_ASSIST_ENABLED.
+# Does not affect pytest, which never requires network/browser by default.
+REAL_ATS_VALIDATION_ENABLED = _env_bool("REAL_ATS_VALIDATION_ENABLED", False)

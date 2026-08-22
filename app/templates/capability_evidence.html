@@ -1,0 +1,48 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>ATS Capability Evidence — Sponsor Job Agent</title>
+  <style>
+    body { font-family: -apple-system, Arial, sans-serif; margin: 2rem; background: #f7f7f9; color: #1a1a1a; }
+    table { width: 100%; border-collapse: collapse; background: white; }
+    th, td { padding: 8px 10px; border-bottom: 1px solid #eee; text-align: left; font-size: 0.8rem; vertical-align: top; }
+    th { background: #fafafa; }
+    .stale { background: #fff3cd; color: #856404; padding: 2px 8px; border-radius: 10px; font-weight: 600; }
+    .fresh { background: #d4edda; color: #155724; padding: 2px 8px; border-radius: 10px; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <p><a href="/">&larr; back to dashboard</a> · <a href="/applications/browser-capability-matrix">Browser-Assist Capability Matrix</a></p>
+  <h1>ATS Capability Evidence</h1>
+  <p>CLAUDE.md Phase 11 sections 42-43: dated evidence per (provider, capability). LIVE_PUBLIC evidence older
+     than {{ max_age_days }} days is flagged STALE for revalidation -- staleness never auto-disables a known-safe
+     capability, it only prompts a human to re-check.</p>
+  {% if not rows %}
+  <p><em>No capability evidence recorded yet.</em></p>
+  {% else %}
+  <table>
+    <thead>
+      <tr>
+        <th>Provider</th><th>Capability</th><th>Verification type</th><th>Age (days)</th><th>Staleness</th>
+        <th>Source domain</th><th>Observed at</th><th>Notes</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in rows %}
+      <tr>
+        <td>{{ r.provider }}</td>
+        <td>{{ r.capability }}</td>
+        <td>{{ r.verification_type }}</td>
+        <td>{{ r.age_days }}</td>
+        <td>{% if r.stale %}<span class="stale">STALE</span>{% else %}<span class="fresh">fresh</span>{% endif %}</td>
+        <td>{{ r.source_domain }}</td>
+        <td>{{ r.observed_at }}</td>
+        <td>{{ r.notes }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</body>
+</html>

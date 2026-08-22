@@ -707,6 +707,82 @@ def _m025_browser_assist_sessions_table(conn, backend: str) -> None:
     )
 
 
+def _m026_browser_session_entry_stage_columns(conn, backend: str) -> None:
+    """CLAUDE.md Phase 11 sections 4, 18-19, 25: apply-entry stage and
+    step-progress-confidence tracking, additive/nullable so existing rows
+    (from Phase 10) default safely. `stage` mirrors
+    app.applications.apply_entry.EntryStage; `step_confidence` mirrors
+    app.applications.apply_entry.StepConfidence -- never invented, always
+    UNKNOWN until a genuine observation sets it."""
+    add_columns_if_missing(conn, backend, "browser_assist_sessions", [
+        ("stage", "TEXT NOT NULL DEFAULT 'APPLICATION_ENTRY'"),
+        ("step_confidence", "TEXT NOT NULL DEFAULT 'UNKNOWN'"),
+        ("entry_detection_result", "TEXT DEFAULT ''"),
+        ("apply_entry_clicked", "INTEGER NOT NULL DEFAULT 0"),
+        ("reconstructed_count", "INTEGER NOT NULL DEFAULT 0"),
+    ])
+
+
+def _m027_workday_tenant_observations_table(conn, backend: str) -> None:
+    """CLAUDE.md Phase 11 sections 10, 13, 45: Workday behavior is tracked
+    PER TENANT/SITE, never as one blanket "Workday supported" claim (this
+    phase's build brief section 64 is explicit about this). Each capability
+    column is nullable -- NULL means "not observed", distinct from 0/1
+    (observed absent/observed present)."""
+    id_column = "id BIGSERIAL PRIMARY KEY" if backend == "postgres" else "id INTEGER PRIMARY KEY AUTOINCREMENT"
+    conn.execute(
+        f"""CREATE TABLE IF NOT EXISTS workday_tenant_observations (
+            {id_column},
+            tenant TEXT NOT NULL,
+            site TEXT NOT NULL DEFAULT '',
+            host TEXT NOT NULL DEFAULT '',
+            landing_navigation INTEGER,
+            login_required INTEGER,
+            resume_upload INTEGER,
+            profile_import INTEGER,
+            multi_step INTEGER,
+            custom_questions INTEGER,
+            review_page INTEGER,
+            confirmation_detection INTEGER,
+            notes TEXT DEFAULT '',
+            observed_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_workday_tenant_site "
+        "ON workday_tenant_observations (tenant, site)"
+    )
+
+
+def _m028_capability_evidence_records_table(conn, backend: str) -> None:
+    """CLAUDE.md Phase 11 sections 42-43: dated, evidence-only capability
+    tracking, separate from (and feeding into a staleness check on top of)
+    app.applications.browser_capability_matrix's hand-curated rows. One row
+    per (provider, capability) pair; re-observing updates in place (a
+    capability's evidence history isn't itself the audit trail -- the
+    dated `observed_at` on the single current row is)."""
+    id_column = "id BIGSERIAL PRIMARY KEY" if backend == "postgres" else "id INTEGER PRIMARY KEY AUTOINCREMENT"
+    conn.execute(
+        f"""CREATE TABLE IF NOT EXISTS capability_evidence_records (
+            {id_column},
+            provider TEXT NOT NULL,
+            capability TEXT NOT NULL,
+            verification_type TEXT NOT NULL,
+            observed_at TEXT NOT NULL,
+            notes TEXT DEFAULT '',
+            source_domain TEXT DEFAULT '',
+            parser_version TEXT DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_capability_evidence_provider_capability "
+        "ON capability_evidence_records (provider, capability)"
+    )
+
+
 MIGRATIONS: list[tuple[int, str, Callable]] = [
     (2, "phase6_worker_identity_columns", _m002_worker_identity_columns),
     (3, "phase6_schema_drift_table", _m003_schema_drift_table),
@@ -732,6 +808,9 @@ MIGRATIONS: list[tuple[int, str, Callable]] = [
     (23, "phase9_mock_ats_server_records_table", _m023_mock_ats_server_records_table),
     (24, "phase9_jobs_application_worker_columns", _m024_jobs_application_worker_columns),
     (25, "phase10_browser_assist_sessions_table", _m025_browser_assist_sessions_table),
+    (26, "phase11_browser_session_entry_stage_columns", _m026_browser_session_entry_stage_columns),
+    (27, "phase11_workday_tenant_observations_table", _m027_workday_tenant_observations_table),
+    (28, "phase11_capability_evidence_records_table", _m028_capability_evidence_records_table),
 ]
 
 # Version 1 is the implicit Phase 1-5 baseline schema, applied by

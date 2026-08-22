@@ -434,3 +434,33 @@ See `docs/phase10-real-ats-assist.md`, `docs/browser-assist-sessions.md`,
   with resume/continue/advance/reconcile/close actions),
   `/applications/browser-capability-matrix`, a "Start Browser Assist"
   action on the job detail page.
+
+## Phase 11: real ATS flow hardening
+
+See `docs/phase11-ats-flow-hardening.md`, `docs/apply-entry-navigation.md`,
+`docs/browser-session-reconstruction.md`, `docs/workday-tenant-validation.md`,
+`docs/smartrecruiters-application-assist.md`, `docs/ats-capability-evidence.md`.
+
+- `app/applications/apply_entry.py` — pure, dependency-free classification (`EntryStage`,
+  `ApplyControlClassification`, `EntryDetectionResult`, `StepConfidence`, `NavControlKind`,
+  step-progress text parsing). No Playwright import.
+- `app/applications/browser_runtime.py` (extended) — apply-entry control detection/click
+  (`advance_apply_entry`, never a final-submit click), stage/step-progress computed during
+  discovery, a conditional-field rediscovery pass after filling, duplicate-application phrase
+  detection.
+- `app/applications/browser_assist.py` (extended) — auto-follows NAVIGATION_SAFE apply-entry
+  hops (bounded to 3) before form discovery; every browser-touching orchestration function now
+  claims/releases the session's distributed lease around its own call.
+- `app/applications/workday_tenant.py` — per-tenant/site Workday URL parsing and capability
+  observations, never a blanket "Workday supported" claim.
+- `app/applications/capability_evidence.py` — dated `(provider, capability)` evidence with
+  staleness, feeding a new doctor check and dashboard page.
+- Two real bugs caught and fixed by this phase's own live-Chromium validation
+  (`scripts/phase11_live_validation.py`, run against real GitLab/Lever/Ashby/SmartRecruiters/
+  Walmart-Workday/Workable postings): Phase 10's final-submit phrase table incorrectly included
+  "apply now" (would have made a safe apply-entry click indistinguishable from a final submit),
+  and an ungated step-progress regex misread an unrelated on-page date ("7/31") as "step 7 of
+  31".
+- Dashboard: `/applications/workday-tenants`, `/applications/capability-evidence`; the
+  browser-session detail page now shows stage, step confidence, apply-entry-navigated, and
+  reconstruction count.

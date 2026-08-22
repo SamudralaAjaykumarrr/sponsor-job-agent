@@ -711,3 +711,67 @@ and must remain first; no downstream executor code path may bypass it.
   apostrophe rather than inserting a space, so only the deleted form actually matches; a real
   bug (present since Phase 8, only surfaced by Phase 10's live/E2E testing) had this list only
   containing the never-actually-produced space form.
+
+## Real ATS Flow Hardening Rules (recorded after Phase 11, apply to all future phases)
+
+- `app.applications.apply_entry` is the ONLY source of apply-entry/final-submit/step-progress
+  classification logic — `app.applications.browser_runtime` calls into it rather than
+  maintaining a second, parallel phrase table. `NAVIGATION_SAFE_PHRASES`, `FINAL_SUBMIT_PHRASES`,
+  and `LOGIN_TRIGGER_PHRASES` must remain mutually disjoint (no phrase in two tables), so
+  classification is always a single unambiguous lookup, never a priority tie-break. A real Phase
+  10 bug (`"apply now"` was listed as a FINAL-submit phrase) is exactly the failure mode this
+  separation prevents; never reintroduce it.
+- Only a control FRESHLY classified `NAVIGATION_SAFE` in the SAME call may ever be clicked by
+  `browser_runtime.advance_apply_entry()` (or any future apply-entry-clicking function) — never a
+  cached/stale classification from an earlier discovery pass. This function, and any future one
+  like it, must never be named with a `click_apply`/`auto_submit`/`click_submit`/
+  `submit_application` fragment, since `app.applications.doctor.
+  _check_no_browser_auto_submit_capability` statically scans `browser_runtime`'s public API for
+  exactly those patterns — a new apply-entry-clicking capability must stay visible to that check
+  by naming convention, not evade it.
+- Apply-entry click-through is always bounded (`_MAX_APPLY_ENTRY_HOPS` in
+  `app.applications.browser_assist`) and re-validates the domain allowlist and CAPTCHA/login
+  state after EVERY hop via the normal `rediscover()` path — an apply-entry click is never exempt
+  from any existing safety check, and a misbehaving page can never trap this in an unbounded
+  click loop.
+- `apply_entry.parse_step_progress()`'s slash-ratio pattern (`N / M`) must always require a
+  `step`/`progress` keyword within a short window before the numbers — a real live run against a
+  genuine Greenhouse posting caught an ungated version of this regex misreading an unrelated
+  on-page date ("7/31") as "step 7 of 31". `total_steps_if_known` must never be persisted without
+  `step_confidence == EXACT` alongside it (enforced by
+  `app.applications.doctor._check_invalid_step_progress`'s `invented_total_steps` check) — a bare
+  "Step N" with no genuinely parsed total stays `INFERRED` with `total_steps=None`, never guessed.
+- Every browser-touching function in `app.applications.browser_assist` (any present or future
+  one that calls into `app.applications.browser_runtime`) must claim the session's lease via
+  `browser_session.claim_session()` at entry and release it via `release_session_lease()` in a
+  `finally` at exit, REGARDLESS of the resulting status — a `PAUSED_*`/terminal outcome must
+  never leave the lease held, or no other worker could ever resume that session
+  (`app.applications.doctor._check_paused_session_holding_lease` catches a regression here).
+  `claim_session()`'s re-entrant-for-the-same-`worker_id` clause (`OR lease_owner = ?`) must
+  never be removed — an orchestration function that internally delegates to another one (e.g. a
+  future refactor mirroring `mark_user_action_complete` -> `resume_session`) depends on it.
+- "You already applied"/duplicate-application evidence (`ConfirmationOutcome.already_applied`,
+  `BrowserSessionStatus.DUPLICATE_APPLICATION_DETECTED`) must never be folded into a fresh
+  `CONFIRMED`/`APPLIED` transition — checked BEFORE the ordinary success-phrase match in
+  `browser_runtime._do_capture_confirmation()`, and always routed through a status distinct from
+  `CONFIRMED` so a human reconciles which is true. Never add a code path that marks an execution
+  `APPLIED` from duplicate-application evidence alone.
+- `app.applications.workday_tenant` (or any future per-provider-variant tracker) records
+  observations keyed by `(tenant, site)`, never as a single collapsed capability claim for the
+  whole provider — a NULL capability column means "not observed", distinct from `0` ("observed
+  absent"), and must never be conflated. Never generalize one tenant's observed behavior (or one
+  run's result, if results are inconsistent across runs of the same URL — report the
+  inconsistency honestly rather than keeping only the more favorable run) to "provider X is
+  supported."
+- `app.applications.capability_evidence` records `LIVE_PUBLIC` for a capability like
+  `apply_first_click` ONLY when the capability was genuinely proven working end-to-end (a control
+  was both classified `NAVIGATION_SAFE` AND successfully clicked/navigated) — a control that was
+  found but correctly left unclicked (any other classification, the safety mechanism working as
+  intended) is `NOT_TESTED` with a note, never inflated to look like a proven capability.
+  Staleness (`is_stale()`, `CAPABILITY_EVIDENCE_MAX_AGE_DAYS`) only ever prompts revalidation
+  (doctor warning, dashboard badge) — it must never automatically disable a capability.
+- Real, live tenant/posting URLs used by any validation script (`scripts/
+  phase11_live_validation.py` and any successor) must always be genuinely discovered (a public
+  API response, or a plain web search for publicly documented career-board URLs) — never guessed
+  or fabricated. A tenant that turns out to be offline/unreachable is reported `NOT RUN` with the
+  real reason; no substitute is silently invented in its place.

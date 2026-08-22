@@ -22,6 +22,15 @@ DECLINE_TO_SELF_IDENTIFY_PHRASES = [
     "i dont wish to answer", "i don t wish to answer",
     "i do not wish to answer",
     "i dont want to answer", "i don t want to answer",
+    # CLAUDE.md Phase 11 section 24: additional common real-EEOC-form
+    # variants, added conservatively -- each phrase contains a distinctive
+    # verb+negation combination ("prefer/rather/wish/choose" + "not" +
+    # "disclose/answer/say") deliberately unlikely to appear as a substring
+    # of an ordinary, real demographic answer choice (never a bare word like
+    # "prefer" or "disclose" alone, which WOULD risk overmatching).
+    "prefer not to disclose", "rather not say", "rather not disclose",
+    "do not wish to disclose", "dont wish to disclose",
+    "choose not to answer", "choose not to disclose",
 ]
 
 

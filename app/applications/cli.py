@@ -149,6 +149,29 @@ def _cmd_browser_capability_matrix(_: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_workday_tenants(_: argparse.Namespace) -> int:
+    from app.applications.workday_tenant import render_tenant_matrix
+
+    print(render_tenant_matrix())
+    return 0
+
+
+def _cmd_capability_evidence(args: argparse.Namespace) -> int:
+    from app.applications import capability_evidence
+
+    rows = capability_evidence.list_evidence(provider=args.provider or None)
+    if not rows:
+        print("No capability evidence recorded yet.")
+        return 0
+    for row in rows:
+        stale = capability_evidence.is_stale(row)
+        age = capability_evidence.evidence_age_days(row["observed_at"])
+        marker = " [STALE]" if stale else ""
+        print(f"  {row['provider']:<16} {row['capability']:<20} {row['verification_type']:<12} "
+              f"age={age:.1f}d{marker} observed_at={row['observed_at']}")
+    return 0
+
+
 def _print_session(session: dict) -> None:
     if not session:
         print("  (no session)")
@@ -313,6 +336,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_bmatrix = sub.add_parser("browser-capability-matrix",
                                 help="print the truthful browser-assist capability matrix")
     p_bmatrix.set_defaults(func=_cmd_browser_capability_matrix)
+
+    p_workday = sub.add_parser("workday-tenants", help="print the per-tenant/site Workday observation matrix")
+    p_workday.set_defaults(func=_cmd_workday_tenants)
+
+    p_evidence = sub.add_parser("capability-evidence", help="print dated capability evidence, flagging stale rows")
+    p_evidence.add_argument("--provider", default="")
+    p_evidence.set_defaults(func=_cmd_capability_evidence)
 
     return parser
 

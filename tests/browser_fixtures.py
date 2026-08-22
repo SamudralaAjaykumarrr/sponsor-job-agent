@@ -138,3 +138,152 @@ def form_with_file_upload_page(tmp_path: Path) -> str:
           <button type="submit">Submit Application</button>
         </form>
     """))
+
+
+# =============================================================================
+# CLAUDE.md Phase 11 sandbox additions (sections 50, 55): apply-first-click
+# landing pages, step-progress indicators, a Workday-like login gate reached
+# via Apply, a SmartRecruiters-like landing gate, a final-review page, and a
+# genuinely-new (not merely unhidden) conditional field.
+# =============================================================================
+
+def landing_page_with_apply_click(tmp_path: Path) -> tuple[str, str]:
+    """A job-description landing page (no form at all) whose only control is
+    an 'Apply Now' link to the real form -- the exact SmartRecruiters shape
+    Phase 10 observed live but could not follow (docs/real-ats-validation.md).
+    Returns (landing_url, form_url)."""
+    form_url = _write(tmp_path, "sr_form.html", textwrap.dedent("""
+        <form>
+          <label for="fname">Full Name</label><input id="fname" name="full_name" type="text" required>
+          <label for="mail">Email</label><input id="mail" name="email" type="text" required>
+          <button type="submit">Submit Application</button>
+        </form>
+    """))
+    landing_url = _write(tmp_path, "sr_landing.html", textwrap.dedent(f"""
+        <div>
+          <h1>Backend Software Engineer</h1>
+          <p>We are hiring. This is the job description landing page.</p>
+          <a href="{form_url}" id="apply-btn">Apply Now</a>
+        </div>
+    """))
+    return landing_url, form_url
+
+
+def landing_page_with_final_submit_lookalike(tmp_path: Path) -> str:
+    """A landing page whose ONLY control reads 'Submit Application' -- must
+    classify FINAL_SUBMIT, never be auto-clicked as an apply-entry action
+    (CLAUDE.md Phase 11 section 5-6). Distinct from landing_page_with_apply_
+    click, whose control genuinely IS safe to click."""
+    return _write(tmp_path, "final_submit_lookalike.html", textwrap.dedent("""
+        <div>
+          <h1>Backend Software Engineer</h1>
+          <p>We are hiring.</p>
+          <button id="fake-apply">Submit Application</button>
+        </div>
+    """))
+
+
+def workday_like_login_gate_page(tmp_path: Path) -> tuple[str, str]:
+    """Job details -> Apply -> account/login start page (CLAUDE.md Phase 11
+    section 11's 'common safe flow'). Returns (landing_url, login_url)."""
+    login_url = _write(tmp_path, "wd_login.html", textwrap.dedent("""
+        <form>
+          <label for="u">Email</label><input id="u" name="username" type="text">
+          <label for="p">Password</label><input id="p" name="password" type="password">
+          <button type="submit">Sign In</button>
+        </form>
+    """))
+    landing_url = _write(tmp_path, "wd_landing.html", textwrap.dedent(f"""
+        <div>
+          <h1>Software Engineer II</h1>
+          <p>Job details for this Workday-style requisition.</p>
+          <a href="{login_url}" id="apply-btn">Apply</a>
+        </div>
+    """))
+    return landing_url, login_url
+
+
+def step_progress_form_page(tmp_path: Path) -> str:
+    """A multi-step form page that genuinely displays 'Step 2 of 4' --
+    CLAUDE.md Phase 11 sections 18-19."""
+    return _write(tmp_path, "step_progress.html", textwrap.dedent("""
+        <div class="progress-indicator">Step 2 of 4</div>
+        <form>
+          <label for="school">School</label><input id="school" name="education_school" type="text">
+          <label for="degree">Degree</label><input id="degree" name="education_degree" type="text">
+          <button type="submit">Submit Application</button>
+        </form>
+    """))
+
+
+def review_page(tmp_path: Path) -> str:
+    """A final review/summary page -- CLAUDE.md Phase 11 section 33."""
+    return _write(tmp_path, "review.html", textwrap.dedent("""
+        <div>
+          <h1>Review Your Application</h1>
+          <p>Please review your answers before submitting.</p>
+          <p>Name: Test Candidate</p>
+          <button type="submit">Submit Application</button>
+        </div>
+    """))
+
+
+def conditional_new_field_page(tmp_path: Path) -> str:
+    """A conditional question whose follow-up field does NOT exist in the
+    DOM at all until JS actually INSERTS it (as opposed to
+    conditional_sponsorship_page's already-present-but-hidden node) --
+    CLAUDE.md Phase 11 section 22's rediscovery requirement."""
+    return _write(tmp_path, "conditional_new.html", textwrap.dedent("""
+        <form>
+          <label for="fname">Full Name</label><input id="fname" name="full_name" type="text" required>
+          <fieldset>
+            <legend>Will you now or in the future require sponsorship?</legend>
+            <label><input type="radio" name="sponsorship_q" value="Yes"> Yes</label>
+            <label><input type="radio" name="sponsorship_q" value="No"> No</label>
+          </fieldset>
+          <div id="visa-type-wrap"></div>
+          <button type="submit">Submit Application</button>
+          <script>
+            document.querySelectorAll('input[name="sponsorship_q"]').forEach(function (el) {
+              el.addEventListener('change', function () {
+                var wrap = document.getElementById('visa-type-wrap');
+                wrap.innerHTML = '';
+                if (el.value === 'Yes' && el.checked) {
+                  var label = document.createElement('label');
+                  label.setAttribute('for', 'visa-type');
+                  label.innerText = 'What type of visa sponsorship would you require?';
+                  var input = document.createElement('input');
+                  input.id = 'visa-type';
+                  input.name = 'visa_type';
+                  input.type = 'text';
+                  wrap.appendChild(label);
+                  wrap.appendChild(input);
+                }
+              });
+            });
+          </script>
+        </form>
+    """))
+
+
+def already_applied_page(tmp_path: Path) -> str:
+    """CLAUDE.md Phase 11 section 36: distinct from success_page/
+    duplicate_page (which lacks a heading) -- explicit 'already applied'
+    text that must never be folded into a fresh CONFIRMED event."""
+    return _write(tmp_path, "already_applied.html", textwrap.dedent("""
+        <div>
+          <h1>Application Status</h1>
+          <p>You have already applied to this position.</p>
+        </div>
+    """))
+
+
+def false_confirmation_mention_page(tmp_path: Path) -> str:
+    """CLAUDE.md Phase 11 section 35: mentions 'confirmation' without any
+    completed-action success phrase -- must never count as confirmed."""
+    return _write(tmp_path, "false_confirmation.html", textwrap.dedent("""
+        <form>
+          <p>Submit your application to receive confirmation by email.</p>
+          <button type="submit">Submit Application</button>
+        </form>
+    """))

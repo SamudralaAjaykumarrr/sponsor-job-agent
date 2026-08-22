@@ -202,9 +202,11 @@ def prepare_application(
 # =============================================================================
 
 import hashlib
+import os
 
 from app.applications import browser_runtime
 from app.applications import repo as _executions_repo
+from app.applications.apply_entry import EntryDetectionResult, EntryStage, StepConfidence
 from app.applications.browser_session import (
     BrowserPauseReason,
     BrowserSessionStatus,
@@ -218,10 +220,35 @@ from app.applications.eligibility import evaluate_executor_eligibility
 from app.applications.models import ExecutionStatus
 from app.applications.schema import build_application_fields, find_field
 from app.candidate.profile import load_profile
+from app.config import BROWSER_SESSION_LEASE_SECONDS
 from app.jobs_repo import get_job
 
 _TERMINAL_SESSION_VALUES = {s.value for s in TERMINAL_SESSION_STATUSES}
 _PAUSED_VALUES = {s.value for s in PAUSED_STATUSES}
+
+# CLAUDE.md Phase 11 section 26: stable within THIS process so a single
+# orchestration call that internally delegates to another browser_assist
+# function (mark_user_action_complete -> resume_session) never conflicts
+# with its own lease -- see browser_session.claim_session's re-entrant
+# same-worker_id clause. A DIFFERENT process/worker always gets a distinct
+# pid-derived id, so real cross-process ownership stays exclusive.
+_WORKER_ID = f"proc-{os.getpid()}"
+
+_MAX_APPLY_ENTRY_HOPS = 3
+
+
+def _claim_or_conflict(session_id: str) -> tuple[bool, dict]:
+    """CLAUDE.md Phase 11 sections 26-27: claims exclusive ownership of a
+    session for the duration of one orchestration call, released again (see
+    each caller's `finally`) the moment that call finishes -- never held
+    indefinitely, so any worker can resume a paused session later. Returns
+    (owned, session_row); when `owned` is False, the caller must not touch
+    the browser at all."""
+    claimed = browser_session.claim_session(session_id, worker_id=_WORKER_ID, lease_seconds=BROWSER_SESSION_LEASE_SECONDS)
+    if claimed is not None:
+        return True, claimed
+    current = browser_session.get_session(session_id)
+    return False, current or {}
 
 
 def _verify_resume(job: Job) -> tuple[bool, str, str]:
@@ -269,6 +296,50 @@ def _classify_unresolved(raw_fields: list[dict], application_fields: list[Applic
     return BrowserPauseReason.UNKNOWN_REQUIRED_FIELD
 
 
+def _advance_through_apply_entry(session_id: str, outcome: "browser_runtime.DiscoveryOutcome"
+                                  ) -> tuple["browser_runtime.DiscoveryOutcome", bool]:
+    """CLAUDE.md Phase 11 sections 4-8: clicks through as many consecutive
+    NAVIGATION_SAFE apply-entry controls as the page presents (a career
+    page -> ATS landing page -> account/start page chain), re-discovering
+    fresh after each click and re-validating the domain allowlist/CAPTCHA/
+    login state every time (browser_runtime.rediscover already does this at
+    the top of every discovery pass). Bounded so a misclassified or looping
+    page can never trap this in an unbounded click loop."""
+    clicked_any = False
+    hops_left = _MAX_APPLY_ENTRY_HOPS
+    while (
+        hops_left > 0 and outcome.pause_reason is None
+        and outcome.entry_detection_result == EntryDetectionResult.ENTRY_READY.value
+    ):
+        click_result = browser_runtime.advance_apply_entry(session_id)
+        if not click_result.get("advanced"):
+            break
+        clicked_any = True
+        outcome = browser_runtime.rediscover(session_id)
+        hops_left -= 1
+    return outcome, clicked_any
+
+
+def _resolve_step_fields(outcome: "browser_runtime.DiscoveryOutcome", session: dict) -> dict:
+    """CLAUDE.md Phase 11 sections 18-19: a genuinely EXACT-parsed step
+    indicator on the page (e.g. "Step 2 of 4") is more authoritative than
+    this module's own click-counted `current_step` -- especially after a
+    reconstructed session, whose internal counter always restarts at 1 even
+    though the real page may say otherwise. INFERRED/UNKNOWN confidence
+    never overrides the counter, and never invents a total."""
+    fields = {"step_confidence": outcome.step_confidence, "stage": outcome.stage,
+              "entry_detection_result": outcome.entry_detection_result}
+    if outcome.step_confidence == StepConfidence.EXACT.value and outcome.current_step_observed:
+        fields["current_step"] = outcome.current_step_observed
+        if outcome.total_steps_observed:
+            fields["total_steps_if_known"] = outcome.total_steps_observed
+        else:
+            fields["total_steps_if_known"] = outcome.total_steps_hint or session.get("total_steps_if_known")
+    else:
+        fields["total_steps_if_known"] = outcome.total_steps_hint or session.get("total_steps_if_known")
+    return fields
+
+
 def _apply_discovery_outcome(session: dict, outcome: "browser_runtime.DiscoveryOutcome",
                               application_fields: list[ApplicationField], *, check_drift: bool = True) -> dict:
     """The single place that turns one real-browser discovery pass into a
@@ -289,7 +360,54 @@ def _apply_discovery_outcome(session: dict, outcome: "browser_runtime.DiscoveryO
         status = REASON_TO_STATUS[reason]
         return browser_session.update_session(
             session_id, status=status.value, needs_user_action=1, user_action_reason=reason.value,
-            total_steps_if_known=outcome.total_steps_hint or session.get("total_steps_if_known"),
+            **_resolve_step_fields(outcome, session),
+        )
+
+    # CLAUDE.md Phase 11 sections 4-8: pass the landing/apply-entry stage
+    # before ever attempting to discover/fill a form.
+    outcome, clicked_any = _advance_through_apply_entry(session_id, outcome)
+    if clicked_any:
+        session = browser_session.update_session(session_id, apply_entry_clicked=1)
+
+    if outcome.pause_reason:
+        reason = BrowserPauseReason(outcome.pause_reason)
+        status = REASON_TO_STATUS[reason]
+        return browser_session.update_session(
+            session_id, status=status.value, needs_user_action=1, user_action_reason=reason.value,
+            **_resolve_step_fields(outcome, session),
+        )
+
+    entry_result = outcome.entry_detection_result
+    # This gate is scoped to the genuinely pre-form stages (LANDING_PAGE:
+    # an apply-entry control was found but not safely followed;
+    # APPLICATION_ENTRY: nothing recognized at all) -- a FINAL_REVIEW or
+    # CONFIRMATION page legitimately has zero fillable fields (just a
+    # submit control / success text) and must fall through to the normal
+    # fill/submit-detection path below, not get treated as "unsupported".
+    # `not outcome.fields` (mirrors app.applications.apply_entry.
+    # detect_entry_result's own priority: real form fields always win) is
+    # checked directly rather than trusting `entry_result` alone, so a
+    # DiscoveryOutcome built without an explicit entry_detection_result
+    # (every pre-Phase-11 call site/test that constructs one directly,
+    # which the dataclass defaults to APPLICATION_ENTRY/UNSUPPORTED) is
+    # never mistaken for "no form" when fields are actually present.
+    _PRE_FORM_STAGES = (EntryStage.LANDING_PAGE.value, EntryStage.APPLICATION_ENTRY.value)
+    if outcome.stage in _PRE_FORM_STAGES and not outcome.fields \
+            and entry_result != EntryDetectionResult.FORM_ALREADY_VISIBLE.value:
+        # CLAUDE.md Phase 11 section 31: no real form to fill yet, and no
+        # further safe click was available -- surface exactly why instead of
+        # silently reporting an empty "0 fields, ACTIVE" session.
+        pause_by_result = {
+            EntryDetectionResult.LOGIN_REQUIRED.value: BrowserPauseReason.LOGIN_REQUIRED,
+            EntryDetectionResult.REDIRECT_REQUIRED.value: BrowserPauseReason.PLATFORM_POLICY_RESTRICTED,
+            EntryDetectionResult.USER_ACTION_REQUIRED.value: BrowserPauseReason.APPLY_ENTRY_UNRECOGNIZED,
+            EntryDetectionResult.UNSUPPORTED.value: BrowserPauseReason.UNSUPPORTED_SUBMISSION,
+        }
+        pause = pause_by_result.get(entry_result, BrowserPauseReason.UNSUPPORTED_SUBMISSION)
+        status = REASON_TO_STATUS[pause]
+        return browser_session.update_session(
+            session_id, status=status.value, needs_user_action=1, user_action_reason=pause.value,
+            **_resolve_step_fields(outcome, session),
         )
 
     fill_result = browser_runtime.fill_fields(session_id, outcome.fields, application_fields)
@@ -304,6 +422,7 @@ def _apply_discovery_outcome(session: dict, outcome: "browser_runtime.DiscoveryO
             session_id, status=BrowserSessionStatus.PAUSED_FORM_CHANGED.value, needs_user_action=1,
             user_action_reason=BrowserPauseReason.FORM_CHANGED.value, form_fingerprint=outcome.fingerprint,
             mapped_field_count=len(fill_result.filled), unresolved_field_count=len(fill_result.unresolved),
+            **_resolve_step_fields(outcome, session),
         )
 
     if fill_result.unresolved:
@@ -313,7 +432,7 @@ def _apply_discovery_outcome(session: dict, outcome: "browser_runtime.DiscoveryO
             session_id, status=status.value, needs_user_action=1, user_action_reason=reason.value,
             form_fingerprint=outcome.fingerprint, mapped_field_count=len(fill_result.filled),
             unresolved_field_count=len(fill_result.unresolved),
-            total_steps_if_known=outcome.total_steps_hint or session.get("total_steps_if_known"),
+            **_resolve_step_fields(outcome, session),
         )
 
     # CLAUDE.md Phase 10 section 29: the runtime may LOCATE a submit button,
@@ -325,7 +444,7 @@ def _apply_discovery_outcome(session: dict, outcome: "browser_runtime.DiscoveryO
         session_id, status=new_status.value, needs_user_action=0, user_action_reason="",
         form_fingerprint=outcome.fingerprint, mapped_field_count=len(fill_result.filled),
         unresolved_field_count=len(fill_result.unresolved),
-        total_steps_if_known=outcome.total_steps_hint or session.get("total_steps_if_known"),
+        **_resolve_step_fields(outcome, session),
     )
 
 
@@ -353,7 +472,13 @@ def start_session(execution_id: str) -> dict:
 
     existing = browser_session.get_active_session_for_job(job.id)
     if existing is not None:
-        return {"created": True, "session": existing, "reason": "existing active session reused"}
+        # CLAUDE.md Phase 11 section 63: delegate to resume_session() rather
+        # than duplicating its claim/reopen/reconstruct logic here -- it
+        # already handles "session owned by another worker", "still live in
+        # this process", and "process gone, reconstruct" uniformly.
+        result = resume_session(existing["session_id"])
+        return {"created": True, "session": result.get("session", existing),
+                "reason": result.get("detail", "existing active session reused")}
 
     application_url = job.canonical_url or job.url
     if not application_url:
@@ -372,23 +497,34 @@ def start_session(execution_id: str) -> dict:
         )
     except DuplicateSessionError:
         existing = browser_session.get_active_session_for_job(job.id)
-        return {"created": True, "session": existing, "reason": "race: session already existed"}
+        if existing is None:
+            return {"created": False, "reason": f"job {job.id} already has an active session that could not be found"}
+        result = resume_session(existing["session_id"])
+        return {"created": True, "session": result.get("session", existing),
+                "reason": result.get("detail", "race: session already existed")}
 
     session_id = session["session_id"]
     session = browser_session.update_session(
         session_id, resume_artifact_hash=resume_hash, answers_version=answers_version,
     )
 
+    owned, session = _claim_or_conflict(session_id)
+    if not owned:
+        return {"created": True, "session": session,
+                "reason": "session created but is already owned by another worker/process"}
     try:
-        outcome = browser_runtime.open_session(session_id, provider=job.provider or "", url=application_url)
-    except (browser_runtime.BrowserRuntimeUnavailable, browser_runtime.BrowserRuntimeBusy) as exc:
-        updated = browser_session.update_session(
-            session_id, status=BrowserSessionStatus.CLOSED.value, user_action_reason=str(exc),
-        )
-        return {"created": False, "reason": str(exc), "session": updated}
+        try:
+            outcome = browser_runtime.open_session(session_id, provider=job.provider or "", url=application_url)
+        except (browser_runtime.BrowserRuntimeUnavailable, browser_runtime.BrowserRuntimeBusy) as exc:
+            updated = browser_session.update_session(
+                session_id, status=BrowserSessionStatus.CLOSED.value, user_action_reason=str(exc),
+            )
+            return {"created": False, "reason": str(exc), "session": updated}
 
-    updated = _apply_discovery_outcome(session, outcome, application_fields)
-    return {"created": True, "session": updated}
+        updated = _apply_discovery_outcome(session, outcome, application_fields)
+        return {"created": True, "session": updated}
+    finally:
+        browser_session.release_session_lease(session_id)
 
 
 def resume_session(session_id: str) -> dict:
@@ -405,39 +541,61 @@ def resume_session(session_id: str) -> dict:
     if session["status"] in _TERMINAL_SESSION_VALUES:
         return {"ok": True, "detail": f"session already {session['status']}", "session": session}
 
-    job = get_job(session["job_id"])
-    if job is None:
-        return {"ok": False, "detail": f"job {session['job_id']} not found"}
-    application_fields = _build_fields_for_job(job)
-
-    if browser_runtime.is_live(session_id):
-        browser_session.touch_activity(session_id)
-        outcome = browser_runtime.rediscover(session_id)
-        updated = _apply_discovery_outcome(session, outcome, application_fields)
-        return {"ok": True, "detail": "resumed live browser session", "session": updated}
-
-    if session["status"] == BrowserSessionStatus.AWAITING_USER_SUBMIT.value:
-        updated = browser_session.update_session(
-            session_id, status=BrowserSessionStatus.SUBMISSION_STATUS_UNKNOWN.value, needs_user_action=1,
-            user_action_reason="the browser process was lost while awaiting a manual submit -- outcome unknown, "
-                                "reconciliation required",
-        )
-        return {
-            "ok": False,
-            "detail": "browser was lost while awaiting a manual submit -- marked SUBMISSION_STATUS_UNKNOWN",
-            "session": updated,
-        }
+    owned, current = _claim_or_conflict(session_id)
+    if not owned:
+        return {"ok": False, "detail": "session is currently owned by another worker/process", "session": current}
+    session = current
 
     try:
-        outcome = browser_runtime.open_session(
-            session_id, provider=session["provider"], url=session["application_url"],
-        )
-    except (browser_runtime.BrowserRuntimeUnavailable, browser_runtime.BrowserRuntimeBusy) as exc:
-        return {"ok": False, "detail": str(exc), "session": session}
+        job = get_job(session["job_id"])
+        if job is None:
+            return {"ok": False, "detail": f"job {session['job_id']} not found"}
+        application_fields = _build_fields_for_job(job)
 
-    updated = _apply_discovery_outcome(session, outcome, application_fields)
-    return {"ok": True, "detail": "reopened a fresh browser window (previous window/process was gone)",
-            "session": updated}
+        if browser_runtime.is_live(session_id):
+            browser_session.touch_activity(session_id)
+            outcome = browser_runtime.rediscover(session_id)
+            updated = _apply_discovery_outcome(session, outcome, application_fields)
+            return {"ok": True, "detail": "resumed live browser session", "session": updated}
+
+        if session["status"] == BrowserSessionStatus.AWAITING_USER_SUBMIT.value:
+            updated = browser_session.update_session(
+                session_id, status=BrowserSessionStatus.SUBMISSION_STATUS_UNKNOWN.value, needs_user_action=1,
+                user_action_reason="the browser process was lost while awaiting a manual submit -- outcome unknown, "
+                                    "reconciliation required",
+            )
+            return {
+                "ok": False,
+                "detail": "browser was lost while awaiting a manual submit -- marked SUBMISSION_STATUS_UNKNOWN",
+                "session": updated,
+            }
+
+        if not config.BROWSER_SESSION_RECONSTRUCT_ENABLED:
+            return {"ok": False, "session": session,
+                    "detail": "browser process was lost and BROWSER_SESSION_RECONSTRUCT_ENABLED is false -- an "
+                              "explicit human restart is required"}
+
+        try:
+            outcome = browser_runtime.open_session(
+                session_id, provider=session["provider"], url=session["application_url"],
+            )
+        except (browser_runtime.BrowserRuntimeUnavailable, browser_runtime.BrowserRuntimeBusy) as exc:
+            return {"ok": False, "detail": str(exc), "session": session}
+
+        # CLAUDE.md Phase 11 section 25: this is honestly a RECONSTRUCTION
+        # (fresh browser, the session's saved application_url, full
+        # rediscovery) -- never a claim of true cross-process browser
+        # reattachment. `reconstructed_count` tracks how many times this has
+        # happened for dashboard/metrics visibility.
+        session = browser_session.update_session(
+            session_id, reconstructed_count=(session.get("reconstructed_count") or 0) + 1,
+        )
+        updated = _apply_discovery_outcome(session, outcome, application_fields)
+        return {"ok": True, "session": updated,
+                "detail": "reconstructed a fresh browser window at the saved application URL (previous "
+                          "window/process was gone) -- the form was rediscovered from scratch, not reattached"}
+    finally:
+        browser_session.release_session_lease(session_id)
 
 
 def mark_user_action_complete(session_id: str) -> dict:
@@ -468,17 +626,24 @@ def advance_step(session_id: str) -> dict:
         return {"ok": False, "detail": "browser session is not open in this process -- resume it first",
                 "session": session}
 
-    result = browser_runtime.advance_step(session_id)
-    if not result.get("advanced"):
-        return {"ok": False, "detail": result.get("reason", "could not advance to the next step"),
-                "session": session}
+    owned, current = _claim_or_conflict(session_id)
+    if not owned:
+        return {"ok": False, "detail": "session is currently owned by another worker/process", "session": current}
+    session = current
+    try:
+        result = browser_runtime.advance_step(session_id)
+        if not result.get("advanced"):
+            return {"ok": False, "detail": result.get("reason", "could not advance to the next step"),
+                    "session": session}
 
-    job = get_job(session["job_id"])
-    application_fields = _build_fields_for_job(job) if job else []
-    session = browser_session.update_session(session_id, current_step=result["current_step"])
-    outcome = browser_runtime.rediscover(session_id)
-    updated = _apply_discovery_outcome(session, outcome, application_fields, check_drift=False)
-    return {"ok": True, "detail": "advanced to the next step", "session": updated}
+        job = get_job(session["job_id"])
+        application_fields = _build_fields_for_job(job) if job else []
+        session = browser_session.update_session(session_id, current_step=result["current_step"])
+        outcome = browser_runtime.rediscover(session_id)
+        updated = _apply_discovery_outcome(session, outcome, application_fields, check_drift=False)
+        return {"ok": True, "detail": "advanced to the next step", "session": updated}
+    finally:
+        browser_session.release_session_lease(session_id)
 
 
 def pause_session(session_id: str, reason: BrowserPauseReason) -> dict:
@@ -519,35 +684,62 @@ def attempt_user_submit_reconciliation(session_id: str) -> dict:
     if session["status"] == BrowserSessionStatus.CONFIRMED.value:
         return {"ok": True, "detail": "already confirmed", "session": session}
 
-    if not browser_runtime.is_live(session_id):
+    owned, current = _claim_or_conflict(session_id)
+    if not owned:
+        return {"ok": False, "detail": "session is currently owned by another worker/process", "session": current}
+    session = current
+    try:
+        if not browser_runtime.is_live(session_id):
+            updated = browser_session.update_session(
+                session_id, status=BrowserSessionStatus.SUBMISSION_STATUS_UNKNOWN.value, needs_user_action=1,
+                user_action_reason="browser window is not reachable in this process -- cannot verify whether the "
+                                    "manual submit succeeded",
+            )
+            return {"ok": False, "detail": "browser not reachable -- outcome unknown", "session": updated}
+
+        outcome = browser_runtime.capture_confirmation(session_id)
+
+        if outcome.already_applied:
+            # CLAUDE.md Phase 11 section 36: "you already applied" is
+            # evidence of a PRIOR application -- never folded into a fresh
+            # CONFIRMED/APPLIED event; always left for a human to reconcile.
+            execution = _executions_repo.get_execution(session["execution_id"])
+            if execution is not None and execution["active"] == 1:
+                _executions_repo.log_event(
+                    execution["execution_id"], execution["job_id"], "duplicate_detected",
+                    detail="browser_assist_already_applied_evidence",
+                )
+            updated = browser_session.update_session(
+                session_id, status=BrowserSessionStatus.DUPLICATE_APPLICATION_DETECTED.value, needs_user_action=1,
+                user_action_reason="the page indicates an application already exists for this job -- a human must "
+                                    "reconcile whether this is the same application or a genuine duplicate",
+            )
+            return {"ok": False, "detail": "page shows an existing/duplicate application -- reconciliation required",
+                    "session": updated}
+
+        if not outcome.confirmed:
+            browser_session.touch_activity(session_id)
+            return {"ok": False, "detail": "no confirmation evidence found on the current page yet",
+                    "session": session}
+
+        execution = _executions_repo.get_execution(session["execution_id"])
+        if execution is not None and execution["active"] == 1:
+            _executions_repo.update_execution(
+                execution["execution_id"], execution["job_id"], ExecutionStatus.APPLIED,
+                confirmation_id=outcome.confirmation_id, confirmation_url=outcome.current_url,
+                confirmation_text_fingerprint=outcome.confirmation_text_fingerprint,
+                user_action_reason="confirmed via browser-assist manual submission", requires_user_action=0,
+            )
+            _executions_repo.log_event(
+                execution["execution_id"], execution["job_id"], "confirmed", detail="browser_assist_manual_submit",
+            )
+
         updated = browser_session.update_session(
-            session_id, status=BrowserSessionStatus.SUBMISSION_STATUS_UNKNOWN.value, needs_user_action=1,
-            user_action_reason="browser window is not reachable in this process -- cannot verify whether the "
-                                "manual submit succeeded",
-        )
-        return {"ok": False, "detail": "browser not reachable -- outcome unknown", "session": updated}
-
-    outcome = browser_runtime.capture_confirmation(session_id)
-    if not outcome.confirmed:
-        browser_session.touch_activity(session_id)
-        return {"ok": False, "detail": "no confirmation evidence found on the current page yet", "session": session}
-
-    execution = _executions_repo.get_execution(session["execution_id"])
-    if execution is not None and execution["active"] == 1:
-        _executions_repo.update_execution(
-            execution["execution_id"], execution["job_id"], ExecutionStatus.APPLIED,
+            session_id, status=BrowserSessionStatus.CONFIRMED.value, confirmation_observed=1,
             confirmation_id=outcome.confirmation_id, confirmation_url=outcome.current_url,
-            confirmation_text_fingerprint=outcome.confirmation_text_fingerprint,
-            user_action_reason="confirmed via browser-assist manual submission", requires_user_action=0,
+            confirmation_text_fingerprint=outcome.confirmation_text_fingerprint, needs_user_action=0,
         )
-        _executions_repo.log_event(
-            execution["execution_id"], execution["job_id"], "confirmed", detail="browser_assist_manual_submit",
-        )
-
-    updated = browser_session.update_session(
-        session_id, status=BrowserSessionStatus.CONFIRMED.value, confirmation_observed=1,
-        confirmation_id=outcome.confirmation_id, confirmation_url=outcome.current_url,
-        confirmation_text_fingerprint=outcome.confirmation_text_fingerprint, needs_user_action=0,
-    )
-    browser_runtime.close_session(session_id)
-    return {"ok": True, "detail": "confirmed", "session": updated}
+        browser_runtime.close_session(session_id)
+        return {"ok": True, "detail": "confirmed", "session": updated}
+    finally:
+        browser_session.release_session_lease(session_id)

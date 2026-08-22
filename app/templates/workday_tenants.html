@@ -1,0 +1,53 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Workday Tenant Matrix — Sponsor Job Agent</title>
+  <style>
+    body { font-family: -apple-system, Arial, sans-serif; margin: 2rem; background: #f7f7f9; color: #1a1a1a; }
+    table { width: 100%; border-collapse: collapse; background: white; }
+    th, td { padding: 8px 10px; border-bottom: 1px solid #eee; text-align: left; font-size: 0.8rem; vertical-align: top; }
+    th { background: #fafafa; }
+    .yes { color: #155724; font-weight: 600; }
+    .no { color: #721c24; }
+    .unknown { color: #888; }
+  </style>
+</head>
+<body>
+  <p><a href="/">&larr; back to dashboard</a> · <a href="/applications/browser-capability-matrix">Browser-Assist Capability Matrix</a></p>
+  <h1>Workday Tenant Matrix</h1>
+  <p>CLAUDE.md Phase 11 sections 10-13, 45: Workday's real candidate-facing behavior varies genuinely
+     tenant-by-tenant -- this page never collapses observations into one blanket "Workday supported" claim.
+     Each row is one genuinely-observed (tenant, site) pair. "not observed" is distinct from "observed absent".</p>
+  {% if not observations %}
+  <p><em>No tenant/site has been observed yet. Run scripts/phase11_live_validation.py against a currently-live
+     public Workday tenant, or record observations via app.applications.workday_tenant.record_observation().</em></p>
+  {% else %}
+  <table>
+    <thead>
+      <tr>
+        <th>Tenant</th><th>Site</th><th>Host</th><th>Landing nav</th><th>Login required</th>
+        <th>Resume upload</th><th>Profile import</th><th>Multi-step</th><th>Custom questions</th>
+        <th>Review page</th><th>Confirmation detection</th><th>Observed</th><th>Notes</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for o in observations %}
+      <tr>
+        <td>{{ o.tenant }}</td>
+        <td>{{ o.site }}</td>
+        <td>{{ o.host }}</td>
+        {% for key in ['landing_navigation','login_required','resume_upload','profile_import','multi_step','custom_questions','review_page','confirmation_detection'] %}
+        <td class="{% if o[key] is none %}unknown{% elif o[key] %}yes{% else %}no{% endif %}">
+          {% if o[key] is none %}not observed{% elif o[key] %}True{% else %}False{% endif %}
+        </td>
+        {% endfor %}
+        <td>{{ o.observed_at }}</td>
+        <td>{{ o.notes }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</body>
+</html>

@@ -39,8 +39,21 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
 from app import config
+from app.applications.apply_entry import (
+    ApplyControlClassification,
+    EntryDetectionResult,
+    EntryStage,
+    StepConfidence,
+    classify_apply_control,
+    classify_stage,
+    detect_entry_result,
+    is_confirmation_page_text,
+    is_review_page_text,
+    parse_step_progress,
+)
 from app.applications.domain_allowlist import is_allowed_host_for_session
 from app.applications.mapping import match_field
 from app.applications.models import ApplicationField, FieldConfidence, SENSITIVE_CATEGORIES
@@ -59,12 +72,25 @@ class BrowserRuntimeBusy(Exception):
 
 
 _NEXT_BUTTON_PHRASES = ("next", "continue", "save and continue", "next step")
-_SUBMIT_BUTTON_PHRASES = ("submit application", "submit your application", "apply now", "submit", "send application")
+# CLAUDE.md Phase 11 sections 4-6: "apply now" was a Phase 10 bug -- it was
+# previously listed as a FINAL-submit phrase, which meant a landing-page
+# apply-entry control could be misclassified as (never clicked, but also
+# never safely navigated past) a final submit action. Apply-entry phrases now
+# live only in app.applications.apply_entry.NAVIGATION_SAFE_PHRASES; this
+# tuple is FINAL submit text only.
+_SUBMIT_BUTTON_PHRASES = ("submit application", "submit your application", "submit", "send application")
 _MFA_PHRASES = ("verification code", "authentication code", "two-factor", "2fa", "one-time code", "otp")
 _SUCCESS_PHRASES = (
     "thank you for applying", "application received", "application submitted", "successfully applied",
     "we've received your application", "we have received your application",
     "your application has been submitted", "thank you for your application", "thank you -- your application",
+)
+# CLAUDE.md Phase 11 section 36: "you already applied" is evidence of a
+# PRIOR application, not a fresh success -- must never be folded into
+# _SUCCESS_PHRASES / a fabricated new CONFIRMED event.
+_DUPLICATE_APPLICATION_PHRASES = (
+    "you have already applied", "already applied to this position", "already applied for this job",
+    "you already applied", "application already submitted", "already submitted an application",
 )
 _CONFIRMATION_ID_RE = re.compile(r"(?:confirmation|reference|application)\s*(?:number|id|#)?\s*[:\-]?\s*([A-Z0-9][A-Z0-9\-]{3,})", re.I)
 
@@ -78,6 +104,13 @@ class DiscoveryOutcome:
     submit_button: Optional[dict] = None
     next_button: Optional[dict] = None
     total_steps_hint: int = 1
+    # --- CLAUDE.md Phase 11 sections 4, 18-19, 31 -----------------------
+    stage: str = EntryStage.APPLICATION_ENTRY.value
+    entry_detection_result: str = EntryDetectionResult.UNSUPPORTED.value
+    apply_entry_control: Optional[dict] = None
+    current_step_observed: Optional[int] = None
+    total_steps_observed: Optional[int] = None
+    step_confidence: str = StepConfidence.UNKNOWN.value
 
 
 @dataclass
@@ -93,6 +126,12 @@ class ConfirmationOutcome:
     current_url: str = ""
     confirmation_id: str = ""
     confirmation_text_fingerprint: str = ""
+    # CLAUDE.md Phase 11 section 36: kept distinct from `confirmed` -- a
+    # duplicate-application observation is real evidence, but of a
+    # different fact (a submission already exists somewhere), so a caller
+    # must branch on this before ever treating `confirmed=False` here as
+    # "nothing happened yet".
+    already_applied: bool = False
 
 
 def playwright_available() -> bool:
@@ -149,6 +188,11 @@ class _LiveSession:
             return DiscoveryOutcome(pause_reason="PLATFORM_POLICY_RESTRICTED", current_url=current_url)
 
         content_lower = page.content().lower()
+        try:
+            body_text = page.inner_text("body")
+        except Exception:  # noqa: BLE001
+            body_text = ""
+
         has_captcha = (
             "captcha" in content_lower
             or page.locator("iframe[src*='captcha' i]").count() > 0
@@ -158,7 +202,8 @@ class _LiveSession:
         if has_captcha:
             return DiscoveryOutcome(pause_reason="CAPTCHA_PRESENT", current_url=current_url)
 
-        if page.locator("input[type=password]").count() > 0:
+        login_wall = page.locator("input[type=password]").count() > 0
+        if login_wall:
             if any(p in content_lower for p in _MFA_PHRASES):
                 return DiscoveryOutcome(pause_reason="MFA_REQUIRED", current_url=current_url)
             return DiscoveryOutcome(pause_reason="LOGIN_REQUIRED", current_url=current_url)
@@ -167,13 +212,66 @@ class _LiveSession:
         submit_button = _detect_button(page, _SUBMIT_BUTTON_PHRASES)
         next_button = _detect_button(page, _NEXT_BUTTON_PHRASES, exclude_phrases=_SUBMIT_BUTTON_PHRASES)
         fingerprint = _fingerprint_fields(raw_fields)
+
+        current_host = (urlparse(current_url).hostname or "").lower()
+        apply_control = _detect_apply_entry_control(page, current_host)
+        control_classification = (
+            ApplyControlClassification(apply_control["classification"]) if apply_control else None
+        )
+        # CLAUDE.md Phase 11 section 4: a page is only ever a review/
+        # confirmation stage, never conflated with a plain form page even if
+        # it happens to also contain fields.
+        is_review = is_review_page_text(body_text)
+        is_confirmation = is_confirmation_page_text(body_text)
+        stage = classify_stage(
+            has_form_fields=bool(raw_fields), has_apply_control=apply_control is not None,
+            is_review_page=is_review, is_confirmation_page=is_confirmation,
+        )
+        entry_result = detect_entry_result(
+            has_apply_control=apply_control is not None, apply_control_classification=control_classification,
+            has_form_fields=bool(raw_fields), login_wall_present=login_wall,
+        )
+        current_step, total_steps, step_confidence = parse_step_progress(body_text)
+        if current_step is None and next_button:
+            # No genuinely parsed indicator, but we DID observe a same-
+            # session Next control -- CLAUDE.md Phase 11 section 19: this is
+            # an INFERRED signal ("at least one more step exists"), never
+            # promoted to EXACT and never given a fabricated total.
+            current_step, step_confidence = self.current_step, StepConfidence.INFERRED
+
         return DiscoveryOutcome(
             pause_reason=None, current_url=current_url, fields=raw_fields, fingerprint=fingerprint,
             submit_button=submit_button, next_button=next_button,
             total_steps_hint=2 if next_button else 1,
+            stage=stage.value, entry_detection_result=entry_result.value, apply_entry_control=apply_control,
+            current_step_observed=current_step, total_steps_observed=total_steps,
+            step_confidence=step_confidence.value,
         )
 
     def _do_fill(self, raw_fields: list[dict], application_fields: list[ApplicationField]) -> FillOutcome:
+        outcome = self._fill_pass(raw_fields, application_fields)
+
+        # CLAUDE.md Phase 11 section 22: conditional-question rediscovery.
+        # Changing a radio/checkbox answer can reveal a field that didn't
+        # exist in the DOM at all when raw_fields was first scanned (a
+        # genuinely NEW node, not merely an unhidden one -- an
+        # already-present-but-hidden field is filled fine by the pass
+        # above, since Playwright waits for it to become actionable once
+        # the change event runs). One rescan, filled once, never looped --
+        # a field that reveals ANOTHER field behind it is a legitimately
+        # more elaborate form than this safe, bounded pass supports; it
+        # surfaces as an ordinary unresolved-required-field pause instead.
+        rescanned = _detect_fields(self.page)
+        known_keys = {_field_key(rf) for rf in raw_fields}
+        new_fields = [rf for rf in rescanned if _field_key(rf) not in known_keys]
+        if new_fields:
+            extra = self._fill_pass(new_fields, application_fields)
+            outcome.filled.extend(extra.filled)
+            outcome.unresolved.extend(extra.unresolved)
+            outcome.uploads.extend(extra.uploads)
+        return outcome
+
+    def _fill_pass(self, raw_fields: list[dict], application_fields: list[ApplicationField]) -> FillOutcome:
         outcome = FillOutcome()
         for rf in raw_fields:
             label = rf.get("label") or rf.get("name") or f"field#{rf.get('index')}"
@@ -243,6 +341,27 @@ class _LiveSession:
         except Exception:  # noqa: BLE001
             return False
 
+    def _do_advance_apply_entry(self) -> dict:
+        """CLAUDE.md Phase 11 sections 4-6: the ONLY navigation this module
+        performs before form discovery. Re-derives the current page's
+        apply-entry control fresh (never trusts a stale one from a previous
+        discovery call) and refuses to click anything not freshly
+        classified NAVIGATION_SAFE -- a FINAL_SUBMIT/LOGIN_TRIGGER/
+        EXTERNAL_REDIRECT/UNKNOWN control is never clicked here, full stop."""
+        current_host = (urlparse(self.page.url).hostname or "").lower()
+        control = _detect_apply_entry_control(self.page, current_host)
+        if control is None or control.get("classification") != ApplyControlClassification.NAVIGATION_SAFE.value:
+            return {"advanced": False, "reason": "no NAVIGATION_SAFE apply-entry control found"}
+        try:
+            if control.get("id"):
+                self.page.locator(f"#{control['id']}").click(timeout=5000)
+            else:
+                self.page.get_by_text(control["text"], exact=False).first.click(timeout=5000)
+            self.page.wait_for_load_state("networkidle", timeout=8000)
+        except Exception:  # noqa: BLE001 -- a failed click still means "did not advance"
+            return {"advanced": False, "reason": "click on apply-entry control failed"}
+        return {"advanced": True}
+
     def _do_advance_step(self) -> dict:
         next_button = _detect_button(self.page, _NEXT_BUTTON_PHRASES, exclude_phrases=_SUBMIT_BUTTON_PHRASES)
         if next_button is None:
@@ -265,8 +384,18 @@ class _LiveSession:
         except Exception:  # noqa: BLE001
             text = ""
         lowered = text.lower()
-        if not any(p in lowered for p in _SUCCESS_PHRASES) and "confirmation" not in lowered:
-            return ConfirmationOutcome(confirmed=False, current_url=current_url)
+        # CLAUDE.md Phase 11 section 36: "you already applied" is evidence
+        # of a PRIOR application, checked before (and returned distinctly
+        # from) the ordinary success-phrase match below -- it must never be
+        # folded into a fresh `confirmed=True` event.
+        if any(p in lowered for p in _DUPLICATE_APPLICATION_PHRASES):
+            return ConfirmationOutcome(confirmed=False, current_url=current_url, already_applied=True)
+        # CLAUDE.md Phase 11 section 35: a real success PHRASE match is
+        # required -- text that merely mentions "confirmation" in passing
+        # (e.g. "Submit your application to receive confirmation") must
+        # never count. `_SUCCESS_PHRASES` are all deliberately affirmative,
+        # completed-action phrases ("thank you for applying"), never a bare
+        # noun like "confirmation" alone.
         if not any(p in lowered for p in _SUCCESS_PHRASES):
             return ConfirmationOutcome(confirmed=False, current_url=current_url)
         match = _CONFIRMATION_ID_RE.search(text)
@@ -290,6 +419,48 @@ class _LiveSession:
                 self._pw_cm.__exit__(None, None, None)
         except Exception:  # noqa: BLE001
             pass
+
+
+def _field_key(rf: dict) -> tuple:
+    """Identity key for conditional-question rediscovery (CLAUDE.md Phase 11
+    section 22) -- name/id/type rather than `index`, since a newly-inserted
+    DOM node shifts every subsequent element's index."""
+    return (rf.get("name", ""), rf.get("id", ""), rf.get("type", ""))
+
+
+def _detect_apply_entry_control(page, current_host: str) -> Optional[dict]:
+    """Real-DOM apply-entry candidate scan (CLAUDE.md Phase 11 sections 4,
+    8): looks at every visible button/link/role=button, classifies each via
+    app.applications.apply_entry.classify_apply_control (the SAME
+    deterministic table browser_assist/tests use), and returns the best
+    recognized candidate. A FINAL_SUBMIT or UNKNOWN-classified control is
+    never returned here -- this function's only job is finding a safe
+    pre-form navigation target, not enumerating every button on the page."""
+    candidates = page.evaluate(
+        """
+        () => {
+          const isVisible = (el) => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+          const els = Array.from(document.querySelectorAll(
+            'a, button, input[type=submit], input[type=button], [role="button"]'
+          ));
+          return els.filter(isVisible).map((el) => ({
+            text: ((el.innerText || el.value || '') + '').trim(),
+            href: el.tagName === 'A' ? (el.getAttribute('href') || '') : '',
+            id: el.id || '',
+          })).filter((c) => c.text);
+        }
+        """
+    )
+    best: Optional[dict] = None
+    for c in candidates:
+        classification = classify_apply_control(c["text"], href=c["href"], current_host=current_host)
+        if classification == ApplyControlClassification.NAVIGATION_SAFE:
+            return {"text": c["text"], "href": c["href"], "id": c["id"], "classification": classification.value}
+        if best is None and classification in (
+            ApplyControlClassification.LOGIN_TRIGGER, ApplyControlClassification.EXTERNAL_REDIRECT,
+        ):
+            best = {"text": c["text"], "href": c["href"], "id": c["id"], "classification": classification.value}
+    return best
 
 
 def _selector_for(rf: dict) -> str:
@@ -458,6 +629,16 @@ def rediscover(session_id: str) -> DiscoveryOutcome:
 def fill_fields(session_id: str, raw_fields: list[dict], application_fields: list[ApplicationField]) -> FillOutcome:
     live = _get_live(session_id)
     return live.run(live._do_fill, raw_fields, application_fields, timeout=60)
+
+
+def advance_apply_entry(session_id: str) -> dict:
+    """CLAUDE.md Phase 11 sections 4-8: clicks the current page's
+    NAVIGATION_SAFE apply-entry control (never anything else) to move from a
+    landing/apply-entry page toward the real application form. Distinct from
+    advance_step(), which clicks a Next/Continue control ON an in-progress
+    multi-step form."""
+    live = _get_live(session_id)
+    return live.run(live._do_advance_apply_entry, timeout=30)
 
 
 def advance_step(session_id: str) -> dict:

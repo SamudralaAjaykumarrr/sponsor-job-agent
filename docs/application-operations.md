@@ -145,3 +145,15 @@ Defaults: 5/hour, 20/day, 2/company/day. Change via `MAX_APPLICATIONS_PER_HOUR`
 / `_PER_DAY` / `_PER_COMPANY_PER_DAY`. Enforced by a live query against
 `application_audit_log` — already correct across multiple worker processes
 sharing one database (SQLite file or shared Postgres).
+
+## Phase 11 operational additions
+
+- `python -m app.applications.cli workday-tenants` — per-tenant/site Workday observation matrix.
+- `python -m app.applications.cli capability-evidence [--provider NAME]` — dated evidence,
+  flagging `[STALE]` rows older than `CAPABILITY_EVIDENCE_MAX_AGE_DAYS` (default 30).
+- `/applications/workday-tenants` and `/applications/capability-evidence` dashboard pages.
+- New config: `BROWSER_SESSION_RECONSTRUCT_ENABLED` (default `true`),
+  `CAPABILITY_EVIDENCE_MAX_AGE_DAYS` (default `30`), `REAL_ATS_VALIDATION_ENABLED` (default
+  `false`, gates `scripts/phase11_live_validation.py` only — never affects pytest).
+- `python -m app.applications.cli doctor` gained 8 new checks — see
+  `docs/browser-session-reconstruction.md` and `docs/ats-capability-evidence.md`.

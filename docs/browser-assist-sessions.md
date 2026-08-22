@@ -103,3 +103,21 @@ bug this phase's own E2E suite caught (see `docs/phase10-real-ats-assist.md`).
   conditional field, form drift, manual-submit confirmation, file upload, never-clicks-submit).
 - `tests/test_browser_session_postgres.py` (marked `postgres`) — the migration and the
   concurrent-claim guarantee under real PostgreSQL.
+
+## Phase 11 additions
+
+- **Distributed leasing is now actually wired into orchestration.** Every browser-touching
+  function in `app.applications.browser_assist` (`start_session`/`resume_session`/`advance_step`/
+  `attempt_user_submit_reconciliation`) claims the session's lease at entry and releases it in a
+  `finally` at exit, so two concurrent callers for the same session never both drive the browser.
+  See `docs/browser-session-reconstruction.md` for the full ownership model.
+- **New statuses**: `PAUSED_APPLY_ENTRY_UNRECOGNIZED` (an apply-entry control was found but not
+  recognized as safe to click) and `DUPLICATE_APPLICATION_DETECTED` ("you already applied"
+  evidence — never folded into `CONFIRMED`).
+- **New columns**: `stage` (`app.applications.apply_entry.EntryStage`), `step_confidence`
+  (`EXACT`/`INFERRED`/`UNKNOWN`), `entry_detection_result`, `apply_entry_clicked`,
+  `reconstructed_count`.
+- **New tests**: `tests/test_browser_assist_phase11_e2e.py` (marked `browser`) — apply-first-click,
+  step-progress parsing, worker-crash reconstruction, owner-conflict blocking, unexpected-
+  redirect blocking, duplicate-application detection, false-confirmation-phrase rejection,
+  final-review-page handling.

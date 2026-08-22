@@ -105,6 +105,64 @@ def collect_browser_assist() -> dict:
     }
 
 
+def collect_phase11() -> dict:
+    """CLAUDE.md Phase 11 section 53. Same principle as every other
+    function in this module: every value is a live query over PERSISTED
+    state, never an in-memory incrementing counter (so it survives process
+    restarts and is correct fleet-wide the moment DATABASE_URL points at
+    shared Postgres) -- e.g. `apply_entry_detected_total` counts sessions
+    whose `apply_entry_clicked` flag is set, not an event log of clicks."""
+    from app.applications.capability_evidence import list_stale
+
+    with db_session() as conn:
+        apply_entry_detected_total = conn.execute(
+            "SELECT COUNT(*) AS c FROM browser_assist_sessions WHERE apply_entry_clicked = 1"
+        ).fetchone()["c"]
+        apply_entry_failed_total = conn.execute(
+            "SELECT COUNT(*) AS c FROM browser_assist_sessions "
+            "WHERE entry_detection_result IN ('USER_ACTION_REQUIRED', 'UNSUPPORTED', 'REDIRECT_REQUIRED')"
+        ).fetchone()["c"]
+        reconstructed_total = conn.execute(
+            "SELECT COALESCE(SUM(reconstructed_count), 0) AS c FROM browser_assist_sessions"
+        ).fetchone()["c"]
+        owner_conflicts = conn.execute(
+            "SELECT COUNT(*) AS c FROM browser_assist_sessions "
+            "WHERE lease_owner IS NOT NULL AND worker_id != lease_owner"
+        ).fetchone()["c"]
+        step_progress_detected = conn.execute(
+            "SELECT COUNT(*) AS c FROM browser_assist_sessions WHERE step_confidence = 'EXACT'"
+        ).fetchone()["c"]
+        ready_for_final_submit = conn.execute(
+            "SELECT COUNT(*) AS c FROM browser_assist_sessions WHERE status = 'READY_FOR_FINAL_SUBMIT'"
+        ).fetchone()["c"]
+        manual_submit_confirmed = conn.execute(
+            "SELECT COUNT(*) AS c FROM browser_assist_sessions WHERE status = 'CONFIRMED'"
+        ).fetchone()["c"]
+        manual_submit_unknown = conn.execute(
+            "SELECT COUNT(*) AS c FROM browser_assist_sessions WHERE status = 'SUBMISSION_STATUS_UNKNOWN'"
+        ).fetchone()["c"]
+        real_form_validation_total = conn.execute(
+            "SELECT COUNT(*) AS c FROM capability_evidence_records"
+        ).fetchone()["c"]
+        real_form_validation_failed = conn.execute(
+            "SELECT COUNT(*) AS c FROM capability_evidence_records WHERE verification_type = 'NOT_TESTED'"
+        ).fetchone()["c"]
+
+    return {
+        "apply_entry_detected_total": apply_entry_detected_total,
+        "apply_entry_failed_total": apply_entry_failed_total,
+        "browser_sessions_reconstructed_total": reconstructed_total,
+        "browser_session_owner_conflicts": owner_conflicts,
+        "real_form_validation_total": real_form_validation_total,
+        "real_form_validation_failed": real_form_validation_failed,
+        "step_progress_detected": step_progress_detected,
+        "ready_for_final_submit": ready_for_final_submit,
+        "manual_submit_confirmed": manual_submit_confirmed,
+        "manual_submit_unknown": manual_submit_unknown,
+        "capability_evidence_stale": len(list_stale()),
+    }
+
+
 def collect_worker_fleet() -> dict:
     """CLAUDE.md Phase 9 section 49: application-worker-fleet-shaped
     observability, kept separate from collect() above (which is purely

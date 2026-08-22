@@ -155,3 +155,15 @@ timestamps/bounded safe-error-text only, never field values.
   any in-progress preparation it already claimed, but
   `process_execution(execution_id, allow_submission=False)` stops at
   `SUBMISSION_READY` instead of ever calling `submit()`.
+- **Phase 11: apply-entry clicking is bounded to the SAME safety net.** The only new function
+  that clicks anything, `browser_runtime.advance_apply_entry()`, refuses to click any control not
+  FRESHLY classified `NAVIGATION_SAFE` by `app.applications.apply_entry.classify_apply_control()`
+  in that same call — a `FINAL_SUBMIT`/`LOGIN_TRIGGER`/`EXTERNAL_REDIRECT`/`UNKNOWN` control is
+  never clicked, full stop. Deliberately named to avoid the `click_apply`/`auto_submit`/
+  `click_submit`/`submit_application` fragments `_check_no_browser_auto_submit_capability`
+  scans for, so the existing static check still applies to it.
+- **Phase 11: duplicate-application evidence never fabricates a fresh confirmation.** "You
+  already applied" text is checked before the ordinary success-phrase match in
+  `browser_runtime._do_capture_confirmation()` and routes to a distinct
+  `DUPLICATE_APPLICATION_DETECTED` session status — never `CONFIRMED`, never marks the linked
+  execution `APPLIED`. See `app.applications.doctor._check_duplicate_detected_execution_marked_applied`.

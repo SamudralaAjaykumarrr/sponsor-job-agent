@@ -95,3 +95,12 @@ required.
   unresolved rather than guessed.
 - Browser form fill never implies permission to submit. This module's existence does not change
   any ATS's `submission_supported` capability declaration.
+
+## Phase 11: apply-first-click and hardened sessions
+
+The one-shot `prepare_application()` helper documented above is unchanged. The session-based API
+(`app.applications.browser_assist.start_session()` and friends) gained a pre-form navigation
+stage this phase -- see `docs/apply-entry-navigation.md` for the full mechanism and
+`docs/browser-session-reconstruction.md` for the distributed-ownership hardening. Both remain
+governed by the same safety boundaries listed above: no stealth, no CAPTCHA solving, never a
+final submit click.

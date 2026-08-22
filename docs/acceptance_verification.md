@@ -597,3 +597,30 @@ were all single-page); cross-process browser reattachment (keeping a real browse
 across a full worker-process restart) is not implemented or claimed — a restarted process
 either safely reopens a fresh window (pre-submission) or honestly reports
 `SUBMISSION_STATUS_UNKNOWN` (submission may have been in flight).
+
+### Phase 11 real bugs caught live (scripts/phase11_live_validation.py)
+
+1. **Phase 10's final-submit phrase table incorrectly included "apply now."**
+   `browser_runtime._SUBMIT_BUTTON_PHRASES` had `"apply now"` alongside genuine final-submit
+   phrases — before this phase built a distinct apply-entry concept, this meant a landing page's
+   safe "Apply Now" navigation control had no path to being distinguished from a final submit
+   action. Fixed by moving apply-entry phrases into their own disjoint table
+   (`app.applications.apply_entry.NAVIGATION_SAFE_PHRASES`).
+2. **An ungated step-progress regex misread a real on-page date as step progress.** A live run
+   against GitLab's genuine Greenhouse posting produced `step_progress_total=31` from an
+   unrelated "7/31" date elsewhere on the page — the original `\d{1,2}\s*/\s*\d{1,2}` pattern had
+   no context requirement at all. Fixed by requiring a `step`/`progress` keyword within 20
+   characters before the numbers (`app.applications.apply_entry.parse_step_progress`).
+
+### Known Phase 11 limitations
+
+See `docs/phase11-ats-flow-hardening.md`'s "Recommended Phase 12" section for the full list. In
+short: SmartRecruiters' real posting still has no safely-followable apply-entry control (a
+control was found this phase but correctly classified `EXTERNAL_REDIRECT`, never clicked); a
+genuinely live Workday tenant (Walmart, found via web search) gave INCONSISTENT apply-entry
+results across two runs of the same URL, reported honestly rather than cherry-picked; Workable
+was validated live for the first time this phase (a real tenant, 'flosum', found via web search)
+but only a single-page form, no multi-step/login/confirmation observed; cross-process browser
+reattachment remains unimplemented and unclaimed (unchanged from Phase 10) — Phase 11 only makes
+the reconstruction path ownership-safe and countable (`reconstructed_count`), not a claim of true
+reattachment.

@@ -32,9 +32,20 @@ class BrowserSessionStatus(str, Enum):
     PAUSED_FORM_CHANGED = "PAUSED_FORM_CHANGED"
     PAUSED_PLATFORM_RESTRICTED = "PAUSED_PLATFORM_RESTRICTED"
     PAUSED_UNSUPPORTED_SUBMISSION = "PAUSED_UNSUPPORTED_SUBMISSION"
+    # CLAUDE.md Phase 11 section 6: an apply-entry control was found but its
+    # text didn't classify as NAVIGATION_SAFE (nor LOGIN_TRIGGER, which gets
+    # its own PAUSED_LOGIN_REQUIRED) -- never clicked, always surfaced for a
+    # human to look at and, if genuinely safe, click themselves.
+    PAUSED_APPLY_ENTRY_UNRECOGNIZED = "PAUSED_APPLY_ENTRY_UNRECOGNIZED"
     READY_FOR_FINAL_SUBMIT = "READY_FOR_FINAL_SUBMIT"
     AWAITING_USER_SUBMIT = "AWAITING_USER_SUBMIT"
     SUBMISSION_STATUS_UNKNOWN = "SUBMISSION_STATUS_UNKNOWN"
+    # CLAUDE.md Phase 11 section 36: "you already applied" evidence is
+    # deliberately never folded into CONFIRMED -- it means a submission
+    # (possibly this one, possibly an earlier one) already exists somewhere,
+    # which is a distinct fact from "this attempt just succeeded" and always
+    # needs a human to reconcile which is true.
+    DUPLICATE_APPLICATION_DETECTED = "DUPLICATE_APPLICATION_DETECTED"
     CONFIRMED = "CONFIRMED"
     CLOSED = "CLOSED"
     EXPIRED = "EXPIRED"
@@ -53,6 +64,7 @@ PAUSED_STATUSES = frozenset({
     BrowserSessionStatus.PAUSED_MFA_REQUIRED, BrowserSessionStatus.PAUSED_LEGAL_QUESTION,
     BrowserSessionStatus.PAUSED_UNKNOWN_FIELD, BrowserSessionStatus.PAUSED_FORM_CHANGED,
     BrowserSessionStatus.PAUSED_PLATFORM_RESTRICTED, BrowserSessionStatus.PAUSED_UNSUPPORTED_SUBMISSION,
+    BrowserSessionStatus.PAUSED_APPLY_ENTRY_UNRECOGNIZED,
 })
 
 
@@ -66,6 +78,7 @@ class BrowserPauseReason(str, Enum):
     PLATFORM_POLICY_RESTRICTED = "PLATFORM_POLICY_RESTRICTED"
     FORM_CHANGED = "FORM_CHANGED"
     UNSUPPORTED_SUBMISSION = "UNSUPPORTED_SUBMISSION"
+    APPLY_ENTRY_UNRECOGNIZED = "APPLY_ENTRY_UNRECOGNIZED"
 
 
 # Maps a pause reason to the session status it produces -- kept as one
@@ -79,6 +92,7 @@ REASON_TO_STATUS: dict[BrowserPauseReason, BrowserSessionStatus] = {
     BrowserPauseReason.PLATFORM_POLICY_RESTRICTED: BrowserSessionStatus.PAUSED_PLATFORM_RESTRICTED,
     BrowserPauseReason.FORM_CHANGED: BrowserSessionStatus.PAUSED_FORM_CHANGED,
     BrowserPauseReason.UNSUPPORTED_SUBMISSION: BrowserSessionStatus.PAUSED_UNSUPPORTED_SUBMISSION,
+    BrowserPauseReason.APPLY_ENTRY_UNRECOGNIZED: BrowserSessionStatus.PAUSED_APPLY_ENTRY_UNRECOGNIZED,
 }
 
 
@@ -186,6 +200,14 @@ def touch_activity(session_id: str) -> None:
 # locking.
 
 def claim_session(session_id: str, *, worker_id: str, lease_seconds: int) -> Optional[dict]:
+    """Atomic `UPDATE ... WHERE (unleased OR lease-expired OR already-mine)`
+    -- the third condition (CLAUDE.md Phase 11 section 26) makes this safely
+    RE-ENTRANT for the current owner (a single orchestration call in
+    app.applications.browser_assist that internally delegates to another
+    browser_assist function, e.g. mark_user_action_complete ->
+    resume_session, must be able to re-claim/renew its own lease without
+    that being treated as a conflict) while staying exactly as exclusive as
+    Phase 10's original version for any OTHER worker_id."""
     now = utcnow()
     expires = (_utcnow_dt() + timedelta(seconds=lease_seconds)).isoformat()
     attempt_id = uuid.uuid4().hex
@@ -195,8 +217,27 @@ def claim_session(session_id: str, *, worker_id: str, lease_seconds: int) -> Opt
                SET lease_owner = ?, lease_attempt_id = ?, lease_acquired_at = ?, lease_expires_at = ?,
                    worker_id = ?
                WHERE session_id = ? AND active = 1
-                 AND (lease_expires_at IS NULL OR lease_expires_at <= ?)""",
-            (worker_id, attempt_id, now, expires, worker_id, session_id, now),
+                 AND (lease_expires_at IS NULL OR lease_expires_at <= ? OR lease_owner = ?)""",
+            (worker_id, attempt_id, now, expires, worker_id, session_id, now, worker_id),
+        )
+        if cur.rowcount != 1:
+            return None
+    return get_session(session_id)
+
+
+def renew_session_lease(session_id: str, *, worker_id: str, lease_seconds: int) -> Optional[dict]:
+    """CLAUDE.md Phase 11 section 26: a worker actively driving a live
+    session extends its own lease periodically rather than losing ownership
+    mid-interaction to a lease-expiry race. Only the CURRENT owner may renew
+    -- same atomic `UPDATE ... WHERE lease_owner = ?` pattern as
+    app.workers.queue's own lease-extension calls, never a
+    read-then-write."""
+    expires = (_utcnow_dt() + timedelta(seconds=lease_seconds)).isoformat()
+    with db_session() as conn:
+        cur = conn.execute(
+            "UPDATE browser_assist_sessions SET lease_expires_at = ? "
+            "WHERE session_id = ? AND active = 1 AND lease_owner = ?",
+            (expires, session_id, worker_id),
         )
         if cur.rowcount != 1:
             return None

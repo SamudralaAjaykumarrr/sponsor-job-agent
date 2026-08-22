@@ -84,3 +84,28 @@ section either ran exactly once or reported `NOT RUN` immediately.
 Re-run `python scripts/phase10_live_validation.py` and update this file (and
 `app/applications/browser_capability_matrix.py`'s corresponding row) only from a fresh,
 genuinely-observed result — never bump a verification level from memory or assumption.
+
+## Phase 11 update (2026-08-22): apply-first-click validation
+
+`scripts/phase11_live_validation.py` re-ran all six providers and additionally attempted to
+follow each real posting's apply-entry control (see `docs/apply-entry-navigation.md`). Full
+per-provider findings live in `docs/phase11-ats-flow-hardening.md`; summary:
+
+| Provider | Apply-entry control found | Classification | Followed | Verification (form level) |
+|---|---|---|---|---|
+| Greenhouse | yes | `NAVIGATION_SAFE` | **yes** | `LIVE_FORM_VERIFIED` (unchanged) |
+| Lever | yes | `EXTERNAL_REDIRECT` | no (correct) | `LIVE_FORM_VERIFIED` (unchanged; page was already the form) |
+| Ashby | yes | `EXTERNAL_REDIRECT` | no (correct) | `LIVE_FORM_VERIFIED` (unchanged; page was already the form) |
+| SmartRecruiters | yes | `EXTERNAL_REDIRECT` | no (correct) | still `NOT_TESTED` -- see `docs/smartrecruiters-application-assist.md` |
+| Workday | inconsistent across 2 runs | `NAVIGATION_SAFE` once, `LOGIN_TRIGGER` once | no (neither run) | still `NOT_TESTED` -- see `docs/workday-tenant-validation.md` (new, genuinely live, tenant: Walmart) |
+| Workable | yes | `EXTERNAL_REDIRECT` | no (correct; `application_url` was already the form) | upgraded to `LIVE_FORM_VERIFIED` (new, genuinely live tenant: 'flosum') |
+
+A real bug this run caught and fixed: an early, ungated step-progress regex misread an unrelated
+on-page date ("7/31") on the real Greenhouse posting as "step 7 of 31" -- see
+`app/applications/apply_entry.py::parse_step_progress`'s docstring and
+`tests/test_apply_entry.py::test_unrelated_date_like_ratio_never_treated_as_step_progress`.
+
+Genuine, dated evidence from this run is recorded in `capability_evidence_records` (query via
+`python -m app.applications.cli capability-evidence`) and, for Workday,
+`workday_tenant_observations` (`python -m app.applications.cli workday-tenants`) -- see
+`docs/ats-capability-evidence.md`.

@@ -28,7 +28,15 @@
       <dt>Status</dt><dd><strong>{{ session.status }}</strong></dd>
       <dt>Browser window</dt>
       <dd>{% if is_live %}<span class="ok">open in this process</span>{% else %}<span class="warn">not open in this process</span> — Resume to reopen{% endif %}</dd>
-      <dt>Step</dt><dd>{{ session.current_step }}{% if session.total_steps_if_known %} of {{ session.total_steps_if_known }}{% endif %}</dd>
+      <dt>Stage</dt><dd>{{ session.stage }}</dd>
+      <dt>Step</dt><dd>{{ session.current_step }}{% if session.total_steps_if_known %} of {{ session.total_steps_if_known }}{% endif %}
+        <span style="color:#888;">({{ session.step_confidence }} confidence)</span></dd>
+      <dt>Apply-entry navigated</dt><dd>{{ 'yes' if session.apply_entry_clicked else 'no' }}</dd>
+      {% if session.reconstructed_count %}
+      <dt>Reconstructed</dt><dd class="warn">{{ session.reconstructed_count }} time(s) -- fresh browser reopened at
+        the saved URL after the previous window/process was lost (never a claim of true cross-process
+        reattachment)</dd>
+      {% endif %}
       <dt>Mapped fields</dt><dd>{{ session.mapped_field_count }}</dd>
       <dt>Unresolved fields</dt><dd>{{ session.unresolved_field_count }}</dd>
       <dt>Form fingerprint</dt><dd><code>{{ session.form_fingerprint }}</code></dd>

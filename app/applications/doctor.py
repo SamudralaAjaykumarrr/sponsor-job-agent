@@ -76,6 +76,14 @@ def run_doctor() -> DoctorReport:
         _check_no_browser_auto_submit_capability(report)
         _check_browser_session_forbidden_fields(conn, report)
         _check_browser_capability_matrix_never_claims_final_submit(report)
+        # --- Phase 11 (CLAUDE.md Phase 11 section 52) ---
+        _check_paused_session_holding_lease(conn, report)
+        _check_browser_session_owner_conflict(conn, report)
+        _check_stale_capability_evidence(report)
+        _check_invalid_step_progress(conn, report)
+        _check_real_provider_capability_auto_without_authorization(report)
+        _check_false_confirmation_evidence(conn, report)
+        _check_duplicate_detected_execution_marked_applied(conn, report)
     return report
 
 
@@ -463,3 +471,128 @@ def _check_rate_limit_accounting_inconsistency(conn, report: DoctorReport) -> No
         report.issues.append(Issue("serious", "rate_limit_accounting_inconsistency",
                                     f"{hourly} submit attempts recorded in the last hour, exceeding "
                                     f"MAX_APPLICATIONS_PER_HOUR={config.MAX_APPLICATIONS_PER_HOUR}"))
+
+
+# --- Phase 11 checks (CLAUDE.md Phase 11 section 52) -------------------------
+
+def _check_paused_session_holding_lease(conn, report: DoctorReport) -> None:
+    """CLAUDE.md Phase 11 section 27: a session waiting on a user action
+    must not keep a distributed lease held forever -- app.applications.
+    browser_assist releases the lease at the end of every orchestration
+    call regardless of the resulting status, so a PAUSED_* session with a
+    still-unexpired lease indicates that release didn't happen (a crash
+    mid-call, or a future regression)."""
+    now = datetime.now(timezone.utc).isoformat()
+    rows = conn.execute(
+        "SELECT session_id, job_id, status FROM browser_assist_sessions "
+        "WHERE status LIKE 'PAUSED_%' AND lease_owner IS NOT NULL AND lease_expires_at IS NOT NULL "
+        "AND lease_expires_at > ?",
+        (now,),
+    ).fetchall()
+    for r in rows:
+        report.issues.append(Issue("warning", "paused_session_holding_lease",
+                                    f"session {r['session_id']} (job {r['job_id']}) is {r['status']} but still "
+                                    f"holds an active lease -- it should have been released so another worker "
+                                    f"can resume it"))
+
+
+def _check_browser_session_owner_conflict(conn, report: DoctorReport) -> None:
+    """CLAUDE.md Phase 11 section 26: claim_session() atomically sets
+    `lease_owner` and `worker_id` to the SAME value together -- these two
+    columns disagreeing while a lease is still unexpired means the
+    ownership bookkeeping is corrupted, not that two workers both hold it
+    (the schema's partial-unique-index-backed `active=1` guarantee already
+    makes true dual ownership of one job's session impossible)."""
+    now = datetime.now(timezone.utc).isoformat()
+    rows = conn.execute(
+        "SELECT session_id, job_id, worker_id, lease_owner FROM browser_assist_sessions "
+        "WHERE lease_owner IS NOT NULL AND lease_expires_at IS NOT NULL AND lease_expires_at > ? "
+        "AND worker_id != lease_owner",
+        (now,),
+    ).fetchall()
+    for r in rows:
+        report.issues.append(Issue("serious", "browser_session_owner_conflict",
+                                    f"session {r['session_id']} (job {r['job_id']}) has lease_owner="
+                                    f"'{r['lease_owner']}' but worker_id='{r['worker_id']}' -- inconsistent "
+                                    f"ownership bookkeeping"))
+
+
+def _check_stale_capability_evidence(report: DoctorReport) -> None:
+    """CLAUDE.md Phase 11 section 43: surfaces stale LIVE_PUBLIC evidence
+    for revalidation -- never auto-disables the capability, only reports."""
+    from app.applications.capability_evidence import list_stale
+
+    for result in list_stale():
+        report.issues.append(Issue("warning", "stale_capability_evidence",
+                                    f"provider '{result.row['provider']}' capability "
+                                    f"'{result.row['capability']}' evidence is {result.age_days:.1f} days old -- "
+                                    f"revalidation recommended"))
+
+
+def _check_invalid_step_progress(conn, report: DoctorReport) -> None:
+    """CLAUDE.md Phase 11 section 19: total_steps_if_known must never be
+    invented (only ever set alongside EXACT confidence), and current_step
+    must never exceed a genuinely known total."""
+    rows = conn.execute(
+        "SELECT session_id, job_id, current_step, total_steps_if_known FROM browser_assist_sessions "
+        "WHERE total_steps_if_known IS NOT NULL AND current_step > total_steps_if_known"
+    ).fetchall()
+    for r in rows:
+        report.issues.append(Issue("serious", "invalid_step_progress",
+                                    f"session {r['session_id']} (job {r['job_id']}) has current_step="
+                                    f"{r['current_step']} exceeding total_steps_if_known="
+                                    f"{r['total_steps_if_known']}"))
+    rows2 = conn.execute(
+        "SELECT session_id, job_id FROM browser_assist_sessions "
+        "WHERE total_steps_if_known IS NOT NULL AND step_confidence = 'UNKNOWN'"
+    ).fetchall()
+    for r in rows2:
+        report.issues.append(Issue("serious", "invented_total_steps",
+                                    f"session {r['session_id']} (job {r['job_id']}) has total_steps_if_known set "
+                                    f"but step_confidence=UNKNOWN -- a total must never be recorded without a "
+                                    f"genuinely parsed (EXACT) reading"))
+
+
+def _check_real_provider_capability_auto_without_authorization(report: DoctorReport) -> None:
+    """CLAUDE.md Phase 11 section 3: a static assertion (not just a live-flag
+    check like `_check_auto_submit_enabled_for_unvalidated_provider` above)
+    that no real ATS provider has ever had submission_supported flipped to
+    True -- the mock_ats fixture remains the only one, full stop."""
+    for cap in all_application_capabilities():
+        if cap["provider"] != "mock_ats" and cap["submission_supported"]:
+            report.issues.append(Issue("serious", "real_provider_auto_submit_without_authorization",
+                                        f"provider '{cap['provider']}' declares submission_supported=True but is "
+                                        f"not the mock_ats fixture -- no real ATS provider may set this without "
+                                        f"genuine, tested, explicitly-permitted authorization"))
+
+
+def _check_false_confirmation_evidence(conn, report: DoctorReport) -> None:
+    """CLAUDE.md Phase 11 section 34: a CONFIRMED browser-assist session
+    must always carry SOME genuine evidence (a confirmation id or a
+    confirmation-text fingerprint) -- never bare status with nothing behind
+    it."""
+    rows = conn.execute(
+        "SELECT session_id, job_id FROM browser_assist_sessions WHERE status = 'CONFIRMED' "
+        "AND (confirmation_id IS NULL OR confirmation_id = '') "
+        "AND (confirmation_text_fingerprint IS NULL OR confirmation_text_fingerprint = '')"
+    ).fetchall()
+    for r in rows:
+        report.issues.append(Issue("serious", "false_confirmation_evidence",
+                                    f"session {r['session_id']} (job {r['job_id']}) is CONFIRMED with no "
+                                    f"confirmation_id and no confirmation_text_fingerprint on record"))
+
+
+def _check_duplicate_detected_execution_marked_applied(conn, report: DoctorReport) -> None:
+    """CLAUDE.md Phase 11 section 36: 'you already applied' evidence must
+    never, by itself, produce a fresh APPLIED transition on the linked
+    execution."""
+    rows = conn.execute(
+        "SELECT s.session_id, s.execution_id FROM browser_assist_sessions s "
+        "JOIN application_executions e ON e.execution_id = s.execution_id "
+        "WHERE s.status = 'DUPLICATE_APPLICATION_DETECTED' AND e.status = 'APPLIED'"
+    ).fetchall()
+    for r in rows:
+        report.issues.append(Issue("serious", "duplicate_detected_execution_marked_applied",
+                                    f"session {r['session_id']} is DUPLICATE_APPLICATION_DETECTED but its linked "
+                                    f"execution {r['execution_id']} is APPLIED -- duplicate-application evidence "
+                                    f"must never produce a fresh APPLIED transition"))

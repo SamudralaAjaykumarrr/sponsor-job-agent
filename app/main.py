@@ -816,7 +816,9 @@ def browser_sessions_expire_stale():
 
 @app.get("/api/applications/browser-assist/metrics")
 def api_browser_assist_metrics():
-    return JSONResponse(applications_metrics.collect_browser_assist())
+    metrics = applications_metrics.collect_browser_assist()
+    metrics.update(applications_metrics.collect_phase11())
+    return JSONResponse(metrics)
 
 
 @app.get("/applications/browser-capability-matrix", response_class=HTMLResponse)
@@ -825,6 +827,33 @@ def browser_capability_matrix_page(request: Request):
 
     matrix = browser_capability_matrix.build_matrix()
     return templates.TemplateResponse(request, "browser_capability_matrix.html", {"matrix": matrix})
+
+
+@app.get("/applications/workday-tenants", response_class=HTMLResponse)
+def workday_tenant_matrix_page(request: Request):
+    """CLAUDE.md Phase 11 sections 45, 57: per-tenant/site Workday
+    observations -- never a single collapsed 'Workday supported' claim."""
+    from app.applications import workday_tenant
+
+    return templates.TemplateResponse(
+        request, "workday_tenants.html", {"observations": workday_tenant.list_observations()},
+    )
+
+
+@app.get("/applications/capability-evidence", response_class=HTMLResponse)
+def capability_evidence_page(request: Request):
+    """CLAUDE.md Phase 11 sections 42-43, 57: dated capability evidence with
+    staleness -- read-only, never auto-disables anything."""
+    from app.applications import capability_evidence
+
+    rows = capability_evidence.list_evidence()
+    for row in rows:
+        row["stale"] = capability_evidence.is_stale(row)
+        row["age_days"] = round(capability_evidence.evidence_age_days(row["observed_at"]), 1)
+    return templates.TemplateResponse(
+        request, "capability_evidence.html",
+        {"rows": rows, "max_age_days": config.CAPABILITY_EVIDENCE_MAX_AGE_DAYS},
+    )
 
 
 @app.get("/jobs/{job_id}/download/{file_key}")
