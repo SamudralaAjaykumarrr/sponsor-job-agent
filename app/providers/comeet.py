@@ -80,9 +80,11 @@ class CometProvider(JobProvider):
                              params={"token": cfg.token})
         except ProviderHTTPError as exc:
             logger.warning("comeet company '%s' fetch failed: %s", cfg.company, exc)
+            self._last_error = exc
             return []
-        except Exception:
+        except Exception as exc:
             logger.warning("comeet company '%s' fetch failed", cfg.company, exc_info=True)
+            self._last_error = exc
             return []
 
         results = []

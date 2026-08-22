@@ -124,3 +124,20 @@ verified registry: `provider_circuits_open_or_half_open: 0`,
 it should — a single bounded cycle isn't guaranteed to fully drain a
 provider with many tenants sharing a tight `PROVIDER_CONCURRENCY_DEFAULT`;
 continuous operation, not `--once`, is what real deployment uses).
+
+## Phase 6 additions
+
+`/fleet` now also shows: database backend, schema version (current vs.
+expected), queue backend description, worker software version, per-provider
+circuit state (with force-probe/close admin actions), schema drift table,
+and a "reap orphans now" button. New admin actions (all POST, all explicit,
+none destructive): force-probe a circuit, close a circuit, mark a worker
+offline, reap orphans. `/metrics` (Prometheus text) and `/readiness` are new
+top-level endpoints. See `docs/production-observability.md`.
+
+A real 2-worker run against a real Postgres database (migrated from this
+project's actual `data/app.db` via `app.db_migrate`, then discarded) during
+this phase's own live validation surfaced and fixed two real Postgres-
+specific bugs (a `MAX()`-is-aggregate-only SQL portability bug, and a
+concurrent-schema-DDL deadlock/race on worker startup) -- see
+`docs/phase6-production-scale.md`'s "real bugs" section for both.

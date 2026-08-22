@@ -89,9 +89,11 @@ class GreenhouseProvider(JobProvider):
                              params={"content": "true"})
         except ProviderHTTPError as exc:
             logger.warning("greenhouse board '%s' fetch failed: %s", token, exc)
+            self._last_error = exc
             return []
-        except Exception:
+        except Exception as exc:
             logger.warning("greenhouse board '%s' fetch failed", token, exc_info=True)
+            self._last_error = exc
             return []
 
         results = []

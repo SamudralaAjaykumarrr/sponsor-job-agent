@@ -36,10 +36,18 @@ from app.registry import lifecycle as registry_lifecycle
 from app.registry import store as registry_store
 from app.registry import sync as registry_sync
 from app.registry.verification import verify_portal
+from app import migrations
+from app.db import backend as db_backend
+from app.health import check_readiness
+from app.observability import metrics as observability_metrics
+from app.version import WORKER_SOFTWARE_VERSION
+from app.workers import circuit as workers_circuit
 from app.workers import dead_letter as workers_dead_letter
 from app.workers import leasing as workers_leasing
 from app.workers import metrics as workers_metrics
+from app.workers import reaper as workers_reaper
 from app.workers import repo as workers_repo
+from app.workers import schema_drift_repo
 
 
 @asynccontextmanager
@@ -369,7 +377,45 @@ def candidate_status():
 
 @app.get("/health")
 def health():
+    """Liveness only -- process is up and can respond. Deliberately does NOT
+    touch the database (CLAUDE.md Phase 6 section 31): a health check that
+    depends on the DB can't distinguish 'this process is stuck' from 'the
+    shared database is briefly slow', which is exactly what /readiness is
+    for instead."""
     return {"status": "ok"}
+
+
+@app.get("/readiness")
+def readiness():
+    """Database reachable + schema compatible (CLAUDE.md Phase 6 section
+    31). In Postgres mode this genuinely fails when the shared DB is
+    unavailable -- unlike /health, which never touches it. Never leaks DB
+    credentials in the response."""
+    result = check_readiness()
+    status_code = 200 if result.ready else 503
+    return JSONResponse(
+        {
+            "ready": result.ready,
+            "database_backend": result.database_backend,
+            "database_reachable": result.database_reachable,
+            "schema_version": result.schema_version,
+            "expected_schema_version": migrations.CURRENT_SCHEMA_VERSION,
+            "detail": result.detail,
+        },
+        status_code=status_code,
+    )
+
+
+@app.get("/metrics")
+def metrics_endpoint():
+    """Prometheus text-exposition format (CLAUDE.md Phase 6 sections 29-30).
+    Every value is a live DB query at scrape time -- see
+    app/observability/metrics.py's module docstring for why this doesn't use
+    prometheus_client. Never exposes candidate PII."""
+    if not config.METRICS_ENABLED:
+        raise HTTPException(404, "metrics endpoint disabled (METRICS_ENABLED=false)")
+    body = observability_metrics.render_prometheus_text(observability_metrics.collect())
+    return HTMLResponse(content=body, media_type="text/plain; version=0.0.4")
 
 
 # --- Phase 5: fleet operations dashboard ------------------------------------
@@ -382,6 +428,11 @@ def fleet_page(request: Request):
     dead_letters = workers_dead_letter.list_dead_letters(limit=100)
     snapshot = workers_metrics.fleet_snapshot()
     latency = workers_metrics.discovery_latency_percentiles()
+    readiness = check_readiness()
+    circuit_rows = [
+        {"provider": p, "state": s} for p, s in observability_metrics.provider_circuit_states().items()
+    ]
+    schema_drift = schema_drift_repo.list_recent_drift(limit=50)
     return templates.TemplateResponse(
         request, "fleet.html",
         {
@@ -389,6 +440,15 @@ def fleet_page(request: Request):
             "dead_letters": dead_letters, "snapshot": snapshot, "latency": latency,
             "active_poll_leases": workers_leasing.count_active_poll_leases(),
             "active_verification_leases": workers_leasing.count_active_verification_leases(),
+            "circuit_rows": circuit_rows,
+            "schema_drift": schema_drift,
+            "system": {
+                "database_backend": db_backend(),
+                "schema_version": readiness.schema_version,
+                "expected_schema_version": migrations.CURRENT_SCHEMA_VERSION,
+                "queue_backend": "PostgreSQL (SKIP LOCKED)" if db_backend() == "postgres" else "SQLite (WAL + busy_timeout)",
+                "worker_software_version": WORKER_SOFTWARE_VERSION,
+            },
             "config": {
                 "poll_worker_concurrency": config.POLL_WORKER_CONCURRENCY,
                 "portal_lease_seconds": config.PORTAL_LEASE_SECONDS,
@@ -397,6 +457,7 @@ def fleet_page(request: Request):
                 "dead_letter_max_attempts": config.DEAD_LETTER_MAX_ATTEMPTS,
                 "circuit_breaker_failure_threshold": config.CIRCUIT_BREAKER_FAILURE_THRESHOLD,
                 "circuit_breaker_cooldown_seconds": config.CIRCUIT_BREAKER_COOLDOWN_SECONDS,
+                "orphan_worker_stale_seconds": config.ORPHAN_WORKER_STALE_SECONDS,
             },
         },
     )
@@ -416,6 +477,34 @@ def fleet_metrics():
         "active_poll_leases": workers_leasing.count_active_poll_leases(),
         "active_verification_leases": workers_leasing.count_active_verification_leases(),
     })
+
+
+# --- Phase 6 (CLAUDE.md section 34): fleet admin safety actions -------------
+# All POST, all explicit operator actions, none destructive ("delete all"
+# controls are never provided).
+
+@app.post("/fleet/circuit/{provider}/force-probe")
+def fleet_force_probe(provider: str):
+    workers_circuit.force_probe(provider)
+    return RedirectResponse(url="/fleet", status_code=303)
+
+
+@app.post("/fleet/circuit/{provider}/close")
+def fleet_close_circuit(provider: str):
+    workers_circuit.force_close(provider)
+    return RedirectResponse(url="/fleet", status_code=303)
+
+
+@app.post("/fleet/workers/{worker_id}/mark-offline")
+def fleet_mark_worker_offline(worker_id: str):
+    workers_repo.mark_worker_offline(worker_id)
+    return RedirectResponse(url="/fleet", status_code=303)
+
+
+@app.post("/fleet/reap-orphans")
+def fleet_reap_orphans():
+    workers_reaper.reap_orphans(stale_after_seconds=config.ORPHAN_WORKER_STALE_SECONDS)
+    return RedirectResponse(url="/fleet", status_code=303)
 
 
 # --- Phase 5: registry acquisition dashboard --------------------------------

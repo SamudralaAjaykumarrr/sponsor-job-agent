@@ -8,6 +8,26 @@ def test_greenhouse_url_detected_with_tenant():
     assert r.confidence >= 0.9
 
 
+def test_greenhouse_api_shaped_url_extracts_tenant_not_api_version():
+    """Real bug caught during Phase 6 live acquisition validation: a real
+    company's (Duolingo's) careers page linked directly to
+    boards-api.greenhouse.io/v1/boards/{tenant}/departments -- the same
+    boards-api.greenhouse.io host app.providers.greenhouse.GREENHOUSE_JOBS_URL
+    itself uses, but with 2 extra path segments ("v1", "boards") before the
+    tenant. Before the fix, "v1" was extracted as the tenant instead of the
+    real company slug."""
+    r = detect_provider("https://boards-api.greenhouse.io/v1/boards/duolingo/departments")
+    assert r.provider == "greenhouse"
+    assert r.tenant_identifier == "duolingo"
+    assert r.confidence >= 0.9
+
+
+def test_greenhouse_api_jobs_url_also_extracts_correct_tenant():
+    r = detect_provider("https://boards-api.greenhouse.io/v1/boards/acme/jobs")
+    assert r.provider == "greenhouse"
+    assert r.tenant_identifier == "acme"
+
+
 def test_lever_url_detected_with_tenant():
     r = detect_provider("https://jobs.lever.co/acme/abc-123")
     assert r.provider == "lever"

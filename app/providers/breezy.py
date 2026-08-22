@@ -52,9 +52,11 @@ class BreezyProvider(JobProvider):
             data = get_json(client, BREEZY_LIST_URL.format(subdomain=subdomain), provider="breezy")
         except ProviderHTTPError as exc:
             logger.warning("breezy subdomain '%s' fetch failed: %s", subdomain, exc)
+            self._last_error = exc
             return []
-        except Exception:
+        except Exception as exc:
             logger.warning("breezy subdomain '%s' fetch failed", subdomain, exc_info=True)
+            self._last_error = exc
             return []
 
         results = []

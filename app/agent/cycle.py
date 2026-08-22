@@ -44,7 +44,7 @@ def _pre_filter_reason(raw: RawJobPosting) -> str | None:
     return None
 
 
-def _raw_to_job(raw: RawJobPosting, canonical_url: str = "") -> Job:
+def _raw_to_job(raw: RawJobPosting, canonical_url: str = "", correlation_id: str = "") -> Job:
     return Job(
         title=raw.title,
         company=raw.company,
@@ -75,6 +75,7 @@ def _raw_to_job(raw: RawJobPosting, canonical_url: str = "") -> Job:
         freshness_source=FreshnessSource.PUBLISHED_AT if raw.published_at else FreshnessSource.FIRST_SEEN,
         application_state=ApplicationState.DISCOVERED,
         mode=ApplicationMode.ASSIST,
+        correlation_id=correlation_id,
     )
 
 
@@ -104,6 +105,7 @@ def _analyze_and_maybe_generate(job_id: int, stats: dict) -> None:
 
 def _process_raw_job(
     raw: RawJobPosting, stats: dict, cycle_id: int | None = None, registry_id: int | None = None,
+    correlation_id: str = "",
 ) -> str:
     """Fetch -> filter -> dedupe -> store -> analyze one raw posting. Returns
     'filtered' | 'duplicate' | 'new' for the caller's per-tenant observability
@@ -141,7 +143,7 @@ def _process_raw_job(
             _analyze_and_maybe_generate(existing.id, stats)
         return "duplicate"
 
-    job = _raw_to_job(raw, canonical)
+    job = _raw_to_job(raw, canonical, correlation_id=correlation_id)
     job_id = insert_job(job)
     stats["jobs_new"] += 1
     record_provenance(

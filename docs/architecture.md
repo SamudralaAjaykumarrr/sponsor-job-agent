@@ -199,3 +199,40 @@ rebuilding it (all 312 pre-existing tests still pass unmodified):
   `/acquisition` (batch progress + resume), `/fleet/metrics` (JSON).
 - `scripts/worker_benchmark.py` — synthetic 1k/10k/50k/100k `company_registry` leasing/attempt
   benchmark, isolated temp SQLite DB only.
+
+## Phase 6: production-scale distributed architecture
+
+See `docs/phase6-production-scale.md` for the full map. Summary of what
+moved:
+
+- `app/db.py` now dispatches to either SQLite (unchanged) or PostgreSQL
+  (`app/db_postgres.py`, a thin connection/cursor wrapper, not SQLAlchemy)
+  based on `DATABASE_URL`. Same schema (mechanically translated), same
+  `get_connection()`/`db_session()`/`init_db()` surface every other module
+  already calls.
+- `app/migrations.py` — real, versioned, idempotent schema migrations
+  (`schema_migrations` table), used for every Phase 6 schema change; Phase
+  1-5's schema is the implicit baseline version.
+- `app/workers/leasing_postgres.py` — `SELECT ... FOR UPDATE SKIP LOCKED`
+  claiming for Postgres, dispatched from the same `app/workers/leasing.py`
+  functions every caller already uses.
+- `app/workers/reaper.py`, `app/workers/identity.py` (extended) — orphan
+  worker detection + multi-machine identity metadata.
+- `app/providers/errors.py` — structured `ProviderFetchResult`, wired into
+  `app/workers/runner.py`; see `docs/provider-error-contract.md`.
+- `app/workers/schema_drift_repo.py` — persistent schema-drift tracking,
+  feeding the circuit breaker for provider-wide drift.
+- `app/registry/acquisition_records.py`, `app/registry/domain_seed.py`,
+  `app/registry/acquisition_priority.py` — distributed acquisition
+  checkpointing, the domain-seed pipeline, and priority scoring; see
+  `docs/registry-acquisition.md`.
+- `app/sponsorship/evidence.py` — sponsorship-evidence storage foundation
+  for Phase 7 (never read by the sponsorship classifier).
+- `app/observability/` (`metrics.py`, `logging_config.py`), `app/health.py`
+  — `/metrics`, `/readiness`, structured logging, correlation ids; see
+  `docs/production-observability.md`.
+- `app/db_migrate.py` — SQLite → PostgreSQL data migration tool; see
+  `docs/database-migration.md`.
+- `scripts/multi_machine_simulation.py`, `scripts/phase6_scale_benchmark.py`
+  — distributed-coordination acceptance simulation and a separate Phase 6
+  synthetic scale benchmark (SQLite and, when available, real Postgres).

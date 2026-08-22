@@ -1,8 +1,13 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Optional
 
 from app.providers.capabilities import ProviderCapabilities, SupportLevel
+
+
+def _utcnow() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 @dataclass
@@ -60,6 +65,13 @@ class JobProvider(ABC):
     without a working, tested implementation."""
 
     name: str = "base"
+    # Phase 6 (CLAUDE.md sections 12-14): the last exception a subclass's own
+    # internal per-tenant fetch helper swallowed (logged + returned [] for),
+    # if any -- class-level default so subclasses never need to touch their
+    # __init__ to support this. fetch_jobs_result() below reads it to tell
+    # "genuinely empty board" apart from "the fetch actually failed" without
+    # changing fetch_jobs()'s existing swallow-and-return-[] behavior at all.
+    _last_error: Optional[BaseException] = None
     capabilities: ProviderCapabilities = ProviderCapabilities(
         provider_name="base",
         provider_version="0.0.0",
@@ -83,3 +95,31 @@ class JobProvider(ABC):
     @classmethod
     def get_capabilities(cls) -> ProviderCapabilities:
         return cls.capabilities
+
+    def fetch_jobs_result(self, max_jobs: int, *, tenant: str = "") -> "ProviderFetchResult":
+        """CLAUDE.md Phase 6 sections 12-13: structured counterpart to
+        fetch_jobs() that lets a caller distinguish SUCCESS_WITH_JOBS /
+        SUCCESS_EMPTY / a specific typed failure, instead of an empty list
+        meaning either "nothing to report" or "the fetch actually broke".
+        fetch_jobs() itself is never modified by this -- same behavior,
+        same tests, unconditionally. UNSUPPORTED providers (support_level
+        never implemented discovery) short-circuit without even attempting
+        a request, matching their existing fetch_jobs()==[] contract."""
+        from app.providers.errors import ProviderFetchResult, ProviderFetchStatus, build_result, utcnow
+
+        started_at = utcnow()
+        if not self.capabilities.discovery_supported:
+            finished_at = utcnow()
+            return ProviderFetchResult(
+                status=ProviderFetchStatus.UNSUPPORTED, jobs=[], provider=self.name, tenant=tenant,
+                started_at=started_at, finished_at=finished_at, latency_ms=0.0,
+                error_type=ProviderFetchStatus.UNSUPPORTED.value,
+                error_message_safe=f"{self.name}: discovery not implemented ({self.capabilities.notes})",
+                retryable=False,
+            )
+
+        self._last_error = None
+        jobs = self.fetch_jobs(max_jobs)
+        error = self._last_error
+        self._last_error = None
+        return build_result(provider=self.name, tenant=tenant, jobs=jobs, started_at=started_at, error=error)

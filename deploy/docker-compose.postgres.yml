@@ -1,0 +1,77 @@
+# Production-oriented multi-service local demo (CLAUDE.md Phase 6 sections
+# 40, 42): PostgreSQL + dashboard + two workers, all sharing the same
+# DATABASE_URL. This is an EXAMPLE for local demonstration/testing, not
+# infrastructure this build deploys anywhere -- see docs/deployment-postgres.md.
+#
+# Usage:
+#   cd deploy
+#   POSTGRES_PASSWORD=<pick-one-yourself> docker compose -f docker-compose.postgres.yml up --build
+#
+# No hardcoded production secrets: POSTGRES_PASSWORD must be supplied via
+# the environment/.env at compose time (see the ${...:?...} guard below,
+# which refuses to start with no value rather than silently defaulting to
+# something guessable).
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: sponsor_job_agent
+      POSTGRES_USER: sponsor_job_agent
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in your environment or a .env file}
+    volumes:
+      - sponsor_job_agent_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sponsor_job_agent -d sponsor_job_agent"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  dashboard:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://sponsor_job_agent:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/sponsor_job_agent
+      AGENT_ENABLED: "false"
+      METRICS_ENABLED: "true"
+    ports:
+      - "8000:8000"
+
+  worker-1:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://sponsor_job_agent:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/sponsor_job_agent
+      REGISTRY_SHARD_COUNT: "2"
+      REGISTRY_SHARD_INDEX: "0"
+      STRUCTURED_LOGGING_ENABLED: "true"
+    command: ["python", "-m", "app.workers.cli", "run"]
+
+  worker-2:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://sponsor_job_agent:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/sponsor_job_agent
+      REGISTRY_SHARD_COUNT: "2"
+      REGISTRY_SHARD_INDEX: "1"
+      STRUCTURED_LOGGING_ENABLED: "true"
+    command: ["python", "-m", "app.workers.cli", "run"]
+
+volumes:
+  sponsor_job_agent_pgdata:

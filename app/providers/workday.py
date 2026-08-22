@@ -97,9 +97,11 @@ class WorkdayProvider(JobProvider):
                 )
             except ProviderHTTPError as exc:
                 logger.warning("workday tenant '%s' offset %s fetch failed: %s", tenant, offset, exc)
+                self._last_error = exc
                 break
-            except Exception:
+            except Exception as exc:
                 logger.warning("workday tenant '%s' offset %s fetch failed", tenant, offset, exc_info=True)
+                self._last_error = exc
                 break
 
             total = data.get("total", total)

@@ -20,6 +20,11 @@ class WorkerStatus(str, Enum):
     DEGRADED = "DEGRADED"
     STOPPING = "STOPPING"
     STOPPED = "STOPPED"
+    # Phase 6: assigned only by app.workers.reaper.reap_orphans() when a
+    # worker's heartbeat has gone stale past a configurable threshold --
+    # never assigned by the worker itself (a live worker only ever sets
+    # STARTING/IDLE/WORKING/STOPPING/STOPPED on its own row).
+    OFFLINE = "OFFLINE"
 
 
 class Queue(str, Enum):

@@ -204,8 +204,46 @@ def acquire_inflight_slot(provider: str, limit: Optional[int] = None) -> bool:
 def release_inflight_slot(provider: str) -> None:
     with db_session() as conn:
         conn.execute(
-            "UPDATE provider_circuit_state SET inflight = MAX(0, inflight - 1), updated_at = ? WHERE provider = ?",
+            # CASE WHEN, not MAX(0, inflight - 1) -- SQLite's MAX() accepts 2+
+            # scalar args, but Postgres's MAX() is aggregate-only (1 arg) and
+            # would need GREATEST() instead. CASE WHEN is standard SQL that
+            # behaves identically on both backends, avoiding yet another
+            # backend-conditional statement (a real bug caught by this
+            # phase's own Postgres integration testing).
+            "UPDATE provider_circuit_state SET inflight = CASE WHEN inflight - 1 < 0 THEN 0 ELSE inflight - 1 END, "
+            "updated_at = ? WHERE provider = ?",
             (utcnow(), provider),
+        )
+
+
+def force_close(provider: str) -> None:
+    """Admin action (CLAUDE.md Phase 6 section 34): 'close circuit after
+    validated recovery'. Always an explicit human/operator action, never
+    automatic -- resets to a fresh CLOSED state with zeroed failure
+    counters, exactly like a successful HALF_OPEN probe would."""
+    with db_session() as conn:
+        _ensure_row(conn, provider)
+        conn.execute(
+            """UPDATE provider_circuit_state SET state='CLOSED', consecutive_failures=0,
+                 window_attempts=0, window_failures=0, opened_at=NULL, half_open_inflight=0,
+                 updated_at=? WHERE provider=?""",
+            (utcnow(), provider),
+        )
+
+
+def force_probe(provider: str) -> None:
+    """Admin action: 'force provider probe' -- transitions an OPEN circuit
+    straight to HALF_OPEN (bypassing the cooldown timer) so the very next
+    attempt gets a real probe through, without waiting for
+    CIRCUIT_BREAKER_COOLDOWN_SECONDS to elapse naturally. A no-op if the
+    circuit isn't currently OPEN."""
+    now = utcnow()
+    with db_session() as conn:
+        _ensure_row(conn, provider)
+        conn.execute(
+            """UPDATE provider_circuit_state SET state='HALF_OPEN', half_open_inflight=0,
+                 half_open_probe_at=?, updated_at=? WHERE provider=? AND state='OPEN'""",
+            (now, now, provider),
         )
 
 

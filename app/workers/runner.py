@@ -16,7 +16,7 @@ from typing import Optional
 
 import httpx
 
-from app import config
+from app import config, migrations
 from app.agent.cycle import process_raw_job
 from app.db import init_db
 from app.jobs_repo import finalize_discovery_cycle, insert_discovery_log, start_discovery_cycle
@@ -28,7 +28,8 @@ from app.registry import sync as registry_sync
 from app.registry import probe as probe_mod
 from app.registry.models import VerificationResult
 from app.registry.verification import verify_portal
-from app.workers import circuit, dead_letter, retry, schema_check
+from app.workers import circuit, dead_letter, reaper, retry, schema_check
+from app.workers import schema_drift_repo
 from app.workers import repo as workers_repo
 from app.workers.identity import generate_worker_identity
 from app.workers.models import AttemptRecord, AttemptStatus, LeasedWorkItem, PortalType, WorkerStatus
@@ -94,20 +95,56 @@ class Worker:
     def request_stop(self) -> None:
         self._stop.set()
 
+    def _check_schema_compatibility(self) -> None:
+        """CLAUDE.md Phase 6 section 19: 'Reject or warn when a worker is
+        incompatible with DB schema. Do not silently corrupt state.' A
+        worker whose code expects migrations the live database hasn't
+        applied yet would immediately hit real 'column does not exist'
+        errors on its very first query -- refuse to start instead. A worker
+        whose code is OLDER than what's recorded (a mixed-version rollout,
+        some workers upgraded already) is allowed to proceed with a warning:
+        every Phase 6 migration is purely additive, so an older worker
+        simply not using new columns/tables is safe, not corrupting."""
+        from app.db import db_session
+
+        with db_session() as conn:
+            db_version = migrations.current_db_version(conn)
+        if db_version < migrations.CURRENT_SCHEMA_VERSION:
+            raise RuntimeError(
+                f"worker schema_version={migrations.CURRENT_SCHEMA_VERSION} but the database is only at "
+                f"schema_version={db_version} -- refusing to start (run init_db()/migrations first) "
+                f"rather than risk corrupting state with queries against columns that don't exist yet."
+            )
+        if db_version > migrations.CURRENT_SCHEMA_VERSION:
+            logger.warning(
+                "database schema_version=%s is newer than this worker's code (schema_version=%s) -- "
+                "this worker was likely not yet upgraded in a rolling deployment; proceeding since all "
+                "migrations are additive, but consider upgrading this worker soon.",
+                db_version, migrations.CURRENT_SCHEMA_VERSION,
+            )
+
     @property
     def stopping(self) -> bool:
         return self._stop.is_set()
 
     def run(self) -> None:
         init_db()
+        self._check_schema_compatibility()
         workers_repo.upsert_worker(
             self.identity.worker_id, hostname=self.identity.hostname, pid=self.identity.pid,
             shard_index=self.shard_index, shard_count=self.shard_count, status=WorkerStatus.STARTING.value,
+            worker_version=self.identity.worker_version, schema_version=self.identity.schema_version,
+            capability_version=self.identity.capability_version, backend=self.identity.backend,
         )
-        logger.info("worker %s starting (shard %s/%s)", self.identity.worker_id, self.shard_index, self.shard_count)
+        logger.info(
+            "worker %s starting (shard %s/%s, backend=%s, schema_version=%s, worker_version=%s)",
+            self.identity.worker_id, self.shard_index, self.shard_count,
+            self.identity.backend, self.identity.schema_version, self.identity.worker_version,
+        )
         try:
             while True:
                 self._run_cycle()
+                reaper.reap_orphans(stale_after_seconds=config.ORPHAN_WORKER_STALE_SECONDS)
                 if self._stop.is_set() or self.single_cycle:
                     break
                 self._heartbeat(WorkerStatus.IDLE)
@@ -312,6 +349,18 @@ class Worker:
             if not shape.ok:
                 latency_ms = (time.monotonic() - t0) * 1000
                 registry_repo.mark_poll_result(item.portal_id, success=True, jobs_new=0, latency_ms=latency_ms)
+                schema_drift_repo.record_drift(
+                    provider=item.provider, tenant_identifier=item.tenant_identifier, detail=shape.detail,
+                )
+                # CLAUDE.md Phase 6 section 17: drift affecting MANY tenants
+                # of the same provider (not one oddball tenant) is fed into
+                # the existing circuit breaker as a failure signal -- a
+                # single tenant's drift never trips it on its own.
+                distinct_tenants = schema_drift_repo.distinct_tenants_with_recent_drift(
+                    item.provider, since_hours=config.SCHEMA_DRIFT_WINDOW_HOURS,
+                )
+                if distinct_tenants >= config.SCHEMA_DRIFT_CIRCUIT_TENANT_THRESHOLD:
+                    circuit.record_result(item.provider, success=False)
                 attempt.status = AttemptStatus.SUCCEEDED.value
                 attempt.error_type = "schema_drift"
                 attempt.detail = shape.detail
@@ -328,13 +377,33 @@ class Worker:
                 return
 
         provider_obj = build_provider_for_tenant(item.provider, item.tenant_identifier)
-        raw_jobs = provider_obj.fetch_jobs(max_jobs=config.MAX_JOBS_PER_PROVIDER) if provider_obj is not None else []
+        if provider_obj is None:
+            raw_jobs: list = []
+        else:
+            # CLAUDE.md Phase 6 sections 12-14: fetch_jobs_result() is the
+            # structured counterpart to fetch_jobs() that actually
+            # distinguishes "this tenant's fetch failed" from "this board is
+            # genuinely empty" -- before this, a real fetch failure here was
+            # invisible to the circuit breaker and attempt history (it just
+            # looked like zero jobs). fetch_jobs() itself is untouched.
+            fetch_result = provider_obj.fetch_jobs_result(config.MAX_JOBS_PER_PROVIDER, tenant=item.tenant_identifier)
+            if not fetch_result.is_success:
+                latency_ms = (time.monotonic() - t0) * 1000
+                self._handle_poll_failure(
+                    item, attempt, retryable=fetch_result.retryable, error_type=fetch_result.error_type or "unknown_failure",
+                    detail=fetch_result.error_message_safe, latency_ms=latency_ms,
+                )
+                return
+            raw_jobs = fetch_result.jobs
         jobs_received = len(raw_jobs)
         new_count = duplicate_count = filtered_count = 0
 
         for raw in raw_jobs:
             try:
-                status = process_raw_job(raw, cycle_stats, cycle_id=db_cycle_id, registry_id=item.portal_id)
+                status = process_raw_job(
+                    raw, cycle_stats, cycle_id=db_cycle_id, registry_id=item.portal_id,
+                    correlation_id=item.attempt_id,
+                )
             except Exception as exc:  # one bad job must never abort the whole attempt
                 cycle_stats["errors"].append(f"{item.provider}/{raw.external_job_id}: {exc}")
                 logger.exception("failed processing job %s/%s", item.provider, raw.external_job_id)
@@ -364,13 +433,35 @@ class Worker:
             "latency_ms": latency_ms, "jobs_received": jobs_received, "jobs_new": new_count,
             "jobs_duplicate": duplicate_count, "jobs_filtered": filtered_count, "error_type": "",
         })
+        logger.info(
+            "poll attempt succeeded", extra={
+                "worker_id": self.identity.worker_id, "attempt_id": attempt.attempt_id,
+                "correlation_id": attempt.attempt_id, "portal_id": item.portal_id, "portal_type": item.portal_type.value,
+                "provider": item.provider, "tenant": item.tenant_identifier, "duration_ms": round(latency_ms, 1),
+                "event": "poll_succeeded",
+            },
+        )
         self.poll_queue.ack(item)
 
     def _handle_poll_probe_failure(self, item: LeasedWorkItem, attempt: AttemptRecord, exc: Exception, t0: float) -> None:
         latency_ms = (time.monotonic() - t0) * 1000
         retryable, error_type = retry.classify_exception(exc)
+        self._handle_poll_failure(
+            item, attempt, retryable=retryable, error_type=error_type, detail=str(exc), latency_ms=latency_ms,
+        )
+
+    def _handle_poll_failure(
+        self, item: LeasedWorkItem, attempt: AttemptRecord, *,
+        retryable: bool, error_type: str, detail: str, latency_ms: float,
+    ) -> None:
+        """Shared failure path for BOTH the structural-probe stage
+        (exception-based, classified via app.workers.retry) and the
+        fetch_jobs_result() stage (already classified into a
+        ProviderFetchStatus) -- one place records the circuit-breaker
+        result, backoff, dead-letter bookkeeping, and attempt history,
+        regardless of which stage detected the failure."""
         circuit.record_result(item.provider, success=False)
-        registry_repo.mark_poll_result(item.portal_id, success=False, jobs_new=0, latency_ms=latency_ms, error=str(exc))
+        registry_repo.mark_poll_result(item.portal_id, success=False, jobs_new=0, latency_ms=latency_ms, error=detail)
 
         entry = registry_repo.get_entry(item.portal_id)
         consecutive_permanent = entry.consecutive_permanent_failures if entry else 0
@@ -379,7 +470,7 @@ class Worker:
             registry_repo.update_entry(item.portal_id, consecutive_permanent_failures=consecutive_permanent)
             dead_letter.record_permanent_failure(
                 portal_type="company_registry", portal_id=item.portal_id, provider=item.provider,
-                consecutive_permanent_failures=consecutive_permanent, last_error=str(exc),
+                consecutive_permanent_failures=consecutive_permanent, last_error=detail,
                 last_attempt_id=item.attempt_id, threshold=config.DEAD_LETTER_MAX_ATTEMPTS,
             )
 
@@ -392,7 +483,7 @@ class Worker:
 
         attempt.status = AttemptStatus.RETRYABLE_FAILURE.value if retryable else AttemptStatus.PERMANENT_FAILURE.value
         attempt.error_type = error_type
-        attempt.detail = str(exc)[:500]
+        attempt.detail = detail[:500]
         attempt.retryable = retryable
         attempt.latency_ms = latency_ms
         attempt.finished_at = utcnow()
@@ -404,6 +495,14 @@ class Worker:
             "latency_ms": latency_ms, "jobs_received": 0, "jobs_new": 0, "jobs_duplicate": 0,
             "jobs_filtered": 0, "error_type": error_type,
         })
+        logger.warning(
+            "poll attempt failed", extra={
+                "worker_id": self.identity.worker_id, "attempt_id": attempt.attempt_id,
+                "correlation_id": attempt.attempt_id, "portal_id": item.portal_id, "portal_type": item.portal_type.value,
+                "provider": item.provider, "tenant": item.tenant_identifier, "duration_ms": round(latency_ms, 1),
+                "error_type": error_type, "event": "poll_failed",
+            },
+        )
         self.errors += 1
         if retryable:
             self.poll_queue.retry(item)

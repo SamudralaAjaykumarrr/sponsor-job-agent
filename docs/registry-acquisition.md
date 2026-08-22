@@ -103,3 +103,52 @@ queue (`SQLiteVerificationQueue`, `app/workers/runner.py`) picks up any
 `DISCOVERED`/`CANDIDATE` portal on its own schedule, using the identical
 leasing/idempotency mechanism as the poll queue. See
 `docs/worker-architecture.md` and `docs/polling-leases.md`.
+
+## Phase 6: domain-seed pipeline, distributed acquisition, priority
+
+- **Domain-seed pipeline** (`app/registry/domain_seed.py`, new): bulk input
+  of just `company_name`+`company_domain` pairs → each domain gets its own
+  bounded `app.registry.page_discovery.discover_career_links()` call
+  (already built in Phase 4, never wired into a bulk pipeline until now) →
+  ATS detection/tenant extraction → `process_row()`'s existing conservative
+  upsert. Domains are processed strictly one at a time (never concurrently)
+  -- discover_career_links() already bounds pages/timeouts/redirects/
+  response size per domain.
+- **Distributed acquisition checkpointing** (`app/registry/
+  acquisition_records.py`, new): `create_distributed_batch()` +
+  `process_distributed_batch_once()` let multiple workers/processes/
+  machines process ONE large batch together, each row claimed via the same
+  atomic lease pattern as the poll/verification queues -- so two workers
+  never redundantly reprocess (or race on) the same row. The existing
+  single-process `run_acquisition_batch()` is unchanged and remains the
+  default CLI/dashboard path.
+- **Acquisition priority** (`app/registry/acquisition_priority.py`, new):
+  deterministic, auditable scoring (US/technical employer, provider support
+  level, historical job yield, registry confidence, sponsorship-history
+  signal) for which companies are worth verifying/polling first --
+  explicitly NOT interview probability, and a sponsorship-history signal
+  raises priority only, never a specific job's `sponsorship_status`
+  (structurally: no such field exists on the scoring inputs at all).
+
+### Real live validation (this build)
+
+3 real, legitimate, user-supplied companies (Shopify, DoorDash, Duolingo --
+not scraped from any search engine/LinkedIn/Indeed) were run through the
+domain-seed pipeline for real:
+
+| Company | Result |
+|---|---|
+| Shopify | no ATS link found within the bounded page/link budget |
+| DoorDash | no ATS link found within the bounded page/link budget |
+| Duolingo | Greenhouse detected (`boards-api.greenhouse.io/v1/boards/duolingo/departments`) → candidate portal created → **live verification: VERIFIED, 5 real jobs seen** |
+
+This run caught a real bug: `app.providers.detector`'s Greenhouse rule
+extracted `"v1"` as the tenant from that URL shape instead of `"duolingo"`
+(a naive "first path segment" heuristic that only holds for the public
+board hostname, not the API hostname's `/v1/boards/{tenant}/...` path).
+Fixed in `app/providers/detector.py::_rule_greenhouse`; regression-tested
+in `tests/test_provider_detector.py`.
+
+**Exact counts, honestly small**: 3 companies attempted, 1 ATS discovered,
+1 portal verified. This proves the domain-seed pipeline works end-to-end
+against real data -- it is not a claim of onboarding companies at scale.

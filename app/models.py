@@ -144,5 +144,12 @@ class Job(BaseModel):
 
     notes: str = ""
 
+    # Phase 6 (CLAUDE.md section 36): correlation id propagated from the
+    # poll_attempts row that discovered this job (its attempt_id already
+    # uniquely ties one worker's one attempt at one portal together, so it
+    # doubles as the correlation id -- no separate id scheme needed). Empty
+    # for jobs ingested outside the worker fleet (e.g. manual JD paste).
+    correlation_id: str = ""
+
     created_at: str = Field(default_factory=utcnow)
     updated_at: str = Field(default_factory=utcnow)

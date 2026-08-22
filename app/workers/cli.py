@@ -16,7 +16,13 @@ from app.db import init_db
 
 
 def _cmd_run(args: argparse.Namespace) -> int:
+    from app import config
     from app.workers.runner import Worker
+
+    if config.STRUCTURED_LOGGING_ENABLED:
+        from app.observability.logging_config import configure_structured_logging
+
+        configure_structured_logging()
 
     worker = Worker(shard_index=args.shard_index, shard_count=args.shard_count, single_cycle=args.once)
     worker.install_signal_handlers()

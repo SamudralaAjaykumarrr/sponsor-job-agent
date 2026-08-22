@@ -74,6 +74,54 @@ def mock_httpx(monkeypatch):
     return _install
 
 
+@pytest.fixture(scope="session")
+def postgres_url():
+    """Real, ephemeral PostgreSQL instance for `@pytest.mark.postgres`
+    integration tests (CLAUDE.md Phase 6 section 22/52) -- backed by
+    `pgserver`, which bundles a real unmodified postgres binary and runs it
+    in a temp data directory with no root/Docker/apt access needed. Skips
+    (rather than fails) the whole session's postgres-marked tests if
+    `pgserver` isn't installed, so `pytest` (no -m filter) never requires it
+    and CI environments without it still run everything else. Session-scoped
+    -- one server for every postgres test in the run, since starting a real
+    postgres process per-test would be slow; each test still gets an
+    isolated logical database via `pg_fresh_db` below."""
+    pgserver = pytest.importorskip("pgserver", reason="pgserver not installed -- see requirements-dev.txt")
+    import tempfile
+
+    tmp_dir = tempfile.mkdtemp(prefix="sponsor-job-agent-pgtest-")
+    server = pgserver.get_server(tmp_dir)
+    try:
+        yield server.get_uri()
+    finally:
+        server.cleanup()
+
+
+@pytest.fixture
+def pg_fresh_db(postgres_url):
+    """One isolated logical database per test, on the shared session-scoped
+    postgres server -- so postgres-marked tests never see each other's rows
+    without needing a fresh server process each time. Returns a DATABASE_URL
+    pointing at the fresh database."""
+    import uuid
+
+    import psycopg
+
+    db_name = f"test_{uuid.uuid4().hex[:12]}"
+    with psycopg.connect(postgres_url, autocommit=True) as admin_conn:
+        admin_conn.execute(f"CREATE DATABASE {db_name}")
+    base = postgres_url.split("?", 1)
+    query = f"?{base[1]}" if len(base) > 1 else ""
+    # Replace the trailing "/postgres" (or whatever db name terminates the
+    # path) with the fresh database name; the socket-host query string (if
+    # any) is preserved unchanged.
+    path_part = base[0].rsplit("/", 1)[0]
+    fresh_url = f"{path_part}/{db_name}{query}"
+    yield fresh_url
+    with psycopg.connect(postgres_url, autocommit=True) as admin_conn:
+        admin_conn.execute(f"DROP DATABASE IF EXISTS {db_name} WITH (FORCE)")
+
+
 @pytest.fixture
 def sample_profile() -> CandidateProfile:
     """Synthetic, clearly-fake candidate profile used ONLY as a test fixture --

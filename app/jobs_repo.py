@@ -20,7 +20,7 @@ _COLUMNS = [
     "application_state", "mode",
     "resume_docx_path", "resume_pdf_path", "resume_txt_path",
     "job_analysis_path", "application_answers_path", "cover_letter_path",
-    "notes", "created_at", "updated_at",
+    "notes", "correlation_id", "created_at", "updated_at",
 ]
 
 

@@ -210,3 +210,27 @@ list — **no shell involved anywhere**, so there is no shell-injection
 surface regardless of input. `stop()` sends `SIGTERM` to every child and
 waits (bounded by `WORKER_SHUTDOWN_GRACE_SECONDS`) before force-killing any
 stragglers. See `docs/fleet-operations.md` for the exact commands.
+
+## Phase 6: multi-machine workers
+
+Everything above still describes local multi-process operation exactly.
+What changed for genuine multi-machine operation:
+
+- `WorkerIdentity` gained `worker_version`/`schema_version`/
+  `capability_version`/`backend` (still no candidate PII). See
+  `docs/distributed-workers.md`.
+- `Worker.run()` now checks schema compatibility before registering itself
+  and calls the orphan reaper once per cycle.
+- On the Postgres backend, `app/workers/leasing_postgres.py` (`SELECT ...
+  FOR UPDATE SKIP LOCKED`) replaces the SQLite-style WHERE-guarded UPDATE
+  loop for the actual claim -- `app/workers/leasing.py`'s public functions
+  are unchanged and dispatch automatically; `release_*`/`extend_*` stay
+  backend-neutral (the WHERE-guarded UPDATE pattern is correct, just less
+  optimal under contention, on both backends).
+- The shared circuit breaker + inflight-concurrency counter
+  (`provider_circuit_state`) were already DB-backed in Phase 5 -- pointing
+  `DATABASE_URL` at a shared Postgres instance is what makes them genuinely
+  fleet-wide across machines, with no code change required.
+
+See `docs/distributed-workers.md` for the full detail and
+`docs/postgres-backend.md` for the database layer this all sits on.

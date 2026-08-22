@@ -1,8 +1,33 @@
+import os
 import sqlite3
 from contextlib import contextmanager
 from typing import Iterator
 
 from app.config import DB_PATH
+
+# --- Phase 6: database backend selection ------------------------------------
+# DATABASE_URL selects the backend. Empty/unset (or an explicit
+# "sqlite:///..." value) keeps the exact Phase 1-5 SQLite behavior below --
+# nothing changes for existing local installs. "postgresql://..." (or
+# "postgres://...") switches every function in this module to the Postgres
+# path implemented in app/db_postgres.py. Both backends implement the same
+# get_connection()/db_session()/init_db() surface so no caller anywhere else
+# in the app needs to know which backend is active. See
+# docs/postgres-backend.md.
+#
+# Note: for the sqlite backend, the actual file path is controlled by
+# DB_PATH (below), not by whatever path appears inside a "sqlite:///..."
+# DATABASE_URL -- this preserves the existing test/monkeypatch contract
+# (tests patch `db.DB_PATH` directly) unchanged.
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+
+
+def backend() -> str:
+    """Returns 'postgres' or 'sqlite'. Re-derives from DATABASE_URL on every
+    call (not cached at import time) so tests can monkeypatch
+    `app.db.DATABASE_URL` the same way they already monkeypatch `DB_PATH`."""
+    return "postgres" if DATABASE_URL.lower().startswith(("postgres://", "postgresql://")) else "sqlite"
+
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -265,7 +290,10 @@ CREATE TABLE IF NOT EXISTS registry_import_batches (
 -- separate generic lease table -- one row of each table already IS one unit
 -- of work, and app/workers/leasing.py performs a single atomic UPDATE ...
 -- WHERE against these columns per claim, which SQLite serializes safely
--- across processes (see app/db.py's WAL + busy_timeout pragmas below).
+-- across processes (see app/db.py's WAL + busy_timeout pragmas below) and
+-- which Postgres serializes safely via row-level locking + (in the
+-- dedicated Postgres claim path) SELECT ... FOR UPDATE SKIP LOCKED -- see
+-- app/workers/leasing_postgres.py and docs/distributed-workers.md.
 -- ==========================================================================
 
 -- Bounded, append-only history of every poll/verification attempt made by
@@ -342,6 +370,12 @@ CREATE INDEX IF NOT EXISTS idx_dead_letters_resolved ON dead_letters (resolved);
 
 -- Per-provider circuit-breaker state + cross-process inflight-request
 -- concurrency slot counter. One row per provider name, created lazily.
+-- This same table is what makes both the circuit breaker AND the
+-- concurrency/rate protection "distributed" the moment DATABASE_URL points
+-- at a shared PostgreSQL instance: every worker process (on any machine)
+-- reads/writes the same row, so there is exactly one fleet-wide notion of
+-- "is this provider's circuit open" and "how many requests are in flight
+-- right now" -- see CLAUDE.md Phase 6 sections 17/18.
 CREATE TABLE IF NOT EXISTS provider_circuit_state (
     provider TEXT PRIMARY KEY,
     state TEXT NOT NULL DEFAULT 'CLOSED',   -- CLOSED | OPEN | HALF_OPEN
@@ -430,7 +464,7 @@ JOBS_ADDITIVE_COLUMNS = [
 ]
 
 
-def get_connection() -> sqlite3.Connection:
+def get_sqlite_connection() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH, timeout=30.0)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
@@ -446,6 +480,20 @@ def get_connection() -> sqlite3.Connection:
     conn.execute("PRAGMA busy_timeout = 30000")
     conn.execute("PRAGMA synchronous = NORMAL")
     return conn
+
+
+def get_connection():
+    """Returns a live connection for whichever backend DATABASE_URL selects.
+    SQLite: a sqlite3.Connection exactly as before. Postgres: a thin wrapper
+    (app.db_postgres.PGConnection) implementing the same
+    execute()/executemany()/commit()/close() surface, including `?`
+    paramstyle and `cursor.lastrowid` emulation, so no calling code anywhere
+    else in the app needs a backend-specific code path."""
+    if backend() == "postgres":
+        from app import db_postgres
+
+        return db_postgres.get_connection(DATABASE_URL)
+    return get_sqlite_connection()
 
 
 def _add_columns(conn: sqlite3.Connection, table: str, columns: list[tuple[str, str]]) -> None:
@@ -478,16 +526,50 @@ def _migrate_phase5_lease_columns(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_registry_portals_verify_lease_expiry ON registry_portals (verify_lease_expires_at)")
 
 
-def init_db() -> None:
-    with get_connection() as conn:
+def init_sqlite_db() -> None:
+    with get_sqlite_connection() as conn:
         conn.executescript(SCHEMA)
         _migrate_jobs_table(conn)
         _migrate_phase5_lease_columns(conn)
         conn.commit()
+    from app import migrations
+
+    with db_session() as conn:
+        migrations.run_pending(conn, "sqlite")
+
+
+def init_db() -> None:
+    if backend() == "postgres":
+        from app import db_postgres
+
+        db_postgres.init_db_with_retry(DATABASE_URL)
+        from app import migrations
+
+        db_postgres.run_with_deadlock_retry(
+            lambda: _run_postgres_migrations(migrations, db_postgres),
+        )
+        return
+    init_sqlite_db()
+
+
+def _run_postgres_migrations(migrations_module, db_postgres_module) -> None:
+    # Same session advisory lock as db_postgres.init_db() -- serializes this
+    # phase's additive migrations against every other process's schema DDL
+    # too, not just against app.db.SCHEMA's own baseline creation.
+    conn = get_connection()
+    try:
+        db_postgres_module.acquire_schema_lock(conn)
+        try:
+            migrations_module.run_pending(conn, "postgres")
+            conn.commit()
+        finally:
+            db_postgres_module.release_schema_lock(conn)
+    finally:
+        conn.close()
 
 
 @contextmanager
-def db_session() -> Iterator[sqlite3.Connection]:
+def db_session() -> Iterator:
     conn = get_connection()
     try:
         yield conn

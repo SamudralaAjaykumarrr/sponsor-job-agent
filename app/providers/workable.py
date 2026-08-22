@@ -68,9 +68,11 @@ class WorkableProvider(JobProvider):
                              params={"page": page})
         except ProviderHTTPError as exc:
             logger.warning("workable account '%s' page %s fetch failed: %s", account, page, exc)
+            self._last_error = exc
             return None
-        except Exception:
+        except Exception as exc:
             logger.warning("workable account '%s' page %s fetch failed", account, page, exc_info=True)
+            self._last_error = exc
             return None
 
     def _fetch_detail(self, client: httpx.Client, account: str, shortcode: str) -> str:

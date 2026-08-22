@@ -291,3 +291,37 @@ throughout Phase 5 development.
   rows; reaching materially larger real coverage is now a matter of running more legitimate,
   attributable acquisition batches with the tooling built here, not a code gap.
   "What remains" for the full list.
+
+## Phase 6 acceptance verification
+
+Verified 2026-08-22. Every item below was actually executed against real
+SQLite and real PostgreSQL (`pgserver`), not assumed.
+
+| Criterion | Evidence |
+|---|---|
+| SQLite backward compatibility | Full pre-Phase-6 suite (423 tests) + all Phase 6 additions run against SQLite: 478 passed |
+| PostgreSQL backend works | `tests/test_postgres_backend.py` (real Postgres, 7 tests): init, insert/lastrowid, ON CONFLICT, rowcount, migrations, partial unique index |
+| Postgres-safe leasing (SKIP LOCKED) | `tests/test_postgres_leasing.py` (real Postgres, 10 tests): 8 concurrent threads claim 200 portals, zero double-claims; crash recovery via lease expiry; verification-queue concurrent claims |
+| sqlite-to-postgres migration tool | `tests/test_db_migrate.py` (real Postgres, 5 tests): dry-run, full migration + FK order, idempotent re-run, sequence advancement |
+| Distributed acquisition checkpointing | `tests/test_phase6_distributed_acquisition.py` (5 tests): seed, concurrent claim, no duplicate companies, batch completion, crash-recovered row |
+| Domain-seed pipeline | `tests/test_phase6_domain_seed_and_priority.py` (8 tests) + a REAL live run against 3 real companies (see `docs/registry-acquisition.md`) |
+| Provider structured error result | `tests/test_provider_fetch_result.py` (15 tests) + `tests/test_phase6_runner_provider_error_gap.py` (the exact Phase 5 gap, closed and proven) |
+| Persistent schema drift + circuit tie-in | `tests/test_phase6_schema_drift_persistence.py` (3 tests): single-tenant drift doesn't trip the circuit, provider-wide drift does |
+| Worker identity/compatibility/orphan reaper | `tests/test_phase6_worker_identity_and_reaper.py` (6 tests) |
+| Structured logging + correlation ids | `tests/test_phase6_structured_logging_and_correlation.py` (3 tests): PII-safe allowlist, correlation id flows attempt → job row |
+| Multi-machine simulation | `tests/test_multi_machine_simulation.py` (SQLite + real Postgres): unique leases, shared circuit state, shared rate limit, orphan recovery |
+| Distributed acceptance scenarios (A-J) | `tests/test_acceptance_scenarios_phase6.py` + cross-references to where each of the other 8 already live |
+| `/health`, `/readiness`, `/metrics` | `tests/test_phase6_observability_endpoints.py` (9 tests), incl. `/health` never touching the DB and `/readiness` failing honestly when Postgres is unreachable |
+| Real 2-worker live poll against real registry | Migrated the project's actual `data/app.db` (22 active portals) into a real, ephemeral Postgres and ran 2 real `Worker` instances for one cycle each — see `docs/phase6-production-scale.md` for the exact attempt/job counts and the 2 real bugs this run caught and fixed |
+| Real domain-seed acquisition | 3 real companies (Shopify, DoorDash, Duolingo) → 1 ATS discovered → 1 portal VERIFIED with 5 real jobs seen; caught and fixed a real Greenhouse tenant-extraction bug |
+| Synthetic scale benchmark, both backends | `scripts/phase6_scale_benchmark.py` run at 1k/10k/50k (SQLite) and 1k/10k (Postgres): zero duplicate claims at every size |
+| No secrets committed | `.env.example`'s new `DATABASE_URL` line is blank; `deploy/docker-compose.postgres.yml` requires `POSTGRES_PASSWORD` via the environment, never hardcoded; verified no real credentials in any tracked file |
+| `pytest` (default) unaffected | 478 passed, 20 deselected (postgres-marked) |
+| `pytest -m postgres` | 20 passed, 478 deselected |
+
+### Known Phase 6 limitations
+
+See `docs/phase6-production-scale.md`'s "Honest limitations" section for
+the full, unabridged list (Docker unavailability, synthetic-benchmark vs.
+real-network-capacity distinction, the domain-seed pipeline's small real
+sample size, sponsorship-evidence being Phase-7-foundation-only, etc.).

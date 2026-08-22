@@ -27,18 +27,25 @@ def new_attempt_id() -> str:
 
 def upsert_worker(
     worker_id: str, *, hostname: str, pid: int, shard_index: int, shard_count: int, status: str,
+    worker_version: str = "", schema_version: int = 0, capability_version: str = "", backend: str = "",
 ) -> None:
     now = utcnow()
     with db_session() as conn:
         conn.execute(
             """INSERT INTO workers (worker_id, hostname, pid, shard_index, shard_count,
-                                     started_at, last_heartbeat_at, status, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                     started_at, last_heartbeat_at, status, updated_at,
+                                     worker_version, schema_version, capability_version, backend)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(worker_id) DO UPDATE SET
                  hostname=excluded.hostname, pid=excluded.pid, shard_index=excluded.shard_index,
                  shard_count=excluded.shard_count, status=excluded.status,
-                 last_heartbeat_at=excluded.last_heartbeat_at, updated_at=excluded.updated_at""",
-            (worker_id, hostname, pid, shard_index, shard_count, now, now, status, now),
+                 last_heartbeat_at=excluded.last_heartbeat_at, updated_at=excluded.updated_at,
+                 worker_version=excluded.worker_version, schema_version=excluded.schema_version,
+                 capability_version=excluded.capability_version, backend=excluded.backend""",
+            (
+                worker_id, hostname, pid, shard_index, shard_count, now, now, status, now,
+                worker_version, schema_version, capability_version, backend,
+            ),
         )
 
 
@@ -58,6 +65,19 @@ def heartbeat_worker(
     set_clause = ", ".join(f"{k} = ?" for k in fields)
     with db_session() as conn:
         conn.execute(f"UPDATE workers SET {set_clause} WHERE worker_id = ?", [*fields.values(), worker_id])
+
+
+def mark_worker_offline(worker_id: str) -> bool:
+    """Admin action (CLAUDE.md Phase 6 section 34): explicit operator
+    override -- e.g. a worker is known to be dead but hasn't hit the
+    heartbeat staleness threshold yet. Never called automatically; the
+    automatic path is app.workers.reaper.reap_orphans()."""
+    now = utcnow()
+    with db_session() as conn:
+        cur = conn.execute(
+            "UPDATE workers SET status = 'OFFLINE', updated_at = ? WHERE worker_id = ?", (now, worker_id)
+        )
+        return cur.rowcount == 1
 
 
 def get_worker(worker_id: str) -> Optional[dict]:

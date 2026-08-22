@@ -58,9 +58,11 @@ class RecruiteeProvider(JobProvider):
             data = get_json(client, RECRUITEE_OFFERS_URL.format(subdomain=subdomain), provider="recruitee")
         except ProviderHTTPError as exc:
             logger.warning("recruitee subdomain '%s' fetch failed: %s", subdomain, exc)
+            self._last_error = exc
             return []
-        except Exception:
+        except Exception as exc:
             logger.warning("recruitee subdomain '%s' fetch failed", subdomain, exc_info=True)
+            self._last_error = exc
             return []
 
         results = []

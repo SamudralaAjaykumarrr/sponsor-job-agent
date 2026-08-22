@@ -99,9 +99,11 @@ class AshbyProvider(JobProvider):
             )
         except ProviderHTTPError as exc:
             logger.warning("ashby board '%s' fetch failed: %s", board_name, exc)
+            self._last_error = exc
             return []
-        except Exception:
+        except Exception as exc:
             logger.warning("ashby board '%s' fetch failed", board_name, exc_info=True)
+            self._last_error = exc
             return []
 
         company = data.get("organizationName") or board_name.replace("-", " ").title()

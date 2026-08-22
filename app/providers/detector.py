@@ -31,7 +31,21 @@ def _first_path_segment(path: str) -> Optional[str]:
 # Each rule: (provider_name, host_regex, tenant_extractor(host, path) -> Optional[str], evidence_template)
 def _rule_greenhouse(host: str, path: str) -> Optional[DetectionResult]:
     if re.search(r"(^|\.)greenhouse\.io$", host) or re.search(r"(^|\.)job-boards\.greenhouse\.io$", host):
-        tenant = _first_path_segment(path)
+        # The public board hostnames (boards.greenhouse.io/{token},
+        # job-boards.greenhouse.io/{token}) have the tenant as the first
+        # path segment -- but the API hostname's own job-list URL
+        # (boards-api.greenhouse.io/v1/boards/{token}/jobs, exactly what
+        # app/providers/greenhouse.py's own GREENHOUSE_JOBS_URL template
+        # uses) has two extra path segments ("v1", "boards") before the
+        # token. A real career page (Duolingo's, found during this phase's
+        # own live acquisition validation) linked directly to this
+        # API-shaped URL -- treating "v1" as the tenant was a real bug this
+        # test caught, not a hypothetical one."""
+        segments = [s for s in path.split("/") if s]
+        if len(segments) >= 3 and segments[0] == "v1" and segments[1] == "boards":
+            tenant = segments[2]
+        else:
+            tenant = _first_path_segment(path)
         conf = 0.95 if tenant else 0.6
         return DetectionResult("greenhouse", conf, tenant, f"host '{host}' matches Greenhouse job boards")
     return None

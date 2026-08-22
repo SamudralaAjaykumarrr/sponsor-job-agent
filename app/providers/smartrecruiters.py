@@ -64,9 +64,11 @@ class SmartRecruitersProvider(JobProvider):
                              params={"limit": PAGE_LIMIT, "offset": offset})
         except ProviderHTTPError as exc:
             logger.warning("smartrecruiters company '%s' offset %s fetch failed: %s", company, offset, exc)
+            self._last_error = exc
             return None
-        except Exception:
+        except Exception as exc:
             logger.warning("smartrecruiters company '%s' offset %s fetch failed", company, offset, exc_info=True)
+            self._last_error = exc
             return None
 
     def _fetch_description(self, client: httpx.Client, company: str, posting_id: str) -> str:

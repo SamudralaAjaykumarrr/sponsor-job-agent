@@ -367,3 +367,63 @@ future replacements/extensions must keep obeying:
   isolated temp DB, never the real registry, and must use the provider name `benchmark-fixture`
   (matching `scripts/registry_benchmark.py`'s existing convention) that can never collide with a
   real provider.
+
+## Production-Scale Distributed Architecture Rules (recorded after Phase 6, apply to all future phases)
+
+- `app/db.py` (SQLite) and `app/db_postgres.py` (PostgreSQL) share ONE schema
+  (`app.db.SCHEMA`, SQLite DDL, mechanically translated for Postgres by
+  `_translate_schema_for_postgres`) — never hand-maintain two separate schema
+  definitions that can drift apart. New tables/columns going forward are added via
+  `app/migrations.py`'s versioned migration list, not by editing the Phase 1-5 baseline
+  SCHEMA string in place.
+- Every schema-DDL sequence against Postgres (`db_postgres.init_db()`, `migrations.run_pending()`
+  in Postgres mode) must run inside the session advisory lock
+  (`acquire_schema_lock`/`release_schema_lock`) — concurrent, unserialized DDL from multiple
+  processes against a shared Postgres database is a real, reproduced deadlock/UniqueViolation
+  hazard (caught live during Phase 6's own multi-worker validation), not a hypothetical one.
+- Timestamps are stored as ISO-8601 TEXT in both backends, never a native TIMESTAMP/TIMESTAMPTZ
+  column, and boolean flags stay INTEGER (0/1) in both backends — this is a deliberate,
+  permanent choice to keep the two backends behaviorally identical, not a temporary shortcut.
+- `?`-style placeholders are the only paramstyle used in application SQL; `app/db_postgres.py`'s
+  translation to `%s` assumes no SQL string anywhere contains a literal `?` character in string
+  data. If a future query ever needs a literal `?`, it must not go through the shared
+  `conn.execute()` path unexamined.
+- `app/workers/leasing.py` remains the only public leasing interface; `app/workers/
+  leasing_postgres.py` is an internal dispatch target, never called directly by worker/pipeline
+  code. A Postgres SKIP LOCKED claim must never overfetch more candidate rows than it can
+  plausibly need (a flat multiplier unrelated to sharding caused a real worker-starvation bug,
+  fixed by `_select_limit`) — overfetching under SKIP LOCKED locks rows it never uses, which
+  starves other concurrent claimers rather than merely wasting work.
+- `app/providers/errors.py`'s `ProviderFetchResult`/`fetch_jobs_result()` is the only sanctioned
+  way to get a typed, non-swallowed outcome out of a provider — `fetch_jobs()` itself must never
+  be changed to raise or otherwise alter its existing swallow-and-return-`[]` contract, since the
+  static multi-tenant discovery path (`app.agent.cycle`) still depends on that isolation.
+  A provider's per-tenant fetch `except` block may stash `self._last_error = exc` (already done
+  for every FULL/PARTIAL provider) but must never re-raise.
+- `provider_schema_drift` never stores raw response payloads — only a structural signature
+  (hash of the shape-check's descriptive detail string) plus small bounded text fields. Drift
+  affecting many DISTINCT tenants of one provider may feed the circuit breaker; drift for a
+  single tenant must never, by itself, disable that portal or trip the breaker.
+- `employer_sponsorship_evidence` (`app/sponsorship/evidence.py`) must never be imported by
+  `app.sponsorship.classifier` or any code path that sets a job's `sponsorship_status`. It is a
+  storage foundation for future sponsorship intelligence and may only ever influence acquisition
+  *priority* (`app/registry/acquisition_priority.py`), never a specific job's confirmed/likely/
+  unknown sponsorship determination.
+- `app/registry/acquisition_priority.py`'s scoring inputs must never include an interview-
+  probability-shaped field — acquisition priority answers "worth verifying/polling sooner", not
+  "likely to lead to a job offer".
+- The orphan worker reaper (`app/workers/reaper.py`) only ever changes a worker's own `status`
+  column to `OFFLINE` — it must never touch a lease directly. Lease recovery is, and must remain,
+  driven exclusively by `lease_expires_at`/`verify_lease_expires_at` passing, independent of
+  whether the reaper ever runs.
+- `/health` must never touch the database (liveness only); `/readiness` is the only endpoint that
+  checks database reachability/schema compatibility. Never conflate the two.
+- Structured logging's correlation fields are an explicit allowlist
+  (`app/observability/logging_config.py::_STRUCTURED_FIELDS`) — a field must be added to this
+  allowlist deliberately, never passed through implicitly, and no field name resembling
+  candidate PII (email/phone/resume/password/ssn/dob) may ever be added to it.
+- Synthetic benchmark/simulation data introduced in Phase 6 (`scripts/phase6_scale_benchmark.py`,
+  `scripts/multi_machine_simulation.py`) follows the same isolated-temp-DB-only,
+  never-collide-with-a-real-name convention as Phase 4/5's benchmarks (`benchmark-fixture`,
+  `simulated-provider-fixture`) — never write synthetic rows into a real registry or a
+  developer's real `data/app.db`.

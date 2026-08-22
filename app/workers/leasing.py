@@ -26,6 +26,7 @@ Design (see docs/polling-leases.md for the full write-up):
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+from app.db import backend as db_backend
 from app.db import db_session
 from app.registry.sharding import in_shard
 from app.workers.repo import new_attempt_id
@@ -54,7 +55,20 @@ def claim_poll_batch(
     """Claims up to `limit` due, unleased-or-lease-expired company_registry
     rows (the operational poll queue) for this worker. Returns full row
     dicts (including the freshly-assigned attempt_id) for exactly the rows
-    this worker now owns."""
+    this worker now owns.
+
+    On the Postgres backend, delegates to app.workers.leasing_postgres's
+    `SELECT ... FOR UPDATE SKIP LOCKED`-based claim (CLAUDE.md Phase 6
+    section 7) -- more efficient under contention than the WHERE-guarded
+    UPDATE loop below, though that loop is also correct on Postgres (MVCC's
+    read-committed re-check semantics), just less efficient."""
+    if db_backend() == "postgres":
+        from app.workers import leasing_postgres
+
+        return leasing_postgres.claim_poll_batch(
+            worker_id=worker_id, limit=limit, lease_seconds=lease_seconds,
+            shard_count=shard_count, shard_index=shard_index,
+        )
     now = utcnow()
     claimed: list[dict] = []
     with db_session() as conn:
@@ -94,7 +108,15 @@ def claim_verification_batch(
     statuses: tuple[str, ...] = ("DISCOVERED", "CANDIDATE"),
 ) -> list[dict]:
     """Same mechanism as claim_poll_batch, over registry_portals rows that
-    still need the verification pipeline run against them."""
+    still need the verification pipeline run against them. Same Postgres
+    SKIP LOCKED delegation as claim_poll_batch above."""
+    if db_backend() == "postgres":
+        from app.workers import leasing_postgres
+
+        return leasing_postgres.claim_verification_batch(
+            worker_id=worker_id, limit=limit, lease_seconds=lease_seconds,
+            shard_count=shard_count, shard_index=shard_index, statuses=statuses,
+        )
     now = utcnow()
     claimed: list[dict] = []
     placeholders = ", ".join("?" for _ in statuses)

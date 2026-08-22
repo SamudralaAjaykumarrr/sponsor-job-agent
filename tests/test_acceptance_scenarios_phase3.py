@@ -4,6 +4,8 @@ output through the full discovery cycle -- dedup, sponsorship/work-arrangement
 classification, gates, and (for eligible jobs) resume/package generation --
 using deterministic fixtures, no live network access."""
 
+from datetime import datetime, timedelta, timezone
+
 import httpx
 
 from app.agent import cycle as cycle_mod
@@ -116,7 +118,12 @@ def test_scenario_c_smartrecruiters_job_flows_through_full_pipeline(tmp_env, sam
                 "location": {"city": "Remote", "country": "us", "remote": True},
                 "typeOfEmployment": {"label": "Full-time"},
                 "postingUrl": "https://jobs.smartrecruiters.com/SRAcme/sr1",
-                "releasedDate": "2026-08-19T00:00:00.000Z",
+                # Relative to "now" (not a hardcoded date) so this test never
+                # flakes as real wall-clock time passes and a fixed past date
+                # ages past FRESHNESS_MAX_DAYS -- pre-existing flakiness
+                # unrelated to Phase 6, fixed here since it's a one-line,
+                # backward-compatible test-data change (CLAUDE.md section 51).
+                "releasedDate": (datetime.now(timezone.utc) - timedelta(hours=6)).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
             }]})
         return httpx.Response(200, json={"totalFound": 1, "content": []})
 

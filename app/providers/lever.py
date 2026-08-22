@@ -103,9 +103,11 @@ class LeverProvider(JobProvider):
                              params={"mode": "json"})
         except ProviderHTTPError as exc:
             logger.warning("lever company '%s' fetch failed: %s", slug, exc)
+            self._last_error = exc
             return []
-        except Exception:
+        except Exception as exc:
             logger.warning("lever company '%s' fetch failed", slug, exc_info=True)
+            self._last_error = exc
             return []
 
         results = []

@@ -208,3 +208,48 @@ WORKER_SHUTDOWN_GRACE_SECONDS = _env_int("WORKER_SHUTDOWN_GRACE_SECONDS", 20)
 
 # Local process supervisor (app/workers/supervisor.py): bounded worker count.
 SUPERVISOR_MAX_WORKERS = _env_int("SUPERVISOR_MAX_WORKERS", 8)
+
+# --- Phase 6: production-scale distributed architecture --------------------
+# See docs/phase6-production-scale.md, docs/postgres-backend.md,
+# docs/distributed-workers.md, docs/provider-error-contract.md.
+
+# DATABASE_URL itself is read directly by app/db.py (not mirrored here) so
+# it can be monkeypatched the same way DB_PATH already is in tests.
+
+# Orphan worker reaper (CLAUDE.md Phase 6 section 20): a worker is marked
+# OFFLINE only after its heartbeat is this many seconds stale -- deliberately
+# several heartbeat intervals (not one) so ordinary jitter (a slow cycle, a
+# GC pause) is never mistaken for a crash. Actual lease recovery is
+# independent of this value (see app/workers/leasing.py's own
+# lease_expires_at) -- this setting only affects OFFLINE dashboard/CLI
+# visibility.
+ORPHAN_WORKER_STALE_SECONDS = _env_int("ORPHAN_WORKER_STALE_SECONDS", WORKER_HEARTBEAT_SECONDS * 6)
+
+# Postgres connection pooling / statement timeout hardening. Kept modest and
+# explicit rather than unbounded -- a hung query must never wedge a worker
+# or the dashboard forever.
+POSTGRES_STATEMENT_TIMEOUT_MS = _env_int("POSTGRES_STATEMENT_TIMEOUT_MS", 30_000)
+
+# Distributed rate limiting (CLAUDE.md Phase 6 section 18) reuses the same
+# DB-backed `provider_circuit_state.inflight` slot counter Phase 5 already
+# built (app/workers/circuit.py::acquire_inflight_slot/release_inflight_slot)
+# -- it is already fleet-wide the moment DATABASE_URL points at a shared
+# Postgres instance, since every worker process (on any machine) reads/
+# writes the same row. PROVIDER_CONCURRENCY_DEFAULT above is the shared
+# budget; no second, different mechanism is introduced.
+
+# Prometheus-format /metrics endpoint (CLAUDE.md Phase 6 section 30).
+METRICS_ENABLED = _env_bool("METRICS_ENABLED", True)
+
+# Structured JSON logging (CLAUDE.md Phase 6 section 35). Off by default for
+# local development (plain text logs are easier to read in a terminal);
+# turn on for production deployments where a log aggregator expects JSON.
+STRUCTURED_LOGGING_ENABLED = _env_bool("STRUCTURED_LOGGING_ENABLED", False)
+
+# Schema drift (CLAUDE.md Phase 6 section 16/17): if this many DISTINCT
+# tenants of the same provider show schema drift within SCHEMA_DRIFT_WINDOW_HOURS,
+# it's treated as provider-wide (not one oddball tenant) and fed into the
+# existing circuit breaker as a failure signal -- never a second, separate
+# breaker mechanism.
+SCHEMA_DRIFT_CIRCUIT_TENANT_THRESHOLD = _env_int("SCHEMA_DRIFT_CIRCUIT_TENANT_THRESHOLD", 3)
+SCHEMA_DRIFT_WINDOW_HOURS = _env_float("SCHEMA_DRIFT_WINDOW_HOURS", 1.0)

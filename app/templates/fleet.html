@@ -24,10 +24,24 @@
   </style>
 </head>
 <body>
-  <p><a href="/">&larr; back to dashboard</a> · <a href="/registry">Registry</a> · <a href="/acquisition">Acquisition</a></p>
+  <p><a href="/">&larr; back to dashboard</a> · <a href="/registry">Registry</a> · <a href="/acquisition">Acquisition</a> ·
+     <a href="/metrics">/metrics</a> · <a href="/readiness">/readiness</a></p>
   <h1>Fleet Operations</h1>
-  <p style="color:#666;">Distributed polling execution layer (Phase 5). "Actually polled" numbers below are real
+  <p style="color:#666;">Distributed polling execution layer (Phase 5-6). "Actually polled" numbers below are real
      poll-attempt history, not registry row counts -- see <code class="small">docs/scaling-claims.md</code>.</p>
+
+  <section>
+    <h2>System</h2>
+    <div class="cards">
+      <div class="card"><div class="n">{{ system.database_backend }}</div><div class="l">Database backend</div></div>
+      <div class="card"><div class="n">{{ system.schema_version }}/{{ system.expected_schema_version }}</div><div class="l">Schema version</div></div>
+      <div class="card"><div class="n">{{ system.queue_backend }}</div><div class="l">Queue backend</div></div>
+      <div class="card"><div class="n">{{ system.worker_software_version }}</div><div class="l">Worker software version</div></div>
+    </div>
+    <form method="post" action="/fleet/reap-orphans" style="margin-top: 0.5rem;">
+      <button type="submit">Reap orphan workers now (stale &gt; {{ config.orphan_worker_stale_seconds }}s)</button>
+    </form>
+  </section>
 
   <div class="cards">
     <div class="card"><div class="n">{{ snapshot.stored_portals }}</div><div class="l">Stored portals</div></div>
@@ -68,7 +82,7 @@
        failures, circuit trips at {{ (config.circuit_breaker_failure_threshold * 100) | round(0) }}% failure rate
        ({{ config.circuit_breaker_cooldown_seconds }}s cooldown).</p>
     <table>
-      <thead><tr><th>Worker</th><th>Status</th><th>Shard</th><th>Heartbeat</th><th>Current</th><th>Portals</th><th>Jobs</th><th>Errors</th></tr></thead>
+      <thead><tr><th>Worker</th><th>Status</th><th>Shard</th><th>Heartbeat</th><th>Current</th><th>Portals</th><th>Jobs</th><th>Errors</th><th></th></tr></thead>
       <tbody>
         {% for w in workers %}
         <tr>
@@ -80,9 +94,62 @@
           <td>{{ w.portals_processed }}</td>
           <td>{{ w.jobs_processed }}</td>
           <td>{{ w.errors }}</td>
+          <td>
+            {% if w.status not in ('STOPPED', 'OFFLINE') %}
+            <form method="post" action="/fleet/workers/{{ w.worker_id }}/mark-offline" style="margin:0;">
+              <button type="submit">Mark offline</button>
+            </form>
+            {% endif %}
+          </td>
         </tr>
         {% else %}
-        <tr><td colspan="8">No workers have run yet. Start one with <code class="small">python -m app.workers.cli run</code>.</td></tr>
+        <tr><td colspan="9">No workers have run yet. Start one with <code class="small">python -m app.workers.cli run</code>.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Provider circuits</h2>
+    <table>
+      <thead><tr><th>Provider</th><th>State</th><th></th></tr></thead>
+      <tbody>
+        {% for c in circuit_rows %}
+        <tr>
+          <td>{{ c.provider }}</td>
+          <td><span class="status-tag status-{{ 'PERMANENT_FAILURE' if c.state == 'OPEN' else ('RETRYABLE_FAILURE' if c.state == 'HALF_OPEN' else 'SUCCEEDED') }}">{{ c.state }}</span></td>
+          <td>
+            <form method="post" action="/fleet/circuit/{{ c.provider }}/force-probe" style="display:inline; margin:0;">
+              <button type="submit">Force probe</button>
+            </form>
+            <form method="post" action="/fleet/circuit/{{ c.provider }}/close" style="display:inline; margin:0;">
+              <button type="submit">Close (validated recovery)</button>
+            </form>
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="3">No provider circuit state recorded yet.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Schema drift</h2>
+    <table>
+      <thead><tr><th>Provider</th><th>Tenant</th><th>Occurrences</th><th>First seen</th><th>Last seen</th><th>Detail</th></tr></thead>
+      <tbody>
+        {% for d in schema_drift %}
+        <tr>
+          <td>{{ d.provider }}</td>
+          <td>{{ d.tenant_identifier or '-' }}</td>
+          <td>{{ d.occurrence_count }}</td>
+          <td>{{ d.first_seen_at }}</td>
+          <td>{{ d.last_seen_at }}</td>
+          <td>{{ d.detail[:120] }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="6">No schema drift observed.</td></tr>
         {% endfor %}
       </tbody>
     </table>

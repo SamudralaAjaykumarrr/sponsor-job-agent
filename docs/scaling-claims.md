@@ -105,3 +105,29 @@ proves the *query/leasing layer* holds up at 100k rows on one machine (zero
 duplicate claims across 8 concurrent threads, sub-25ms bounded due-queries)
 — it says nothing about network capacity, and nothing about multi-machine
 operation, which SQLite does not support.
+
+## Phase 6 update: PostgreSQL exists now, and the same honesty rules apply
+
+PostgreSQL support (`docs/postgres-backend.md`) removes SQLite's
+single-machine ceiling *architecturally* -- but the same rule above still
+governs every number reported:
+
+- **What Phase 6 actually demonstrated**: the coordination logic (leasing,
+  circuit breaker, rate limiting, orphan reaping) validated correct against
+  a REAL PostgreSQL server (`pgserver`, not a mock) under real concurrent
+  access from multiple threads/processes; a real 2-worker live poll cycle
+  against the project's actual (small) verified registry, migrated into
+  that real Postgres and back out again; a real domain-seed acquisition run
+  against 3 real companies growing the registry by exactly 1 verified
+  portal; a synthetic 1k/10k/50k DB-only benchmark run against both
+  backends.
+- **What Phase 6 does NOT claim**: none of the above is a claim of running
+  at 10k/100k-portal production scale, or across physically separate
+  machines/networks (Docker was unavailable in this build environment for
+  the multi-service demo -- see `docs/deployment-postgres.md`). "The
+  leasing layer is correct under real Postgres concurrency" and "this fleet
+  is monitoring 100,000 real portals in production" remain two entirely
+  different claims, and only the first is made here.
+- The registry itself grew by exactly 1 real verified portal in this
+  phase's own validation (Duolingo, via the new domain-seed pipeline) —
+  see `docs/registry-acquisition.md` for the honest, small, exact numbers.

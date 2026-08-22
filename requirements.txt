@@ -7,3 +7,9 @@ python-docx>=1.1
 reportlab>=4.2
 python-multipart>=0.0.9
 pytest>=8.3
+
+# Phase 6: PostgreSQL backend driver. Only imported/used when DATABASE_URL
+# points at postgres:// -- SQLite-only local installs never touch this
+# module at runtime, but it must be installed for the postgres:// code path
+# (app/db_postgres.py) to be importable at all. See docs/postgres-backend.md.
+psycopg[binary]>=3.1

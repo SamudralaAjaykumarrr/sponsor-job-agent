@@ -7,6 +7,9 @@ output/*
 data/private/
 data/app.db
 data/*.db
+data/*.db-shm
+data/*.db-wal
+data/*.db-journal
 candidate_data/
 !candidate_data/.gitkeep
 .pytest_cache/

@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Optional
 
 from app.db import db_session
+from app.registry import acquisition_records
 from app.registry import lifecycle as registry_lifecycle
 from app.registry import store
 from app.registry import sync as registry_sync
@@ -213,3 +214,79 @@ def run_acquisition_batch(
         raise
 
     return BatchResult.from_row(get_batch(batch_id))
+
+
+# --- Phase 6 (CLAUDE.md section 28): distributed, multi-worker-safe batch --
+# processing. run_acquisition_batch() above is single-process and remains
+# the default (CLI/dashboard) path -- unchanged. The functions below are an
+# ADDITIVE alternative for when several worker processes (possibly on
+# separate machines sharing Postgres) need to process ONE large batch
+# together without redundant work or duplicate companies/portals: each row
+# is claimed via the same atomic lease pattern as the poll/verification
+# queues (app.registry.acquisition_records / app.workers.leasing), and the
+# underlying registry_companies/registry_portals unique-identity DB
+# constraints are what actually guarantee no duplicates even under a race.
+
+
+def create_distributed_batch(path: str | Path, *, source_name: Optional[str] = None, source_type: str = "CSV") -> int:
+    """Reads the whole source once, creates the batch row, and seeds one
+    registry_acquisition_records row per input row (PENDING). Call this
+    ONCE per dataset (e.g. from an operator CLI command) -- every worker
+    then calls process_distributed_batch_once() repeatedly against the
+    returned batch_id."""
+    path = Path(path)
+    source_name = source_name or path.name
+    candidates = list(read_candidates(path))
+    batch_id = _create_batch(source_name=source_name, source_type=source_type, path=str(path))
+    acquisition_records.seed_records(batch_id, candidates)
+    _update_batch(batch_id, status="RUNNING", started_at=utcnow(), records_total=len(candidates))
+    return batch_id
+
+
+def process_distributed_batch_once(
+    batch_id: int, *, worker_id: str, limit: int = 50, lease_seconds: int = 120, verify_new_candidates: bool = True,
+) -> dict:
+    """Claims and processes up to `limit` not-yet-done rows of an existing
+    distributed batch. Safe to call concurrently from many workers/
+    processes/machines against the same batch_id -- each row is claimed by
+    exactly one caller at a time (app.registry.acquisition_records.claim_batch),
+    and process_row()'s own identity-based upsert (plus the registry's
+    unique indexes) means even a claimed-then-crashed-then-reclaimed row
+    never produces a duplicate company/portal. Returns progress so far;
+    marks the batch COMPLETED once every row is DONE or FAILED."""
+    batch = get_batch(batch_id)
+    if batch is None:
+        raise ValueError(f"no such acquisition batch id={batch_id}")
+
+    claimed = acquisition_records.claim_batch(
+        batch_id=batch_id, worker_id=worker_id, limit=limit, lease_seconds=lease_seconds,
+    )
+    summary = ImportSummary(source_name=batch["source_name"], dry_run=False)
+
+    for record in claimed:
+        candidate = acquisition_records.candidate_from_record(record)
+        try:
+            portal_id = process_row(candidate, batch["source_name"], summary, dry_run=False)
+        except Exception as exc:  # noqa: BLE001 - one bad row must never abort other workers' progress
+            logger.warning("distributed acquisition row %s failed", record["row_index"], exc_info=True)
+            acquisition_records.mark_failed(record["id"], error=str(exc))
+            continue
+
+        verification_result = ""
+        company_id = None
+        if portal_id is not None:
+            if verify_new_candidates:
+                _maybe_verify(portal_id, counts={"verified": 0, "active": 0, "quarantined": 0, "failed": 0})
+            portal = store.get_portal(portal_id)
+            if portal is not None:
+                company_id = portal.company_id
+                verification_result = portal.verification_status.value
+        acquisition_records.mark_done(record["id"], company_id=company_id, portal_id=portal_id, verification_result=verification_result)
+
+    progress = acquisition_records.batch_progress(batch_id)
+    if progress["total"] > 0 and progress["pending"] == 0 and progress["claimed"] == 0:
+        _update_batch(
+            batch_id, status="COMPLETED", finished_at=utcnow(),
+            records_processed=progress["done"] + progress["failed"],
+        )
+    return {"batch_id": batch_id, "claimed_this_call": len(claimed), "progress": progress}

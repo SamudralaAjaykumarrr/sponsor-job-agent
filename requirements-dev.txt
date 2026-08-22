@@ -1,0 +1,12 @@
+# Phase 6 test-only dependencies. Never required to run the app or the main
+# test suite (`pytest`) -- only used by tests marked `@pytest.mark.postgres`
+# (`pytest -m postgres`), which are skipped automatically if `pgserver` isn't
+# installed. See docs/postgres-backend.md.
+-r requirements.txt
+
+# Bundles a real, unmodified PostgreSQL server binary and runs it in a
+# temp data directory with no root/Docker/system-package-manager access
+# needed -- used ONLY to give CI/local test runs a real Postgres to
+# validate app/db_postgres.py + app/workers/leasing_postgres.py against,
+# never in production and never for the default sqlite-mode app.
+pgserver>=0.1.4
