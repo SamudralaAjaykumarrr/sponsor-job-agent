@@ -74,3 +74,12 @@ another.
 section already stated: `mock_ats` remains the only provider with `submission_supported=True`.
 Apply-first-click (`docs/apply-entry-navigation.md`) is a PRE-FORM navigation aid, not a
 submission mechanism — it never changes any provider's `ApplicationCapabilities` row.
+
+## Phase 12: trusted redirects and SPA discovery still never touch submission_supported
+
+CLAUDE.md Phase 12 section 44 is explicit: "form access/fill != permitted automatic final
+submission." The trusted-redirect model (`docs/trusted-ats-redirects.md`), the bounded SPA
+DOM-stabilization wait, and iframe/shadow-DOM discovery (`docs/spa-application-navigation.md`) all
+only ever change whether/how a real form is REACHED and FILLED -- none of them, individually or
+together, changes any `ApplicationCapabilities.submission_supported` value. `mock_ats` remains the
+only `True`; every real ATS provider stays `ASSIST_ONLY`.

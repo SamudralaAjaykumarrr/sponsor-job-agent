@@ -287,3 +287,245 @@ def false_confirmation_mention_page(tmp_path: Path) -> str:
           <button type="submit">Submit Application</button>
         </form>
     """))
+
+
+# =============================================================================
+# CLAUDE.md Phase 12 sections 58-62: JS-rendered SPA fixtures. A genuinely
+# JS-delayed Apply control, a client-side route/DOM-replacement transition
+# (no full page load), and dynamic form mounting -- the exact SPA shape
+# Phase 10/11 could not reach on real SmartRecruiters postings, reproduced
+# here as a deterministic local fixture so the generic SPA-hardening logic
+# can be tested without depending on any specific real posting's HTML
+# surviving unchanged.
+# =============================================================================
+
+def smartrecruiters_like_spa_page(tmp_path: Path, *, apply_delay_ms: int = 150) -> str:
+    """A single file:// page that behaves like a client-side-rendered
+    SmartRecruiters posting: the job description renders immediately, but
+    the 'Apply Now' control is inserted by JS after `apply_delay_ms`, and
+    clicking it performs a `history.pushState` route change (no real
+    navigation) plus swaps in a genuinely new application form via
+    `innerHTML` -- including a resume upload field, a 'Next' step, and a
+    final 'Submit Application' control. Exercises: dynamic apply-control
+    discovery, SPA route detection, dynamic form mounting, resume upload,
+    multi-step, final-submit boundary -- all in one page, matching CLAUDE.md
+    section 58."""
+    return _write(tmp_path, "sr_spa.html", textwrap.dedent(f"""
+        <div id="app">
+          <h1>Backend Software Engineer</h1>
+          <p>We are hiring. This is the job description landing page.</p>
+          <div id="apply-slot"></div>
+        </div>
+        <script>
+          setTimeout(function () {{
+            var a = document.createElement('a');
+            a.id = 'apply-btn';
+            a.href = '#apply';
+            a.innerText = 'Apply Now';
+            a.addEventListener('click', function (e) {{
+              e.preventDefault();
+              history.pushState({{}}, '', '#apply');
+              document.getElementById('app').innerHTML = (
+                '<form id="step1">' +
+                '<div class="progress-indicator">Step 1 of 2</div>' +
+                '<label for="fname">Full Name</label><input id="fname" name="full_name" type="text" required>' +
+                '<label for="mail">Email</label><input id="mail" name="email" type="text" required>' +
+                '<button type="button" id="next-btn">Next</button>' +
+                '</form>'
+              );
+              document.getElementById('next-btn').addEventListener('click', function () {{
+                document.getElementById('app').innerHTML = (
+                  '<form id="step2">' +
+                  '<div class="progress-indicator">Step 2 of 2</div>' +
+                  '<label for="resume">Resume/CV</label><input id="resume" name="resume" type="file" required>' +
+                  '<button type="submit">Submit Application</button>' +
+                  '</form>'
+                );
+              }});
+            }});
+            document.getElementById('apply-slot').appendChild(a);
+          }}, {apply_delay_ms});
+        </script>
+    """))
+
+
+def smartrecruiters_like_never_renders_page(tmp_path: Path) -> str:
+    """A landing page whose apply control never actually appears (simulates
+    a genuinely unreachable/broken SPA render) -- used to verify the bounded
+    DOM-stabilization wait times out cleanly rather than hanging."""
+    return _write(tmp_path, "sr_spa_never.html", textwrap.dedent("""
+        <div>
+          <h1>Backend Software Engineer</h1>
+          <p>We are hiring.</p>
+        </div>
+    """))
+
+
+def workday_like_progress_wizard_page(tmp_path: Path) -> tuple[str, str]:
+    """CLAUDE.md Phase 12 section 59: a Workday-like fixture with a delayed-
+    hydration landing page, an Apply control, and a genuine 'Step 2 of 3'
+    progress wizard on the form page it leads to. Returns (landing_url,
+    form_url)."""
+    form_url = _write(tmp_path, "wd_wizard_form.html", textwrap.dedent("""
+        <div class="progress-indicator" role="progressbar">Step 2 of 3</div>
+        <form>
+          <label for="school">School</label><input id="school" name="education_school" type="text">
+          <label for="resume">Resume/CV</label><input id="resume" name="resume" type="file">
+          <button type="submit">Submit Application</button>
+        </form>
+    """))
+    landing_url = _write(tmp_path, "wd_wizard_landing.html", textwrap.dedent(f"""
+        <div id="app">
+          <h1>Software Engineer II</h1>
+          <p>Job details for this Workday-style requisition. Posted 7/31.</p>
+        </div>
+        <script>
+          setTimeout(function () {{
+            var a = document.createElement('a');
+            a.id = 'apply-btn';
+            a.href = '{form_url}';
+            a.innerText = 'Apply';
+            document.getElementById('app').appendChild(a);
+          }}, 150);
+        </script>
+    """))
+    return landing_url, form_url
+
+
+def multiple_apply_controls_same_destination_page(tmp_path: Path) -> tuple[str, str]:
+    """CLAUDE.md Phase 12 sections 36-37: top AND bottom 'Apply Now' buttons
+    pointing at the SAME form -- the ordinary sticky/repeated-button
+    pattern, never ambiguous."""
+    form_url = _write(tmp_path, "multi_ctrl_form.html", textwrap.dedent("""
+        <form>
+          <label for="fname">Full Name</label><input id="fname" name="full_name" type="text" required>
+          <button type="submit">Submit Application</button>
+        </form>
+    """))
+    landing_url = _write(tmp_path, "multi_ctrl_landing.html", textwrap.dedent(f"""
+        <div>
+          <a href="{form_url}" id="apply-top">Apply Now</a>
+          <h1>Backend Software Engineer</h1>
+          <p>We are hiring.</p>
+          <a href="{form_url}" id="apply-bottom">Apply Now</a>
+        </div>
+    """))
+    return landing_url, form_url
+
+
+def multiple_apply_controls_different_destination_page(tmp_path: Path) -> tuple[str, str, str]:
+    """CLAUDE.md Phase 12 sections 36-37: an Apply control for THIS job and
+    a second one for a genuinely different "similar job" recommendation --
+    must never be resolved by guessing. Returns (landing_url, this_job_form,
+    other_job_form)."""
+    this_form = _write(tmp_path, "this_job_form.html", textwrap.dedent("""
+        <form><label for="fname">Full Name</label><input id="fname" name="full_name" type="text" required>
+        <button type="submit">Submit Application</button></form>
+    """))
+    other_form = _write(tmp_path, "other_job_form.html", textwrap.dedent("""
+        <form><label for="fname">Full Name</label><input id="fname" name="full_name" type="text" required>
+        <button type="submit">Submit Application</button></form>
+    """))
+    landing_url = _write(tmp_path, "ambiguous_landing.html", textwrap.dedent(f"""
+        <div>
+          <h1>Backend Software Engineer</h1>
+          <a href="{this_form}" id="apply-this">Apply Now</a>
+          <h2>Similar Jobs</h2>
+          <p>Frontend Software Engineer</p>
+          <a href="{other_form}" id="apply-other">Apply Now</a>
+        </div>
+    """))
+    return landing_url, this_form, other_form
+
+
+def iframe_form_page(tmp_path: Path) -> str:
+    """CLAUDE.md Phase 12 section 14, 61: the real application form lives
+    inside an iframe (a real ATS pattern, e.g. an embedded application
+    widget) rather than the top-level document. Same-origin (file://, like
+    the parent) -- must be discovered and filled exactly like a top-level
+    form."""
+    inner_url = _write(tmp_path, "iframe_inner_form.html", textwrap.dedent("""
+        <form>
+          <label for="fname">Full Name</label><input id="fname" name="full_name" type="text" required>
+          <label for="mail">Email</label><input id="mail" name="email" type="text" required>
+          <button type="submit">Submit Application</button>
+        </form>
+    """))
+    outer_url = _write(tmp_path, "iframe_outer.html", textwrap.dedent(f"""
+        <div>
+          <h1>Backend Software Engineer</h1>
+          <iframe id="app-frame" src="{inner_url}" style="width:600px;height:400px;"></iframe>
+        </div>
+    """))
+    return outer_url
+
+
+def no_iframe_form_page(tmp_path: Path) -> str:
+    """A plain top-level form (no iframe at all) -- the control case for
+    iframe-scan tests, confirming the iframe scan never breaks ordinary
+    top-level discovery."""
+    return _write(tmp_path, "no_iframe.html", textwrap.dedent("""
+        <form>
+          <label for="fname">Full Name</label><input id="fname" name="full_name" type="text" required>
+          <button type="submit">Submit Application</button>
+        </form>
+    """))
+
+
+def shadow_dom_form_page(tmp_path: Path) -> str:
+    """CLAUDE.md Phase 12 sections 15, 62: the application form is mounted
+    inside an OPEN shadow root (a real pattern for web-component-based ATS
+    widgets) -- must be discovered via the deep-query shadow-piercing scan,
+    never bypassing a CLOSED root (not exercised here, since that would
+    require attempting a genuine bypass this project never performs)."""
+    return _write(tmp_path, "shadow_form.html", textwrap.dedent("""
+        <div id="host"></div>
+        <script>
+          var host = document.getElementById('host');
+          var root = host.attachShadow({mode: 'open'});
+          root.innerHTML = (
+            '<form>' +
+            '<label for="fname">Full Name</label><input id="fname" name="full_name" type="text" required>' +
+            '<button type="submit">Submit Application</button>' +
+            '</form>'
+          );
+        </script>
+    """))
+
+
+def closed_shadow_dom_form_page(tmp_path: Path) -> str:
+    """A CLOSED shadow root -- must remain genuinely undiscoverable (the
+    honest UNSUPPORTED outcome, never a bypass attempt)."""
+    return _write(tmp_path, "closed_shadow_form.html", textwrap.dedent("""
+        <div id="host"></div>
+        <script>
+          var host = document.getElementById('host');
+          var root = host.attachShadow({mode: 'closed'});
+          root.innerHTML = (
+            '<form>' +
+            '<label for="fname">Full Name</label><input id="fname" name="full_name" type="text" required>' +
+            '<button type="submit">Submit Application</button>' +
+            '</form>'
+          );
+        </script>
+    """))
+
+
+def job_identity_pages(tmp_path: Path) -> tuple[str, str]:
+    """CLAUDE.md Phase 12 sections 37-39: two REAL, independently reachable
+    pages representing two DIFFERENT job requisitions (a query-string
+    `job_id` token, since file:// fixtures can't carry a real Workday-style
+    path segment across two independently-written files) -- used to open a
+    session at the first and simulate the live page ending up on the
+    second, verifying the job-identity-mismatch pause fires. Returns
+    (original_url_with_token, other_job_url_with_token)."""
+    original = _write(tmp_path, "job_a_landing.html", textwrap.dedent("""
+        <div><h1>Backend Software Engineer (Job A)</h1></div>
+    """))
+    other_form = _write(tmp_path, "job_b_form.html", textwrap.dedent("""
+        <form>
+          <label for="fname">Full Name</label><input id="fname" name="full_name" type="text" required>
+          <button type="submit">Submit Application</button>
+        </form>
+    """))
+    return f"{original}?job_id=1234", f"{other_form}?job_id=9999"

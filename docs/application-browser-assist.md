@@ -104,3 +104,14 @@ stage this phase -- see `docs/apply-entry-navigation.md` for the full mechanism 
 `docs/browser-session-reconstruction.md` for the distributed-ownership hardening. Both remain
 governed by the same safety boundaries listed above: no stealth, no CAPTCHA solving, never a
 final submit click.
+
+## Phase 12: SPA/dynamic hardening
+
+The session-based API now also: waits for JS-rendered content via a bounded DOM-stabilization poll
+instead of trusting `networkidle` (a genuinely SPA page may never reach it); follows a trusted
+cross-domain redirect (career page -> recognized ATS vendor domain) where real evidence supports
+it, not just a same-host apply-entry hop; discovers and fills fields inside an allowed-host iframe
+or an open shadow root; and verifies the page still corresponds to the intended job before filling
+a real form. None of this changes the safety boundaries above -- see
+`docs/spa-application-navigation.md` and `docs/trusted-ats-redirects.md` for the full mechanism,
+and `docs/phase12-spa-ats-hardening.md` for real, live-caught bugs this hardening surfaced.

@@ -167,3 +167,21 @@ timestamps/bounded safe-error-text only, never field values.
   `browser_runtime._do_capture_confirmation()` and routes to a distinct
   `DUPLICATE_APPLICATION_DETECTED` session status — never `CONFIRMED`, never marks the linked
   execution `APPLIED`. See `app.applications.doctor._check_duplicate_detected_execution_marked_applied`.
+- **Phase 12: trusted redirects only ever unlock the SAME text-classification path, never
+  final-submit safety.** A control whose destination is a trusted ATS domain but whose text reads
+  as a final submission still classifies `FINAL_SUBMIT` — never clicked. Trust is derived from the
+  SAME per-provider domain table `app.applications.domain_allowlist` already uses for
+  post-navigation checks, never a second, broader allowlist —
+  `app.applications.doctor._check_unsafe_redirect_allowlist` statically enforces this.
+- **Phase 12: iframe/shadow-DOM discovery never bypasses browser-enforced isolation.** Iframe
+  scanning only reads frames Playwright can normally read (the same access a browser's own
+  devtools has); an unexpected-host iframe pauses the session
+  (`PAUSED_IFRAME_UNEXPECTED_HOST`) rather than being interacted with. Shadow-DOM discovery only
+  ever walks OPEN roots (`el.shadowRoot` is null for a closed one) — a closed root's contents are
+  genuinely undiscoverable, the honest `UNSUPPORTED` outcome, never a bypass attempt.
+- **Phase 12: a job-identity mismatch stops the flow before filling the wrong form.**
+  `app.applications.job_identity.verify_job_identity()` pauses the session
+  (`PAUSED_JOB_IDENTITY_MISMATCH`) when the live page's requisition token confidently differs from
+  the session's own recorded `application_url` — e.g. a "similar jobs" link was accidentally
+  followed. Never a guess: an unextractable token on either side is `UNVERIFIABLE`, not treated as
+  a match or a mismatch.

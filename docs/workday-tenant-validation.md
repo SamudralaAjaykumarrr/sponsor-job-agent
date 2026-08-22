@@ -1,5 +1,10 @@
 # Workday Tenant Validation
 
+> **Phase 12 update**: repeated per-attempt observations (never overwritten) and stability
+> classification (STABLE/VARIABLE/UNVERIFIED/STALE) were added on top of this aggregate model --
+> see `docs/workday-observation-model.md` for the full mechanism and this phase's genuine 3x
+> repeated Walmart-tenant result.
+
 ## Core principle: per-tenant, never universal
 
 CLAUDE.md is explicit: "Track Workday behavior by tenant/site rather than claiming one universal

@@ -775,3 +775,85 @@ and must remain first; no downstream executor code path may bypass it.
   API response, or a plain web search for publicly documented career-board URLs) — never guessed
   or fabricated. A tenant that turns out to be offline/unreachable is reported `NOT RUN` with the
   real reason; no substitute is silently invented in its place.
+
+## SPA/Dynamic ATS Flow Hardening Rules (recorded after Phase 12, apply to all future phases)
+
+- `app.applications.trusted_redirects.classify_redirect_trust()` may only ever trust a
+  cross-host destination whose hostname matches one of `app.applications.domain_allowlist.
+  PROVIDER_DOMAINS`'s existing per-provider suffixes (excluding `mock_ats`'s local/test hosts,
+  which must never be a real trust signal) — this is the SAME evidence table already used for
+  post-navigation host checks, never a second, broader, or provider-unaware allowlist. A `file://`
+  URL is always `SAME_HOST`-trusted (this project's entire local test-fixture mechanism, mirroring
+  `domain_allowlist.is_allowed_domain`'s own carve-out — a real live-Chromium run caught an
+  earlier version treating it as unsafe, breaking every apply-entry fixture). `javascript:`/
+  `data:`/`vbscript:` schemes are always `UNSAFE_SCHEME`, regardless of visible text.
+  `app.applications.doctor._check_unsafe_redirect_allowlist` statically enforces that every
+  trusted suffix is a real, specific domain, never a bare/near-empty or generic-TLD entry.
+- Trust from `classify_redirect_trust` only ever unlocks the ordinary TEXT-classification path in
+  `apply_entry.classify_apply_control_detailed()` — a `TRUSTED_ATS_REDIRECT` destination whose
+  text reads as a final submission (`FINAL_SUBMIT_PHRASES`) still classifies `FINAL_SUBMIT`, never
+  `NAVIGATION_SAFE`. Trust must never, by itself, mark anything safe to click.
+- `apply_entry.select_apply_control()` is the only sanctioned way to resolve multiple apply-entry
+  candidates on one page. Multiple `NAVIGATION_SAFE` candidates sharing the identical destination
+  (the ordinary top/bottom/sticky-Apply-button pattern) are not ambiguous; multiple
+  `NAVIGATION_SAFE` candidates with genuinely DIFFERENT destinations must never be resolved by
+  picking one — always `(None, reason)`, routed to `PAUSED_AMBIGUOUS_APPLY_CONTROL`.
+- `app.applications.job_identity.verify_job_identity()` must only ever report `MISMATCH` when a
+  confidently-shaped requisition/posting-id token was extracted from BOTH the session's own
+  recorded `application_url` and the current page URL and they genuinely differ. When no such
+  token exists on one or both sides, the result is `UNVERIFIABLE` — never treated as a match or a
+  mismatch, and `browser_runtime._do_discover()` only ever pauses `JOB_IDENTITY_MISMATCH` on a
+  confirmed `MISMATCH`, never on `UNVERIFIABLE`.
+- `browser_runtime._wait_for_stable_state()` is the only sanctioned DOM-readiness wait for any
+  future navigation/click-driven code path in this module — never reintroduce a bare
+  `wait_for_load_state("networkidle")` as the sole readiness signal (a genuinely SPA-rendered page
+  may never reach it) and never an unbounded/arbitrary-length sleep. Every poll interval and the
+  overall timeout must remain configured (`BROWSER_DOM_STABILIZATION_*`), never hardcoded inline.
+- `browser_runtime._scan_iframes()` only ever reads frames Playwright can normally read (the same
+  access a browser's own devtools has) — never a cross-origin sandbox bypass of any kind. An
+  allowed-host frame's fields must be filled by targeting that frame's own `Frame` object (tagged
+  via `rf["_frame"]`), never `self.page` — a real live test caught fields being discovered but
+  silently never fillable before this tagging existed; any future field-scanning addition that
+  can originate from a non-main-frame source must propagate the same tagging. An unexpected-host
+  frame only pauses the session (`PAUSED_IFRAME_UNEXPECTED_HOST`) when it actually contains
+  form-shaped content — an ad/analytics/tracking iframe must never by itself trigger a pause.
+- Every DOM-scanning `page.evaluate()` call in `browser_runtime` must use the shared
+  `_DEEP_QUERY_JS` shadow-piercing helper (never a plain `document.querySelectorAll` for field/
+  button/apply-control discovery) so open-shadow-root content is found uniformly. This must never
+  be extended to attempt reading a CLOSED shadow root (`el.shadowRoot` is null/undefined for one)
+  — that is the correct, honest `UNSUPPORTED` outcome, never a bypass target.
+- `app.applications.workday_tenant`'s `workday_tenant_attempts` table is APPEND-ONLY — a new
+  observation is always a new row via `record_attempt()`, never an update to a prior attempt (the
+  aggregate `workday_tenant_observations` row, maintained separately by `record_observation()`,
+  remains the current-capability view). `classify_stability()` must never report `STABLE` from
+  fewer than 2 attempts, and any 2+ attempts with disagreeing `result` values are `VARIABLE` —
+  reported honestly, never cherry-picked to the more favorable run. `STALE` (most recent attempt
+  older than `CAPABILITY_EVIDENCE_MAX_AGE_DAYS`) always overrides whatever the attempts once
+  showed. `app.applications.doctor._check_workday_universal_claim_from_one_tenant` statically
+  prevents `browser_capability_matrix`'s workday row from claiming `LIVE_FORM_VERIFIED` without at
+  least one genuinely `STABLE` tenant/site behind it.
+- `capability_evidence.EvidenceVerificationType`'s `STATIC_HTML`/`REAL_BROWSER`/
+  `REAL_BROWSER_REPEATED` values (added alongside the unchanged `LIVE_PUBLIC`/`FIXTURE`/
+  `NOT_TESTED`) and the `repeat_count` column exist ONLY to record genuine re-observation —
+  `record_evidence()`'s repeat-streak logic increments `repeat_count` and promotes to
+  `REAL_BROWSER_REPEATED` only when BOTH the prior and the new recording are themselves
+  time-sensitive real-observation types; a `FIXTURE`/`NOT_TESTED`/`STATIC_HTML` re-check always
+  resets the streak to 1. Never manually set `repeat_count` or the verification type to simulate
+  a repeat that didn't genuinely happen.
+- `app.applications.spa_events` is an append-only, best-effort (never-raising) structured event
+  log — the only source `app.applications.metrics.collect_phase12()` and the
+  `stage_transition_invalid`/related doctor checks may query. A write failure here must never
+  propagate into or interrupt a real browser discovery/fill pass.
+- `apply_entry.is_valid_stage_transition()` is advisory/logged-only (via `spa_events`), never
+  blocking — it must never be wired to reject or roll back a real session's stage update. It must
+  always return `True` when `after_reconstruction=True` is passed (the sanctioned Phase 11
+  reconstruct-and-resume path can legitimately re-land on an earlier stage after a fresh browser
+  reopens and rediscovers from scratch — this is expected, not anomalous) and must always treat
+  `CONFIRMATION` as terminal (any different stage observed afterward is always flagged).
+- Real, live tenant/posting URLs used by `scripts/phase12_live_validation.py` and any successor
+  follow the same discovery rule established in Phase 11 (public API response or plain web
+  search, never guessed) — extended here to also cover a genuinely NEW posting/URL SHAPE for an
+  already-covered provider (e.g. this phase's SmartRecruiters `oneclick-ui` shape): finding one
+  requires the same real discovery, never fabrication, and an encountered CAPTCHA/anti-bot
+  challenge is always reported as the honest result (a conclusive characterization, CLAUDE.md
+  Phase 12 section 76 criterion B), never worked around to force a fake "form reached" result.

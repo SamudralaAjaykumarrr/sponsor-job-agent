@@ -157,3 +157,19 @@ sharing one database (SQLite file or shared Postgres).
   `false`, gates `scripts/phase11_live_validation.py` only — never affects pytest).
 - `python -m app.applications.cli doctor` gained 8 new checks — see
   `docs/browser-session-reconstruction.md` and `docs/ats-capability-evidence.md`.
+
+## Phase 12 operational additions
+
+- `python -m app.applications.cli workday-stability` — per-tenant STABLE/VARIABLE/UNVERIFIED/STALE
+  classification from repeated attempts (`workday_tenant_attempts`).
+- `/applications/workday-tenants` now also shows a per-tenant stability table;
+  `/applications/capability-evidence` now shows each row's `repeat_count`.
+- New config: `BROWSER_DOM_STABILIZATION_TIMEOUT_MS` (default `8000`),
+  `BROWSER_DOM_STABILIZATION_POLL_MS` (default `250`),
+  `BROWSER_DOM_STABILIZATION_SETTLE_POLLS` (default `3`).
+- `scripts/phase12_live_validation.py` — bounded live validation including repeated Workday
+  observations (`--workday-attempts`, default 3) and a real trusted-redirect check; also accepts
+  `--smartrecruiters-spa-url` for the newer `oneclick-ui` posting shape.
+- `python -m app.applications.cli doctor` gained 4 new checks (unsafe redirect allowlist,
+  stage-transition anomalies, job-identity-mismatch surfacing, Workday universal-claim
+  protection) — see `docs/phase12-spa-ats-hardening.md`.

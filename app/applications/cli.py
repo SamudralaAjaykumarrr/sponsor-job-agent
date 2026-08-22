@@ -156,6 +156,21 @@ def _cmd_workday_tenants(_: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_workday_stability(_: argparse.Namespace) -> int:
+    """CLAUDE.md Phase 12 sections 54, 68: 'consistent X/Y, variable X/Y'
+    per tenant -- never a single collapsed 'Workday supported' claim."""
+    from app.applications.workday_tenant import stability_report
+
+    report = stability_report()
+    if not report:
+        print("No repeated Workday attempts recorded yet.")
+        return 0
+    for s in report:
+        print(f"  {s.tenant}/{s.site}: {s.stability.value}  "
+              f"consistent={s.consistent_count}/{s.attempt_count}  variable={s.variable_count}/{s.attempt_count}")
+    return 0
+
+
 def _cmd_capability_evidence(args: argparse.Namespace) -> int:
     from app.applications import capability_evidence
 
@@ -339,6 +354,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_workday = sub.add_parser("workday-tenants", help="print the per-tenant/site Workday observation matrix")
     p_workday.set_defaults(func=_cmd_workday_tenants)
+
+    p_workday_stability = sub.add_parser(
+        "workday-stability", help="print per-tenant Workday stability (STABLE/VARIABLE/UNVERIFIED/STALE) from "
+                                   "repeated attempts",
+    )
+    p_workday_stability.set_defaults(func=_cmd_workday_stability)
 
     p_evidence = sub.add_parser("capability-evidence", help="print dated capability evidence, flagging stale rows")
     p_evidence.add_argument("--provider", default="")

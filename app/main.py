@@ -818,6 +818,7 @@ def browser_sessions_expire_stale():
 def api_browser_assist_metrics():
     metrics = applications_metrics.collect_browser_assist()
     metrics.update(applications_metrics.collect_phase11())
+    metrics.update(applications_metrics.collect_phase12())
     return JSONResponse(metrics)
 
 
@@ -836,7 +837,8 @@ def workday_tenant_matrix_page(request: Request):
     from app.applications import workday_tenant
 
     return templates.TemplateResponse(
-        request, "workday_tenants.html", {"observations": workday_tenant.list_observations()},
+        request, "workday_tenants.html",
+        {"observations": workday_tenant.list_observations(), "stability": workday_tenant.stability_report()},
     )
 
 

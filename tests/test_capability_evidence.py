@@ -66,3 +66,48 @@ def test_list_stale_only_returns_stale_rows(tmp_env):
 
 def test_evidence_age_days_handles_bad_timestamp():
     assert evidence_age_days("not-a-timestamp") == float("inf")
+
+
+# --- CLAUDE.md Phase 12 section 41: repeated REAL_BROWSER evidence ------------
+
+def test_real_browser_repeat_count_starts_at_one(tmp_env):
+    row = record_evidence("smartrecruiters", "apply_first_click", EvidenceVerificationType.REAL_BROWSER)
+    assert row["repeat_count"] == 1
+    assert row["verification_type"] == "REAL_BROWSER"
+
+
+def test_second_real_browser_observation_promotes_to_repeated(tmp_env):
+    record_evidence("smartrecruiters", "apply_first_click", EvidenceVerificationType.REAL_BROWSER)
+    row = record_evidence("smartrecruiters", "apply_first_click", EvidenceVerificationType.REAL_BROWSER)
+    assert row["repeat_count"] == 2
+    assert row["verification_type"] == "REAL_BROWSER_REPEATED"
+
+
+def test_third_real_browser_observation_keeps_incrementing(tmp_env):
+    record_evidence("smartrecruiters", "apply_first_click", EvidenceVerificationType.REAL_BROWSER)
+    record_evidence("smartrecruiters", "apply_first_click", EvidenceVerificationType.REAL_BROWSER)
+    row = record_evidence("smartrecruiters", "apply_first_click", EvidenceVerificationType.REAL_BROWSER_REPEATED)
+    assert row["repeat_count"] == 3
+
+
+def test_fixture_observation_resets_repeat_streak(tmp_env):
+    """A weaker (FIXTURE/NOT_TESTED/STATIC_HTML) re-check never counts
+    toward, and resets, the real-browser repeat streak."""
+    record_evidence("smartrecruiters", "apply_first_click", EvidenceVerificationType.REAL_BROWSER)
+    record_evidence("smartrecruiters", "apply_first_click", EvidenceVerificationType.REAL_BROWSER)
+    row = record_evidence("smartrecruiters", "apply_first_click", EvidenceVerificationType.NOT_TESTED)
+    assert row["repeat_count"] == 1
+    assert row["verification_type"] == "NOT_TESTED"
+
+
+def test_static_html_and_real_browser_are_time_sensitive_for_staleness(tmp_env):
+    old_observed = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat()
+    record_evidence("smartrecruiters", "landing_navigation", EvidenceVerificationType.REAL_BROWSER,
+                     observed_at=old_observed)
+    row = get_evidence("smartrecruiters", "landing_navigation")
+    assert is_stale(row, max_age_days=30) is True
+
+    record_evidence("smartrecruiters", "field_discovery", EvidenceVerificationType.STATIC_HTML,
+                     observed_at=old_observed)
+    row2 = get_evidence("smartrecruiters", "field_discovery")
+    assert is_stale(row2, max_age_days=30) is False

@@ -121,3 +121,18 @@ bug this phase's own E2E suite caught (see `docs/phase10-real-ats-assist.md`).
   step-progress parsing, worker-crash reconstruction, owner-conflict blocking, unexpected-
   redirect blocking, duplicate-application detection, false-confirmation-phrase rejection,
   final-review-page handling.
+
+## Phase 12 additions
+
+- **New statuses**: `PAUSED_IFRAME_UNEXPECTED_HOST`, `PAUSED_AMBIGUOUS_APPLY_CONTROL`,
+  `PAUSED_JOB_IDENTITY_MISMATCH` -- see `docs/spa-application-navigation.md`.
+- **New columns**: `iframe_used`, `shadow_dom_used`, `url_provenance` (`app.applications.
+  trusted_redirects.UrlProvenance`).
+- **Apply-entry click-through now prefers a trusted cross-domain redirect** (career page ->
+  recognized ATS vendor domain) over an unnecessary landing hop, and prefers a discovery-time
+  provider's own direct application URL over the more generic job-detail URL when both are
+  available -- see `docs/trusted-ats-redirects.md`.
+- **New tests**: `tests/test_browser_assist_phase12_e2e.py` (marked `browser`) -- SPA landing with
+  a delayed apply control, an SPA that never renders (bounded timeout), a Workday-like progress
+  wizard, ambiguous vs. non-ambiguous multiple apply controls, same-origin iframe form discovery,
+  open vs. closed shadow-DOM form discovery, and job-identity mismatch detection.

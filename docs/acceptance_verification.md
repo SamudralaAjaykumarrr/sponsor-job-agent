@@ -624,3 +624,71 @@ but only a single-page form, no multi-step/login/confirmation observed; cross-pr
 reattachment remains unimplemented and unclaimed (unchanged from Phase 10) — Phase 11 only makes
 the reconstruction path ownership-safe and countable (`reconstructed_count`), not a claim of true
 reattachment.
+
+## Phase 12 acceptance verification (verified 2026-08-22)
+
+- App starts, dashboard loads, all Phase 1-11 functionality unchanged (default `pytest`: 956
+  passed, up from Phase 11's documented 856 baseline).
+- `pytest -m browser` (real Chromium via a documented non-root library workaround): 38 passed (27
+  Phase 11 + 11 new Phase 12), 0 failed.
+- `pytest -m postgres` (embedded `pgserver`): 35 passed, matching Phase 11's documented baseline
+  exactly.
+- `python -m app.applications.cli doctor`: 0 serious, 0 warnings on the real dev database.
+- FULL_TIME hard gate and sponsorship gate: unchanged, re-verified via the existing Phase 8-11
+  doctor checks (`_check_non_full_time_queued`, `_check_non_confirmed_sponsorship_queued`,
+  `_check_browser_session_non_full_time`, `_check_browser_session_non_eligible_sponsorship`), all
+  still passing with 0 issues.
+- No real final submission was performed at any point during this phase's development or
+  validation (verified: `_check_no_browser_auto_submit_capability` and
+  `_check_real_provider_capability_auto_without_authorization` both pass; `mock_ats` remains the
+  only `submission_supported=True` provider).
+- SPA fixture E2E (`tests/test_browser_assist_phase12_e2e.py`, real Chromium): SPA landing
+  rendering an Apply control late is detected and safely clicked, a client-side route change is
+  detected, a dynamically-mounted multi-step form (including resume upload) is discovered and
+  filled; an SPA that never renders times out cleanly (no hang); a genuine "Step 2 of 3" progress
+  wizard is parsed EXACT while an unrelated "Posted 7/31" on the same page is never misread as
+  progress; multiple same-destination apply controls resolve normally, multiple
+  different-destination controls pause `PAUSED_AMBIGUOUS_APPLY_CONTROL`; a same-origin iframe form
+  is discovered AND filled (a real bug — fields discovered but not fillable — was caught and fixed
+  here); an open shadow-DOM form is discovered and filled; a closed shadow-DOM form is honestly
+  `PAUSED_UNSUPPORTED_SUBMISSION`, never bypassed; a job-identity mismatch pauses
+  `PAUSED_JOB_IDENTITY_MISMATCH`.
+- Trusted redirect tests: `tests/test_trusted_redirects.py` (21 cases, pure/offline) plus a real
+  live proof against GitLab's own corporate careers page (10/10 real `job-boards.greenhouse.io`
+  links classified `TRUSTED_ATS_REDIRECT`) — see `docs/trusted-ats-redirects.md`.
+- Multi-worker/Postgres ownership: unchanged mechanism (`browser_assist_sessions`'s partial
+  unique index + `claim_session`'s atomic UPDATE), re-verified passing under real PostgreSQL via
+  `tests/test_browser_session_postgres.py` with the new Phase 12 columns present.
+- Greenhouse/Workable regression: both re-verified live this phase (see below) with identical or
+  improved results — no regression.
+- Bounded live validation (`scripts/phase12_live_validation.py`, real network + real Chromium):
+  see `docs/real-ats-validation.md`'s Phase 12 update section for the full per-provider table.
+
+### Phase 12 real bugs caught live (scripts/phase12_live_validation.py and tests/test_browser_assist_phase12_e2e.py)
+
+1. **`trusted_redirects.classify_redirect_trust` initially treated `file://` as an unsafe
+   scheme.** This project's entire local browser-fixture convention is `file://`-based; a real
+   live-Chromium run of the Phase 11 regression suite caught every apply-entry fixture failing
+   immediately after this module was wired in. Fixed by adding the same `file://` carve-out
+   `app.applications.domain_allowlist` already established.
+2. **A field discovered inside an allowed-host iframe could not actually be filled.** The fill
+   path always targeted the main page, never the iframe's own `Frame` object. Fixed by tagging
+   each iframe-sourced field with its source frame and filling against it directly.
+3. **The submit/next-button scan never looked inside an iframe either**, so a form correctly
+   discovered and filled inside an iframe still landed on `ACTIVE` instead of
+   `READY_FOR_FINAL_SUBMIT`. Fixed by having the iframe scan also locate the submit/next control
+   within the same allowed frame.
+
+### Known Phase 12 limitations
+
+See `docs/phase12-spa-ats-hardening.md`'s "Recommended Phase 13" section for the full list. In
+short: SmartRecruiters' newer `oneclick-ui` SPA posting shape is protected by an active DataDome
+bot-detection CAPTCHA on the one real posting reached this phase — conclusively characterized
+(never bypassed), not resolved; whether this CAPTCHA challenge is present on every posting of this
+shape or only some remains unknown (a larger, still-bounded sample would be needed); the Walmart
+Workday tenant's apply-entry classification remains genuinely `VARIABLE` across 3 repeated
+observations this phase — the root cause (A/B page variation vs. hydration timing vs. session
+state) is still undetermined; job-identity verification is limited to a confidently-extractable
+requisition/posting-id token and reports `UNVERIFIABLE` (not a guess) when no such token exists on
+either URL; cross-process browser reattachment remains unimplemented and unclaimed (unchanged from
+Phase 10/11).

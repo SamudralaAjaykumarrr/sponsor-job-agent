@@ -15,17 +15,19 @@
 <body>
   <p><a href="/">&larr; back to dashboard</a> · <a href="/applications/browser-capability-matrix">Browser-Assist Capability Matrix</a></p>
   <h1>ATS Capability Evidence</h1>
-  <p>CLAUDE.md Phase 11 sections 42-43: dated evidence per (provider, capability). LIVE_PUBLIC evidence older
-     than {{ max_age_days }} days is flagged STALE for revalidation -- staleness never auto-disables a known-safe
-     capability, it only prompts a human to re-check.</p>
+  <p>CLAUDE.md Phase 11 sections 42-43 (extended Phase 12 sections 41-42): dated evidence per (provider,
+     capability). LIVE_PUBLIC/REAL_BROWSER/REAL_BROWSER_REPEATED evidence older than {{ max_age_days }} days is
+     flagged STALE for revalidation -- staleness never auto-disables a known-safe capability, it only prompts a
+     human to re-check. A repeat count &gt; 1 means the SAME real-browser observation has been genuinely
+     re-confirmed more than once, strengthening (never automatically inflating) confidence.</p>
   {% if not rows %}
   <p><em>No capability evidence recorded yet.</em></p>
   {% else %}
   <table>
     <thead>
       <tr>
-        <th>Provider</th><th>Capability</th><th>Verification type</th><th>Age (days)</th><th>Staleness</th>
-        <th>Source domain</th><th>Observed at</th><th>Notes</th>
+        <th>Provider</th><th>Capability</th><th>Verification type</th><th>Repeats</th><th>Age (days)</th>
+        <th>Staleness</th><th>Source domain</th><th>Observed at</th><th>Notes</th>
       </tr>
     </thead>
     <tbody>
@@ -34,6 +36,7 @@
         <td>{{ r.provider }}</td>
         <td>{{ r.capability }}</td>
         <td>{{ r.verification_type }}</td>
+        <td>{{ r.repeat_count }}</td>
         <td>{{ r.age_days }}</td>
         <td>{% if r.stale %}<span class="stale">STALE</span>{% else %}<span class="fresh">fresh</span>{% endif %}</td>
         <td>{{ r.source_domain }}</td>

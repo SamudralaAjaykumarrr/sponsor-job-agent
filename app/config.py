@@ -404,3 +404,18 @@ CAPABILITY_EVIDENCE_MAX_AGE_DAYS = _env_int("CAPABILITY_EVIDENCE_MAX_AGE_DAYS", 
 # "never a default or implicit dependency" principle as BROWSER_ASSIST_ENABLED.
 # Does not affect pytest, which never requires network/browser by default.
 REAL_ATS_VALIDATION_ENABLED = _env_bool("REAL_ATS_VALIDATION_ENABLED", False)
+
+# --- Phase 12: SPA/dynamic ATS flow hardening --------------------------------
+# See docs/phase12-spa-ats-hardening.md, docs/spa-application-navigation.md.
+#
+# Bounded DOM-stabilization wait (CLAUDE.md Phase 12 sections 11-12): used
+# instead of blindly trusting Playwright's `networkidle` load state, which a
+# genuinely single-page-app site may never reach (it can keep issuing
+# background XHR/websocket traffic indefinitely). Polls for recognizable
+# form content OR a login/CAPTCHA wall OR the DOM settling (unchanged across
+# consecutive polls) OR this timeout -- whichever comes first.
+BROWSER_DOM_STABILIZATION_TIMEOUT_MS = _env_int("BROWSER_DOM_STABILIZATION_TIMEOUT_MS", 8000)
+BROWSER_DOM_STABILIZATION_POLL_MS = _env_int("BROWSER_DOM_STABILIZATION_POLL_MS", 250)
+# Consecutive identical-signature polls before the DOM is considered
+# "settled" even when no recognizable form content ever appeared.
+BROWSER_DOM_STABILIZATION_SETTLE_POLLS = _env_int("BROWSER_DOM_STABILIZATION_SETTLE_POLLS", 3)

@@ -1,5 +1,9 @@
 # SmartRecruiters Application Assist
 
+> **Phase 12 update**: this limitation is now conclusively characterized, not merely unresolved --
+> see `docs/smartrecruiters-spa-validation.md` for the full finding (a real DataDome bot-detection
+> CAPTCHA on a newer SPA posting shape, correctly detected and never bypassed).
+
 ## Phase 10's finding
 
 The public postings API's candidate-facing URL

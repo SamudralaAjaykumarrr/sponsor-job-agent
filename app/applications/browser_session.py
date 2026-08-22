@@ -37,6 +37,13 @@ class BrowserSessionStatus(str, Enum):
     # its own PAUSED_LOGIN_REQUIRED) -- never clicked, always surfaced for a
     # human to look at and, if genuinely safe, click themselves.
     PAUSED_APPLY_ENTRY_UNRECOGNIZED = "PAUSED_APPLY_ENTRY_UNRECOGNIZED"
+    # CLAUDE.md Phase 12 sections 14, 36-38: three new, distinct pause
+    # reasons for SPA/dynamic-flow hardening -- never folded into the
+    # existing PLATFORM_POLICY_RESTRICTED/APPLY_ENTRY_UNRECOGNIZED buckets,
+    # so the dashboard/doctor can tell them apart.
+    PAUSED_IFRAME_UNEXPECTED_HOST = "PAUSED_IFRAME_UNEXPECTED_HOST"
+    PAUSED_AMBIGUOUS_APPLY_CONTROL = "PAUSED_AMBIGUOUS_APPLY_CONTROL"
+    PAUSED_JOB_IDENTITY_MISMATCH = "PAUSED_JOB_IDENTITY_MISMATCH"
     READY_FOR_FINAL_SUBMIT = "READY_FOR_FINAL_SUBMIT"
     AWAITING_USER_SUBMIT = "AWAITING_USER_SUBMIT"
     SUBMISSION_STATUS_UNKNOWN = "SUBMISSION_STATUS_UNKNOWN"
@@ -64,7 +71,8 @@ PAUSED_STATUSES = frozenset({
     BrowserSessionStatus.PAUSED_MFA_REQUIRED, BrowserSessionStatus.PAUSED_LEGAL_QUESTION,
     BrowserSessionStatus.PAUSED_UNKNOWN_FIELD, BrowserSessionStatus.PAUSED_FORM_CHANGED,
     BrowserSessionStatus.PAUSED_PLATFORM_RESTRICTED, BrowserSessionStatus.PAUSED_UNSUPPORTED_SUBMISSION,
-    BrowserSessionStatus.PAUSED_APPLY_ENTRY_UNRECOGNIZED,
+    BrowserSessionStatus.PAUSED_APPLY_ENTRY_UNRECOGNIZED, BrowserSessionStatus.PAUSED_IFRAME_UNEXPECTED_HOST,
+    BrowserSessionStatus.PAUSED_AMBIGUOUS_APPLY_CONTROL, BrowserSessionStatus.PAUSED_JOB_IDENTITY_MISMATCH,
 })
 
 
@@ -79,6 +87,10 @@ class BrowserPauseReason(str, Enum):
     FORM_CHANGED = "FORM_CHANGED"
     UNSUPPORTED_SUBMISSION = "UNSUPPORTED_SUBMISSION"
     APPLY_ENTRY_UNRECOGNIZED = "APPLY_ENTRY_UNRECOGNIZED"
+    # CLAUDE.md Phase 12 sections 14, 36-38.
+    IFRAME_UNEXPECTED_HOST = "IFRAME_UNEXPECTED_HOST"
+    AMBIGUOUS_APPLY_CONTROL = "AMBIGUOUS_APPLY_CONTROL"
+    JOB_IDENTITY_MISMATCH = "JOB_IDENTITY_MISMATCH"
 
 
 # Maps a pause reason to the session status it produces -- kept as one
@@ -93,6 +105,9 @@ REASON_TO_STATUS: dict[BrowserPauseReason, BrowserSessionStatus] = {
     BrowserPauseReason.FORM_CHANGED: BrowserSessionStatus.PAUSED_FORM_CHANGED,
     BrowserPauseReason.UNSUPPORTED_SUBMISSION: BrowserSessionStatus.PAUSED_UNSUPPORTED_SUBMISSION,
     BrowserPauseReason.APPLY_ENTRY_UNRECOGNIZED: BrowserSessionStatus.PAUSED_APPLY_ENTRY_UNRECOGNIZED,
+    BrowserPauseReason.IFRAME_UNEXPECTED_HOST: BrowserSessionStatus.PAUSED_IFRAME_UNEXPECTED_HOST,
+    BrowserPauseReason.AMBIGUOUS_APPLY_CONTROL: BrowserSessionStatus.PAUSED_AMBIGUOUS_APPLY_CONTROL,
+    BrowserPauseReason.JOB_IDENTITY_MISMATCH: BrowserSessionStatus.PAUSED_JOB_IDENTITY_MISMATCH,
 }
 
 

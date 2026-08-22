@@ -163,6 +163,80 @@ def collect_phase11() -> dict:
     }
 
 
+def collect_phase12() -> dict:
+    """CLAUDE.md Phase 12 section 70. Every value is a live query over
+    PERSISTED state (`browser_spa_events`/`workday_tenant_attempts`/
+    `capability_evidence_records`), same 'never an in-memory counter'
+    principle as `collect_phase11()` above."""
+    from app.applications import spa_events
+    from app.applications.workday_tenant import WorkdayStability, stability_report
+
+    with db_session() as conn:
+        trusted_ats_redirects = conn.execute(
+            "SELECT COUNT(*) AS c FROM browser_spa_events WHERE event = ?",
+            (spa_events.EVENT_TRUSTED_REDIRECT,),
+        ).fetchone()["c"]
+        blocked_redirects = conn.execute(
+            "SELECT COUNT(*) AS c FROM browser_spa_events WHERE event = ?",
+            (spa_events.EVENT_BLOCKED_REDIRECT,),
+        ).fetchone()["c"]
+        spa_apply_controls_detected = conn.execute(
+            "SELECT COUNT(*) AS c FROM browser_spa_events WHERE event = ?",
+            (spa_events.EVENT_APPLY_CONTROL_DETECTED,),
+        ).fetchone()["c"]
+        spa_apply_controls_unknown = conn.execute(
+            "SELECT COUNT(*) AS c FROM browser_spa_events WHERE event = ?",
+            (spa_events.EVENT_APPLY_CONTROL_UNKNOWN,),
+        ).fetchone()["c"]
+        spa_routes_detected = conn.execute(
+            "SELECT COUNT(*) AS c FROM browser_spa_events WHERE event = ?",
+            (spa_events.EVENT_SPA_ROUTE_DETECTED,),
+        ).fetchone()["c"]
+        dynamic_forms_detected = conn.execute(
+            "SELECT COUNT(*) AS c FROM browser_assist_sessions WHERE stage = 'APPLICATION_FORM'"
+        ).fetchone()["c"]
+        dynamic_form_timeouts = conn.execute(
+            "SELECT COUNT(*) AS c FROM browser_spa_events WHERE event = ?",
+            (spa_events.EVENT_DYNAMIC_FORM_TIMEOUT,),
+        ).fetchone()["c"]
+        iframe_forms_detected = conn.execute(
+            "SELECT COUNT(*) AS c FROM browser_assist_sessions WHERE iframe_used = 1"
+        ).fetchone()["c"]
+        shadow_forms_detected = conn.execute(
+            "SELECT COUNT(*) AS c FROM browser_assist_sessions WHERE shadow_dom_used = 1"
+        ).fetchone()["c"]
+        workday_observations = conn.execute(
+            "SELECT COUNT(*) AS c FROM workday_tenant_attempts"
+        ).fetchone()["c"]
+        capability_live_revalidations = conn.execute(
+            "SELECT COUNT(*) AS c FROM capability_evidence_records WHERE repeat_count > 1"
+        ).fetchone()["c"]
+        smartrecruiters_form_verified = conn.execute(
+            "SELECT COUNT(*) AS c FROM capability_evidence_records WHERE provider = 'smartrecruiters' "
+            "AND verification_type IN ('REAL_BROWSER', 'REAL_BROWSER_REPEATED', 'LIVE_PUBLIC')"
+        ).fetchone()["c"]
+
+    workday_variable_observations = sum(
+        1 for s in stability_report() if s.stability == WorkdayStability.VARIABLE
+    )
+
+    return {
+        "spa_apply_controls_detected": spa_apply_controls_detected,
+        "spa_apply_controls_unknown": spa_apply_controls_unknown,
+        "trusted_ats_redirects": trusted_ats_redirects,
+        "blocked_redirects": blocked_redirects,
+        "spa_routes_detected": spa_routes_detected,
+        "dynamic_forms_detected": dynamic_forms_detected,
+        "dynamic_form_timeouts": dynamic_form_timeouts,
+        "iframe_forms_detected": iframe_forms_detected,
+        "shadow_forms_detected": shadow_forms_detected,
+        "workday_observations": workday_observations,
+        "workday_variable_observations": workday_variable_observations,
+        "smartrecruiters_form_verified": smartrecruiters_form_verified,
+        "capability_live_revalidations": capability_live_revalidations,
+    }
+
+
 def collect_worker_fleet() -> dict:
     """CLAUDE.md Phase 9 section 49: application-worker-fleet-shaped
     observability, kept separate from collect() above (which is purely

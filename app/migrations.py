@@ -783,6 +783,106 @@ def _m028_capability_evidence_records_table(conn, backend: str) -> None:
     )
 
 
+# =============================================================================
+# Phase 12: SPA/dynamic ATS flow hardening (CLAUDE.md Phase 12 durable rules).
+# Every table/column below is additive -- no Phase 1-11 table is altered
+# destructively, matching this module's own "no rollback needed, everything
+# additive" design note above.
+# =============================================================================
+
+def _m029_browser_spa_events_table(conn, backend: str) -> None:
+    """CLAUDE.md Phase 12 sections 70-71: an append-only, structured event
+    log for SPA/dynamic-flow observations (apply-control detection, trusted-
+    redirect decisions, route changes, dynamic-form timeouts, iframe/shadow-
+    DOM form discovery, capability revalidations). This is the single source
+    both `app.applications.metrics.collect_phase12()` queries (never an
+    in-memory counter -- same "live query over persisted state" principle
+    every other metrics function in this project already follows) and what
+    structured logging correlates by session_id/execution_id/job_id. Never a
+    column for a candidate field VALUE -- only ids, stage/event/result
+    labels, and durations."""
+    id_column = "id BIGSERIAL PRIMARY KEY" if backend == "postgres" else "id INTEGER PRIMARY KEY AUTOINCREMENT"
+    conn.execute(
+        f"""CREATE TABLE IF NOT EXISTS browser_spa_events (
+            {id_column},
+            session_id TEXT DEFAULT '',
+            execution_id TEXT DEFAULT '',
+            job_id INTEGER,
+            provider TEXT DEFAULT '',
+            tenant TEXT DEFAULT '',
+            stage TEXT DEFAULT '',
+            event TEXT NOT NULL,
+            result TEXT DEFAULT '',
+            detail TEXT DEFAULT '',
+            duration_ms INTEGER,
+            created_at TEXT NOT NULL
+        )"""
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_browser_spa_events_event ON browser_spa_events (event)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_browser_spa_events_session ON browser_spa_events (session_id)")
+
+
+def _m030_workday_tenant_attempts_table(conn, backend: str) -> None:
+    """CLAUDE.md Phase 12 sections 18-21, 54: repeated, PER-ATTEMPT Workday
+    observations -- distinct from the Phase 11 `workday_tenant_observations`
+    table (which stays the single-row-per-tenant/site AGGREGATE capability
+    view). This table is append-only so `app.applications.workday_tenant`
+    can classify a tenant's stability (STABLE/VARIABLE/UNVERIFIED/STALE)
+    from genuine repeated evidence rather than overwriting the previous
+    observation -- never cherry-picking the most favorable run (CLAUDE.md
+    Phase 12 section 20/54)."""
+    id_column = "id BIGSERIAL PRIMARY KEY" if backend == "postgres" else "id INTEGER PRIMARY KEY AUTOINCREMENT"
+    conn.execute(
+        f"""CREATE TABLE IF NOT EXISTS workday_tenant_attempts (
+            {id_column},
+            tenant TEXT NOT NULL,
+            site TEXT NOT NULL DEFAULT '',
+            host TEXT NOT NULL DEFAULT '',
+            requisition_id TEXT DEFAULT '',
+            url_initial TEXT DEFAULT '',
+            url_final TEXT DEFAULT '',
+            stage TEXT DEFAULT '',
+            apply_control_result TEXT DEFAULT '',
+            render_time_ms INTEGER,
+            fields_detected INTEGER,
+            resume_upload_detected INTEGER,
+            step_indicator TEXT DEFAULT '',
+            result TEXT DEFAULT '',
+            notes TEXT DEFAULT '',
+            observed_at TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_workday_tenant_attempts_tenant_site "
+        "ON workday_tenant_attempts (tenant, site)"
+    )
+
+
+def _m031_capability_evidence_repeat_count_column(conn, backend: str) -> None:
+    """CLAUDE.md Phase 12 section 41: repeated REAL_BROWSER evidence should
+    strengthen confidence -- tracked as a simple counter alongside the
+    existing single-current-row-per-(provider,capability) model (never a
+    second, parallel evidence-history table; the dated `observed_at` on the
+    current row remains the audit trail, matching Phase 11's own design
+    note)."""
+    add_columns_if_missing(conn, backend, "capability_evidence_records", [
+        ("repeat_count", "INTEGER NOT NULL DEFAULT 1"),
+    ])
+
+
+def _m032_browser_assist_sessions_spa_columns(conn, backend: str) -> None:
+    """CLAUDE.md Phase 12 sections 8-9, 14-15, 26-27: additive, nullable/
+    defaulted columns tracking whether a session's form was reached through
+    an iframe or open shadow root, and the provenance of the resolved
+    application URL -- never inferred after the fact, always recorded at the
+    point of discovery."""
+    add_columns_if_missing(conn, backend, "browser_assist_sessions", [
+        ("iframe_used", "INTEGER NOT NULL DEFAULT 0"),
+        ("shadow_dom_used", "INTEGER NOT NULL DEFAULT 0"),
+        ("url_provenance", "TEXT DEFAULT ''"),
+    ])
+
+
 MIGRATIONS: list[tuple[int, str, Callable]] = [
     (2, "phase6_worker_identity_columns", _m002_worker_identity_columns),
     (3, "phase6_schema_drift_table", _m003_schema_drift_table),
@@ -811,6 +911,10 @@ MIGRATIONS: list[tuple[int, str, Callable]] = [
     (26, "phase11_browser_session_entry_stage_columns", _m026_browser_session_entry_stage_columns),
     (27, "phase11_workday_tenant_observations_table", _m027_workday_tenant_observations_table),
     (28, "phase11_capability_evidence_records_table", _m028_capability_evidence_records_table),
+    (29, "phase12_browser_spa_events_table", _m029_browser_spa_events_table),
+    (30, "phase12_workday_tenant_attempts_table", _m030_workday_tenant_attempts_table),
+    (31, "phase12_capability_evidence_repeat_count_column", _m031_capability_evidence_repeat_count_column),
+    (32, "phase12_browser_assist_sessions_spa_columns", _m032_browser_assist_sessions_spa_columns),
 ]
 
 # Version 1 is the implicit Phase 1-5 baseline schema, applied by

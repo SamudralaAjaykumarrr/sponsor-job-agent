@@ -49,5 +49,33 @@
     </tbody>
   </table>
   {% endif %}
+
+  <h2>Tenant Stability (CLAUDE.md Phase 12 sections 18-21, 54, 68, 77)</h2>
+  <p>Classified from REPEATED, per-attempt observations (app.applications.workday_tenant_attempts) --
+     never generalized from a single tenant or a single run.</p>
+  {% if not stability %}
+  <p><em>No repeated attempts recorded yet. Run scripts/phase12_live_validation.py to observe a tenant multiple
+     times.</em></p>
+  {% else %}
+  <table>
+    <thead>
+      <tr><th>Tenant</th><th>Site</th><th>Stability</th><th>Attempts</th><th>Consistent</th><th>Variable</th></tr>
+    </thead>
+    <tbody>
+      {% for s in stability %}
+      <tr>
+        <td>{{ s.tenant }}</td>
+        <td>{{ s.site }}</td>
+        <td class="{% if s.stability.value == 'STABLE' %}yes{% elif s.stability.value == 'VARIABLE' %}no{% else %}unknown{% endif %}">
+          {{ s.stability.value }}
+        </td>
+        <td>{{ s.attempt_count }}</td>
+        <td>{{ s.consistent_count }}</td>
+        <td>{{ s.variable_count }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
 </body>
 </html>

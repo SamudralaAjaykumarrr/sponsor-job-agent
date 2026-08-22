@@ -20,7 +20,9 @@ FINAL_SUBMIT is never clicked by any code path in this project."""
 
 from dataclasses import dataclass
 from enum import Enum
-from urllib.parse import urlparse
+from typing import Optional
+
+from app.applications.trusted_redirects import RedirectTrust, classify_redirect_trust
 
 
 class EntryStage(str, Enum):
@@ -117,35 +119,108 @@ def _norm(text: str) -> str:
     return (text or "").strip().lower()
 
 
-def classify_apply_control(
+@dataclass(frozen=True)
+class ApplyControlDetail:
+    """CLAUDE.md Phase 12 section 7: classification alone was Phase 11's
+    entire result -- this carries the WHY (evidence field) so a paused
+    UNKNOWN/EXTERNAL_REDIRECT control is reviewable without re-deriving the
+    reasoning by hand, and so a TRUSTED_ATS_REDIRECT decision is auditable."""
+    classification: ApplyControlClassification
+    reason: str = ""
+    redirect_trust: Optional[RedirectTrust] = None
+    destination_host: str = ""
+
+
+def classify_apply_control_detailed(
     text: str, *, href: str = "", current_host: str = "",
-) -> ApplyControlClassification:
-    """Deterministic, order-independent classification of one button/link's
-    visible text (plus its destination host, when known -- an <a href> to an
-    unrelated external host is EXTERNAL_REDIRECT regardless of its text).
-    UNKNOWN (never a guess dressed up as a class) is the correct result for
-    text this table doesn't recognize -- callers must treat UNKNOWN as
-    USER_ACTION_REQUIRED, never as safe to click (CLAUDE.md Phase 11 section
-    6)."""
+) -> ApplyControlDetail:
+    """CLAUDE.md Phase 12 sections 7-9: the detailed form of
+    `classify_apply_control` below (which remains the simple, backward-
+    compatible wrapper every Phase 10/11 call site already uses). Considers
+    the destination's TRUST, not just whether it happens to differ from the
+    current host: a cross-host destination that matches a known ATS vendor
+    domain (`app.applications.trusted_redirects`) falls through to ordinary
+    text classification -- e.g. a genuine "Apply Now" link to
+    `jobs.lever.co/<company>` from an employer's own career page is
+    NAVIGATION_SAFE, not blindly EXTERNAL_REDIRECT -- while an UNTRUSTED
+    cross-host destination is EXTERNAL_REDIRECT regardless of text, exactly
+    as Phase 11 already behaved."""
     label = _norm(text)
     if not label:
-        return ApplyControlClassification.UNKNOWN
+        return ApplyControlDetail(ApplyControlClassification.UNKNOWN, reason="empty control text")
 
+    redirect_decision = None
     if href:
-        dest_host = (urlparse(href).hostname or "").lower()
-        if dest_host and current_host and dest_host != current_host:
-            return ApplyControlClassification.EXTERNAL_REDIRECT
+        redirect_decision = classify_redirect_trust(current_host, href)
+        if redirect_decision.trust == RedirectTrust.UNSAFE_SCHEME:
+            return ApplyControlDetail(
+                ApplyControlClassification.UNKNOWN, reason=redirect_decision.reason,
+                redirect_trust=redirect_decision.trust,
+            )
+        if redirect_decision.trust == RedirectTrust.UNTRUSTED:
+            return ApplyControlDetail(
+                ApplyControlClassification.EXTERNAL_REDIRECT, reason=redirect_decision.reason,
+                redirect_trust=redirect_decision.trust, destination_host=redirect_decision.destination_host,
+            )
 
     # FINAL_SUBMIT checked before NAVIGATION_SAFE: "submit application"
     # contains no navigation-safe phrase, but a short label like "submit"
     # must never fall through to a partial "apply"-style match.
     if any(p in label for p in FINAL_SUBMIT_PHRASES):
-        return ApplyControlClassification.FINAL_SUBMIT
+        return ApplyControlDetail(ApplyControlClassification.FINAL_SUBMIT, reason="text matches a final-submit phrase")
     if any(p in label for p in LOGIN_TRIGGER_PHRASES):
-        return ApplyControlClassification.LOGIN_TRIGGER
+        return ApplyControlDetail(ApplyControlClassification.LOGIN_TRIGGER, reason="text matches a login-trigger phrase")
     if any(p in label for p in NAVIGATION_SAFE_PHRASES):
-        return ApplyControlClassification.NAVIGATION_SAFE
-    return ApplyControlClassification.UNKNOWN
+        reason = "text matches a navigation-safe apply-entry phrase"
+        trust = redirect_decision.trust if redirect_decision else None
+        dest_host = redirect_decision.destination_host if redirect_decision else ""
+        if trust == RedirectTrust.TRUSTED_ATS_REDIRECT:
+            reason += f"; destination is a trusted {redirect_decision.matched_provider} application domain"
+        return ApplyControlDetail(
+            ApplyControlClassification.NAVIGATION_SAFE, reason=reason, redirect_trust=trust,
+            destination_host=dest_host,
+        )
+    return ApplyControlDetail(ApplyControlClassification.UNKNOWN,
+                               reason="control text not recognized by any classification table")
+
+
+def classify_apply_control(
+    text: str, *, href: str = "", current_host: str = "",
+) -> ApplyControlClassification:
+    """Deterministic, order-independent classification of one button/link's
+    visible text (plus its destination host, when known). UNKNOWN (never a
+    guess dressed up as a class) is the correct result for text this table
+    doesn't recognize -- callers must treat UNKNOWN as USER_ACTION_REQUIRED,
+    never as safe to click (CLAUDE.md Phase 11 section 6). Thin wrapper over
+    `classify_apply_control_detailed` -- kept for every existing call site
+    that only needs the bare classification."""
+    return classify_apply_control_detailed(text, href=href, current_host=current_host).classification
+
+
+def select_apply_control(candidates: list[dict]) -> tuple[Optional[dict], str]:
+    """CLAUDE.md Phase 12 sections 36-37: `candidates` is one page's full
+    list of scanned controls, each a dict with at least 'href' and
+    'classification' (an ApplyControlClassification value). Real pages
+    commonly repeat the SAME apply action as a top/bottom/sticky button --
+    multiple NAVIGATION_SAFE candidates sharing one destination (same href,
+    or all relative/empty on the same page) are not ambiguous. Multiple
+    NAVIGATION_SAFE candidates with genuinely DIFFERENT destinations (e.g. a
+    "similar jobs" Apply button elsewhere on the page) must never be resolved
+    by guessing which one is for the current job -- returns (None, reason)
+    so the caller surfaces NEEDS_USER_ACTION instead."""
+    nav_safe = [c for c in candidates if c.get("classification") == ApplyControlClassification.NAVIGATION_SAFE.value]
+    if nav_safe:
+        destinations = {(c.get("href") or "").strip() for c in nav_safe}
+        if len(destinations) > 1:
+            return None, ("ambiguous: multiple NAVIGATION_SAFE apply controls point to different destinations -- "
+                           "cannot safely determine which corresponds to the current job")
+        return nav_safe[0], ""
+    for c in candidates:
+        if c.get("classification") in (
+            ApplyControlClassification.LOGIN_TRIGGER.value, ApplyControlClassification.EXTERNAL_REDIRECT.value,
+        ):
+            return c, ""
+    return None, ""
 
 
 def classify_nav_control(text: str) -> NavControlKind:
@@ -216,6 +291,33 @@ def is_review_page_text(body_text: str) -> bool:
 def is_confirmation_page_text(body_text: str) -> bool:
     lowered = _norm(body_text)
     return any(p in lowered for p in _CONFIRMATION_PAGE_PHRASES)
+
+
+# CLAUDE.md Phase 12 sections 28-29: a coarse funnel ordering used ONLY to
+# flag a genuinely anomalous stage regression for review (a warning, logged
+# via app.applications.spa_events -- never blocking) -- e.g. CONFIRMATION
+# followed by a DIFFERENT stage on the same session, which should never
+# happen since a confirmed session is closed. Deliberately does NOT reject
+# ordinary backward movement in general: `app.applications.browser_assist`'s
+# sanctioned reconstruct-and-resume path (CLAUDE.md Phase 11 section 45) can
+# legitimately re-land on an earlier stage after a fresh browser reopens and
+# rediscovers from scratch, so callers pass `after_reconstruction=True` to
+# skip this check for that expected case.
+def is_valid_stage_transition(old: EntryStage, new: EntryStage, *, after_reconstruction: bool = False) -> bool:
+    if old == new or after_reconstruction:
+        return True
+    if old == EntryStage.CONFIRMATION:
+        # Confirmation is terminal -- a session that already observed
+        # confirmation text should never legitimately observe a DIFFERENT
+        # stage afterward.
+        return False
+    if old == EntryStage.FINAL_REVIEW and new in (EntryStage.APPLICATION_ENTRY, EntryStage.LANDING_PAGE):
+        # Skipping backward past the form itself (not merely re-visiting an
+        # earlier form step) is the anomalous case this check exists to
+        # catch -- ordinary FINAL_REVIEW -> APPLICATION_FORM (editing an
+        # answer) is fine and not flagged.
+        return False
+    return True
 
 
 _STEP_OF_RE = None

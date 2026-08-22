@@ -9,13 +9,17 @@ from app.applications.apply_entry import (
     NavControlKind,
     StepConfidence,
     classify_apply_control,
+    classify_apply_control_detailed,
     classify_nav_control,
     classify_stage,
     detect_entry_result,
     is_confirmation_page_text,
     is_review_page_text,
+    is_valid_stage_transition,
     parse_step_progress,
+    select_apply_control,
 )
+from app.applications.trusted_redirects import RedirectTrust
 
 
 # --- classify_apply_control ---------------------------------------------------
@@ -219,3 +223,121 @@ def test_invalid_slash_ratio_falls_back_to_unknown():
     # never trust an inverted ratio as EXACT.
     current, total, confidence = parse_step_progress("Score: 5 / 2")
     assert confidence == StepConfidence.UNKNOWN
+
+
+# --- CLAUDE.md Phase 12: trusted-redirect-aware classification ----------------
+
+def test_trusted_ats_redirect_is_navigation_safe_not_external():
+    """CLAUDE.md Phase 12 section 8: a company career page's Apply link to a
+    recognized ATS vendor domain is safe to follow, not a blind
+    EXTERNAL_REDIRECT."""
+    result = classify_apply_control(
+        "Apply Now", href="https://jobs.lever.co/acme/abc-123", current_host="careers.acme.com",
+    )
+    assert result == ApplyControlClassification.NAVIGATION_SAFE
+
+
+def test_untrusted_cross_host_remains_external_redirect():
+    result = classify_apply_control(
+        "Apply Now", href="https://ads.example-tracker.com/click?x=1", current_host="jobs.smartrecruiters.com",
+    )
+    assert result == ApplyControlClassification.EXTERNAL_REDIRECT
+
+
+def test_detailed_classification_carries_reason_and_trust():
+    detail = classify_apply_control_detailed(
+        "Apply Now", href="https://boards.greenhouse.io/acme/jobs/1", current_host="careers.acme.com",
+    )
+    assert detail.classification == ApplyControlClassification.NAVIGATION_SAFE
+    assert detail.redirect_trust == RedirectTrust.TRUSTED_ATS_REDIRECT
+    assert "greenhouse" in detail.reason
+
+
+def test_final_submit_text_to_trusted_ats_domain_stays_final_submit():
+    """A 'Submit Application' control re-hosted on a trusted ATS domain is
+    still FINAL_SUBMIT (never clicked) -- trust only ever unlocks the
+    NAVIGATION_SAFE text path, never final-submit safety."""
+    detail = classify_apply_control_detailed(
+        "Submit Application", href="https://boards.greenhouse.io/acme/jobs/1", current_host="careers.acme.com",
+    )
+    assert detail.classification == ApplyControlClassification.FINAL_SUBMIT
+
+
+def test_unsafe_scheme_never_navigation_safe():
+    detail = classify_apply_control_detailed("Apply Now", href="javascript:void(0)", current_host="acme.com")
+    assert detail.classification == ApplyControlClassification.UNKNOWN
+    assert detail.redirect_trust == RedirectTrust.UNSAFE_SCHEME
+
+
+# --- select_apply_control -------------------------------------------------------
+
+def test_select_apply_control_single_navigation_safe():
+    candidates = [{"href": "/apply/1", "classification": "NAVIGATION_SAFE"}]
+    best, reason = select_apply_control(candidates)
+    assert best is candidates[0]
+    assert reason == ""
+
+
+def test_select_apply_control_same_destination_not_ambiguous():
+    """CLAUDE.md Phase 12 sections 36-37: top/bottom/sticky Apply buttons
+    pointing at the SAME destination are not ambiguous."""
+    candidates = [
+        {"href": "/apply/1", "classification": "NAVIGATION_SAFE"},
+        {"href": "/apply/1", "classification": "NAVIGATION_SAFE"},
+    ]
+    best, reason = select_apply_control(candidates)
+    assert best is not None
+    assert reason == ""
+
+
+def test_select_apply_control_different_destinations_is_ambiguous():
+    candidates = [
+        {"href": "/apply/1", "classification": "NAVIGATION_SAFE"},
+        {"href": "/apply/2-similar-job", "classification": "NAVIGATION_SAFE"},
+    ]
+    best, reason = select_apply_control(candidates)
+    assert best is None
+    assert "ambiguous" in reason.lower()
+
+
+def test_select_apply_control_falls_back_to_login_trigger():
+    candidates = [{"href": "", "classification": "LOGIN_TRIGGER"}]
+    best, reason = select_apply_control(candidates)
+    assert best is candidates[0]
+
+
+def test_select_apply_control_no_candidates_returns_none():
+    best, reason = select_apply_control([])
+    assert best is None
+    assert reason == ""
+
+
+# --- is_valid_stage_transition --------------------------------------------------
+
+def test_stage_transition_same_stage_always_valid():
+    assert is_valid_stage_transition(EntryStage.APPLICATION_FORM, EntryStage.APPLICATION_FORM)
+
+
+def test_stage_transition_forward_progression_valid():
+    assert is_valid_stage_transition(EntryStage.LANDING_PAGE, EntryStage.APPLICATION_FORM)
+    assert is_valid_stage_transition(EntryStage.APPLICATION_FORM, EntryStage.FINAL_REVIEW)
+    assert is_valid_stage_transition(EntryStage.FINAL_REVIEW, EntryStage.CONFIRMATION)
+
+
+def test_stage_transition_confirmation_is_terminal():
+    assert not is_valid_stage_transition(EntryStage.CONFIRMATION, EntryStage.APPLICATION_FORM)
+
+
+def test_stage_transition_final_review_back_to_landing_is_invalid():
+    assert not is_valid_stage_transition(EntryStage.FINAL_REVIEW, EntryStage.LANDING_PAGE)
+
+
+def test_stage_transition_review_back_to_form_is_valid():
+    # Editing an answer from the review page is ordinary, not anomalous.
+    assert is_valid_stage_transition(EntryStage.FINAL_REVIEW, EntryStage.APPLICATION_FORM)
+
+
+def test_stage_transition_after_reconstruction_always_valid():
+    """CLAUDE.md Phase 11 section 45: the reconstruct-and-resume path can
+    legitimately re-land on an earlier stage -- never flagged."""
+    assert is_valid_stage_transition(EntryStage.CONFIRMATION, EntryStage.LANDING_PAGE, after_reconstruction=True)

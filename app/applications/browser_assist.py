@@ -206,7 +206,9 @@ import os
 
 from app.applications import browser_runtime
 from app.applications import repo as _executions_repo
-from app.applications.apply_entry import EntryDetectionResult, EntryStage, StepConfidence
+from app.applications import spa_events
+from app.applications.apply_entry import EntryDetectionResult, EntryStage, StepConfidence, is_valid_stage_transition
+from app.applications.trusted_redirects import resolve_application_url
 from app.applications.browser_session import (
     BrowserPauseReason,
     BrowserSessionStatus,
@@ -320,15 +322,23 @@ def _advance_through_apply_entry(session_id: str, outcome: "browser_runtime.Disc
     return outcome, clicked_any
 
 
-def _resolve_step_fields(outcome: "browser_runtime.DiscoveryOutcome", session: dict) -> dict:
+def _resolve_step_fields(outcome: "browser_runtime.DiscoveryOutcome", session: dict, *,
+                          after_reconstruction: bool = False) -> dict:
     """CLAUDE.md Phase 11 sections 18-19: a genuinely EXACT-parsed step
     indicator on the page (e.g. "Step 2 of 4") is more authoritative than
     this module's own click-counted `current_step` -- especially after a
     reconstructed session, whose internal counter always restarts at 1 even
     though the real page may say otherwise. INFERRED/UNKNOWN confidence
-    never overrides the counter, and never invents a total."""
+    never overrides the counter, and never invents a total.
+
+    CLAUDE.md Phase 12 sections 14-15, 26-29: also the single place every
+    `_apply_discovery_outcome` return point persists iframe/shadow-DOM usage
+    and checks the stage transition against the session's prior stage --
+    kept here (rather than duplicated at each of the 6 return points above)
+    for the same reason step-progress fields already were."""
     fields = {"step_confidence": outcome.step_confidence, "stage": outcome.stage,
-              "entry_detection_result": outcome.entry_detection_result}
+              "entry_detection_result": outcome.entry_detection_result,
+              "iframe_used": 1 if outcome.iframe_used else 0, "shadow_dom_used": 1 if outcome.shadow_dom_used else 0}
     if outcome.step_confidence == StepConfidence.EXACT.value and outcome.current_step_observed:
         fields["current_step"] = outcome.current_step_observed
         if outcome.total_steps_observed:
@@ -337,11 +347,26 @@ def _resolve_step_fields(outcome: "browser_runtime.DiscoveryOutcome", session: d
             fields["total_steps_if_known"] = outcome.total_steps_hint or session.get("total_steps_if_known")
     else:
         fields["total_steps_if_known"] = outcome.total_steps_hint or session.get("total_steps_if_known")
+
+    if not outcome.pause_reason and session.get("stage"):
+        try:
+            old_stage = EntryStage(session["stage"])
+            new_stage = EntryStage(outcome.stage)
+        except ValueError:
+            old_stage = new_stage = None
+        if old_stage is not None and new_stage is not None \
+                and not is_valid_stage_transition(old_stage, new_stage, after_reconstruction=after_reconstruction):
+            spa_events.record(
+                spa_events.EVENT_STAGE_TRANSITION_INVALID, session_id=session.get("session_id", ""),
+                provider=session.get("provider", ""), stage=outcome.stage,
+                detail=f"{old_stage.value} -> {new_stage.value}",
+            )
     return fields
 
 
 def _apply_discovery_outcome(session: dict, outcome: "browser_runtime.DiscoveryOutcome",
-                              application_fields: list[ApplicationField], *, check_drift: bool = True) -> dict:
+                              application_fields: list[ApplicationField], *, check_drift: bool = True,
+                              after_reconstruction: bool = False) -> dict:
     """The single place that turns one real-browser discovery pass into a
     session status update -- used by start/resume/mark-user-action-complete/
     advance-step so all four go through identical, never-diverging logic.
@@ -360,7 +385,7 @@ def _apply_discovery_outcome(session: dict, outcome: "browser_runtime.DiscoveryO
         status = REASON_TO_STATUS[reason]
         return browser_session.update_session(
             session_id, status=status.value, needs_user_action=1, user_action_reason=reason.value,
-            **_resolve_step_fields(outcome, session),
+            **_resolve_step_fields(outcome, session, after_reconstruction=after_reconstruction),
         )
 
     # CLAUDE.md Phase 11 sections 4-8: pass the landing/apply-entry stage
@@ -374,7 +399,7 @@ def _apply_discovery_outcome(session: dict, outcome: "browser_runtime.DiscoveryO
         status = REASON_TO_STATUS[reason]
         return browser_session.update_session(
             session_id, status=status.value, needs_user_action=1, user_action_reason=reason.value,
-            **_resolve_step_fields(outcome, session),
+            **_resolve_step_fields(outcome, session, after_reconstruction=after_reconstruction),
         )
 
     entry_result = outcome.entry_detection_result
@@ -407,7 +432,7 @@ def _apply_discovery_outcome(session: dict, outcome: "browser_runtime.DiscoveryO
         status = REASON_TO_STATUS[pause]
         return browser_session.update_session(
             session_id, status=status.value, needs_user_action=1, user_action_reason=pause.value,
-            **_resolve_step_fields(outcome, session),
+            **_resolve_step_fields(outcome, session, after_reconstruction=after_reconstruction),
         )
 
     fill_result = browser_runtime.fill_fields(session_id, outcome.fields, application_fields)
@@ -422,7 +447,7 @@ def _apply_discovery_outcome(session: dict, outcome: "browser_runtime.DiscoveryO
             session_id, status=BrowserSessionStatus.PAUSED_FORM_CHANGED.value, needs_user_action=1,
             user_action_reason=BrowserPauseReason.FORM_CHANGED.value, form_fingerprint=outcome.fingerprint,
             mapped_field_count=len(fill_result.filled), unresolved_field_count=len(fill_result.unresolved),
-            **_resolve_step_fields(outcome, session),
+            **_resolve_step_fields(outcome, session, after_reconstruction=after_reconstruction),
         )
 
     if fill_result.unresolved:
@@ -432,7 +457,7 @@ def _apply_discovery_outcome(session: dict, outcome: "browser_runtime.DiscoveryO
             session_id, status=status.value, needs_user_action=1, user_action_reason=reason.value,
             form_fingerprint=outcome.fingerprint, mapped_field_count=len(fill_result.filled),
             unresolved_field_count=len(fill_result.unresolved),
-            **_resolve_step_fields(outcome, session),
+            **_resolve_step_fields(outcome, session, after_reconstruction=after_reconstruction),
         )
 
     # CLAUDE.md Phase 10 section 29: the runtime may LOCATE a submit button,
@@ -444,7 +469,7 @@ def _apply_discovery_outcome(session: dict, outcome: "browser_runtime.DiscoveryO
         session_id, status=new_status.value, needs_user_action=0, user_action_reason="",
         form_fingerprint=outcome.fingerprint, mapped_field_count=len(fill_result.filled),
         unresolved_field_count=len(fill_result.unresolved),
-        **_resolve_step_fields(outcome, session),
+        **_resolve_step_fields(outcome, session, after_reconstruction=after_reconstruction),
     )
 
 
@@ -480,7 +505,15 @@ def start_session(execution_id: str) -> dict:
         return {"created": True, "session": result.get("session", existing),
                 "reason": result.get("detail", "existing active session reused")}
 
-    application_url = job.canonical_url or job.url
+    # CLAUDE.md Phase 12 sections 25-27: prefer a provider-resolved direct
+    # application URL over the more generic job-detail URL -- avoids an
+    # unnecessary landing-page apply-entry hop when the discovery-time
+    # provider adapter already resolved straight to the real form (Lever/
+    # Ashby's real postings both had this shape in Phase 11's own findings).
+    resolved = resolve_application_url(
+        canonical_url=job.canonical_url or "", job_url=job.url or "", provider=job.provider or "",
+    )
+    application_url = resolved.url
     if not application_url:
         return {"created": False, "reason": "no application URL available for this job"}
 
@@ -506,6 +539,7 @@ def start_session(execution_id: str) -> dict:
     session_id = session["session_id"]
     session = browser_session.update_session(
         session_id, resume_artifact_hash=resume_hash, answers_version=answers_version,
+        url_provenance=resolved.provenance.value,
     )
 
     owned, session = _claim_or_conflict(session_id)
@@ -590,7 +624,7 @@ def resume_session(session_id: str) -> dict:
         session = browser_session.update_session(
             session_id, reconstructed_count=(session.get("reconstructed_count") or 0) + 1,
         )
-        updated = _apply_discovery_outcome(session, outcome, application_fields)
+        updated = _apply_discovery_outcome(session, outcome, application_fields, after_reconstruction=True)
         return {"ok": True, "session": updated,
                 "detail": "reconstructed a fresh browser window at the saved application URL (previous "
                           "window/process was gone) -- the form was rediscovered from scratch, not reattached"}

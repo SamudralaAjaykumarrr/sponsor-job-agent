@@ -84,6 +84,11 @@ def run_doctor() -> DoctorReport:
         _check_real_provider_capability_auto_without_authorization(report)
         _check_false_confirmation_evidence(conn, report)
         _check_duplicate_detected_execution_marked_applied(conn, report)
+        # --- Phase 12 (CLAUDE.md Phase 12 section 69) ---
+        _check_unsafe_redirect_allowlist(report)
+        _check_stage_transition_invalid(conn, report)
+        _check_job_identity_mismatch_unresolved(conn, report)
+        _check_workday_universal_claim_from_one_tenant(report)
     return report
 
 
@@ -596,3 +601,76 @@ def _check_duplicate_detected_execution_marked_applied(conn, report: DoctorRepor
                                     f"session {r['session_id']} is DUPLICATE_APPLICATION_DETECTED but its linked "
                                     f"execution {r['execution_id']} is APPLIED -- duplicate-application evidence "
                                     f"must never produce a fresh APPLIED transition"))
+
+
+# --- Phase 12 checks (CLAUDE.md Phase 12 section 69) --------------------------
+
+def _check_unsafe_redirect_allowlist(report: DoctorReport) -> None:
+    """CLAUDE.md Phase 12 sections 9, 63: a static assertion that
+    `app.applications.trusted_redirects` only ever trusts REAL, specific ATS
+    vendor domain suffixes (never a bare/near-empty suffix, never a generic
+    top-level domain like 'com') -- a broad entry here would silently turn
+    the trusted-redirect model into the 'any external link is fine' allowlist
+    CLAUDE.md section 9 explicitly forbids."""
+    from app.applications.trusted_redirects import _ALL_TRUSTED_SUFFIXES
+
+    for suffix in _ALL_TRUSTED_SUFFIXES:
+        normalized = suffix.strip(".").lower()
+        if len(normalized) < 4 or "." not in normalized:
+            report.issues.append(Issue("serious", "unsafe_redirect_allowlist",
+                                        f"trusted-redirect suffix '{suffix}' is too broad/malformed to be a real "
+                                        f"ATS vendor domain -- the trusted-redirect model must never trust a "
+                                        f"generic or near-empty suffix"))
+
+
+def _check_stage_transition_invalid(conn, report: DoctorReport) -> None:
+    """CLAUDE.md Phase 12 sections 28-29, 69: surfaces every logged
+    genuinely-anomalous stage regression (see
+    app.applications.apply_entry.is_valid_stage_transition) -- never
+    blocking, only ever reported for review, matching this project's
+    existing 'doctor reports, never repairs' contract."""
+    rows = conn.execute(
+        "SELECT session_id, detail, created_at FROM browser_spa_events WHERE event = 'stage_transition_invalid' "
+        "ORDER BY id DESC LIMIT 100"
+    ).fetchall()
+    for r in rows:
+        report.issues.append(Issue("warning", "stage_transition_invalid",
+                                    f"session {r['session_id']} recorded an unexpected stage transition "
+                                    f"({r['detail']}) at {r['created_at']}"))
+
+
+def _check_job_identity_mismatch_unresolved(conn, report: DoctorReport) -> None:
+    """CLAUDE.md Phase 12 section 38-39: a session paused for a job-identity
+    mismatch must always be surfaced with needs_user_action set -- a
+    PAUSED_JOB_IDENTITY_MISMATCH row with needs_user_action=0 would mean the
+    safety pause never actually reached the user."""
+    rows = conn.execute(
+        "SELECT session_id, job_id FROM browser_assist_sessions "
+        "WHERE status = 'PAUSED_JOB_IDENTITY_MISMATCH' AND needs_user_action = 0"
+    ).fetchall()
+    for r in rows:
+        report.issues.append(Issue("serious", "job_identity_mismatch_not_surfaced",
+                                    f"session {r['session_id']} (job {r['job_id']}) is "
+                                    f"PAUSED_JOB_IDENTITY_MISMATCH but needs_user_action=0 -- the mismatch pause "
+                                    f"was not actually surfaced for review"))
+
+
+def _check_workday_universal_claim_from_one_tenant(report: DoctorReport) -> None:
+    """CLAUDE.md Phase 12 sections 20-21, 68, 77: the hand-curated browser
+    capability matrix's Workday row must never claim LIVE_FORM_VERIFIED
+    unless AT LEAST ONE tenant/site has genuinely repeated, STABLE evidence
+    (app.applications.workday_tenant.classify_stability) -- a single
+    attempt, or only VARIABLE/UNVERIFIED tenants, must never be generalized
+    into a blanket 'Workday supported' claim."""
+    from app.applications.browser_capability_matrix import BrowserVerification, all_rows
+    from app.applications.workday_tenant import WorkdayStability, stability_report
+
+    workday_row = next((r for r in all_rows() if r["provider"] == "workday"), None)
+    if workday_row is None or workday_row["verification"] != BrowserVerification.LIVE_FORM_VERIFIED.value:
+        return
+    stable_tenants = [s for s in stability_report() if s.stability == WorkdayStability.STABLE]
+    if not stable_tenants:
+        report.issues.append(Issue("serious", "workday_universal_claim_from_one_tenant",
+                                    "browser_capability_matrix claims workday=LIVE_FORM_VERIFIED but no tenant/site "
+                                    "has genuinely repeated STABLE evidence in workday_tenant_attempts -- never "
+                                    "generalize from a single observation"))

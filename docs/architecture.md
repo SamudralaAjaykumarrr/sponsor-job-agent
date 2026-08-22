@@ -464,3 +464,45 @@ See `docs/phase11-ats-flow-hardening.md`, `docs/apply-entry-navigation.md`,
 - Dashboard: `/applications/workday-tenants`, `/applications/capability-evidence`; the
   browser-session detail page now shows stage, step confidence, apply-entry-navigated, and
   reconstruction count.
+
+## Phase 12: SPA/dynamic ATS flow hardening
+
+See `docs/phase12-spa-ats-hardening.md`, `docs/spa-application-navigation.md`,
+`docs/trusted-ats-redirects.md`, `docs/workday-observation-model.md`,
+`docs/smartrecruiters-spa-validation.md`.
+
+- `app/applications/trusted_redirects.py` — pure, dependency-free redirect-trust model
+  (`classify_redirect_trust`) reusing `domain_allowlist`'s existing per-provider domain table, and
+  application-URL provenance (`resolve_application_url`). No Playwright import.
+- `app/applications/job_identity.py` — pure, dependency-free requisition-token extraction/
+  comparison (`verify_job_identity`), conservative (a confident mismatch only, never a guess).
+- `app/applications/apply_entry.py` (extended) — `classify_apply_control_detailed` (reason/
+  evidence, redirect-trust-aware), `select_apply_control` (ambiguous-multi-control detection),
+  `is_valid_stage_transition`.
+- `app/applications/browser_runtime.py` (extended) — bounded DOM-stabilization wait
+  (`_wait_for_stable_state`, replacing a blind `networkidle` trust), SPA route-change detection,
+  iframe scan with cross-frame fill targeting (`_scan_iframes`), shadow-DOM-piercing DOM scan
+  (`_DEEP_QUERY_JS`, walks only OPEN roots), job-identity check wired into discovery.
+- `app/applications/spa_events.py` — append-only structured event log backing `collect_phase12()`
+  metrics and two new doctor checks.
+- `app/applications/workday_tenant.py` (extended) — append-only per-attempt observation log
+  (`workday_tenant_attempts`) and stability classification (STABLE/VARIABLE/UNVERIFIED/STALE),
+  never generalized across tenants or from a single run.
+- `app/applications/capability_evidence.py` (extended) — `STATIC_HTML`/`REAL_BROWSER`/
+  `REAL_BROWSER_REPEATED` verification types with a `repeat_count` that strengthens (never
+  inflates) confidence on genuine re-observation.
+- Three real bugs caught and fixed by this phase's own live-Chromium testing: `trusted_redirects`
+  initially misclassified `file://` (this project's entire local test-fixture scheme) as unsafe;
+  an iframe-sourced field was discovered but its fill target was never actually the iframe's own
+  frame; the submit/next-button scan never looked inside an iframe either. See
+  `docs/phase12-spa-ats-hardening.md`'s bug list.
+- Live findings: Greenhouse/Lever/Ashby/Workable regression-confirmed; a genuinely NEW
+  SmartRecruiters `oneclick-ui` SPA posting shape was found and opened live, encountering a real
+  DataDome bot-detection CAPTCHA (correctly detected, never bypassed) -- conclusively
+  characterized per CLAUDE.md Phase 12 section 76's success criterion B; the same real Walmart
+  Workday tenant was reloaded 3 more times, confirming `VARIABLE` stability with genuine repeated
+  evidence; GitLab's own corporate careers page was proven live to correctly trust its
+  `job-boards.greenhouse.io` links (10/10 `TRUSTED_ATS_REDIRECT`).
+- Dashboard: workday-tenants page now shows per-tenant stability; capability-evidence page now
+  shows repeat counts; browser-session detail now shows iframe/shadow-DOM usage and URL
+  provenance.

@@ -32,6 +32,13 @@
       <dt>Step</dt><dd>{{ session.current_step }}{% if session.total_steps_if_known %} of {{ session.total_steps_if_known }}{% endif %}
         <span style="color:#888;">({{ session.step_confidence }} confidence)</span></dd>
       <dt>Apply-entry navigated</dt><dd>{{ 'yes' if session.apply_entry_clicked else 'no' }}</dd>
+      <dt>Application URL provenance</dt><dd>{{ session.url_provenance or 'unknown' }}</dd>
+      <dt>Form discovered via</dt>
+      <dd>
+        {% if session.iframe_used %}<span class="warn">iframe</span>{% endif %}
+        {% if session.shadow_dom_used %}<span class="warn">shadow DOM</span>{% endif %}
+        {% if not session.iframe_used and not session.shadow_dom_used %}top-level document{% endif %}
+      </dd>
       {% if session.reconstructed_count %}
       <dt>Reconstructed</dt><dd class="warn">{{ session.reconstructed_count }} time(s) -- fresh browser reopened at
         the saved URL after the previous window/process was lost (never a claim of true cross-process

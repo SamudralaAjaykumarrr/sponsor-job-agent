@@ -109,3 +109,31 @@ Genuine, dated evidence from this run is recorded in `capability_evidence_record
 `python -m app.applications.cli capability-evidence`) and, for Workday,
 `workday_tenant_observations` (`python -m app.applications.cli workday-tenants`) -- see
 `docs/ats-capability-evidence.md`.
+
+## Phase 12 update (2026-08-22): SPA hardening, repeated Workday, trusted redirects
+
+`scripts/phase12_live_validation.py` re-ran the full provider set with the SPA-hardened DOM-
+scanning stack (bounded stabilization wait, iframe/shadow-DOM discovery, trusted-redirect-aware
+apply-entry classification), added a genuinely NEW SmartRecruiters posting shape, repeated the
+Workday check 3 more times, and added a real, non-ATS-domain trusted-redirect check. Full detail
+in `docs/phase12-spa-ats-hardening.md` and the per-topic docs it links; summary:
+
+| Provider | Regression result | Notes |
+|---|---|---|
+| Greenhouse | `LIVE_FORM_VERIFIED` (regression-confirmed) | GitLab's board organically migrated host (`boards.greenhouse.io` -> `job-boards.greenhouse.io`) between phases -- zero code changes needed, domain-allowlist suffix match and apply-first-click both kept working |
+| Lever | `LIVE_FORM_VERIFIED` (regression-confirmed) | apply-entry control confirmed `EXTERNAL_REDIRECT` with `redirect_trust=UNTRUSTED` -- the trusted-redirect model correctly did NOT reclassify it |
+| Ashby | `LIVE_FORM_VERIFIED` (regression-confirmed) | this run's posting had no apply-entry control at all (API URL already the form) |
+| Workable | `LIVE_FORM_VERIFIED` (regression-confirmed) | identical 14-field result |
+| SmartRecruiters (classic shape) | `NOT RUN` (honest) | the tried company's public postings API returned zero results this run |
+| SmartRecruiters (new `oneclick-ui` SPA shape) | still `NOT_TESTED`, conclusively characterized | a real DataDome bot-detection CAPTCHA blocked all content before it rendered -- see `docs/smartrecruiters-spa-validation.md` |
+| Workday | still `NOT_TESTED`, `VARIABLE` stability confirmed | same real Walmart tenant reloaded 3 more times: `LOGIN_TRIGGER, LOGIN_TRIGGER, NAVIGATION_SAFE` -- see `docs/workday-observation-model.md` |
+| Trusted redirects | proven live | GitLab's own corporate careers page (`about.gitlab.com`) links to 10 real `job-boards.greenhouse.io` postings; all 10 classify `TRUSTED_ATS_REDIRECT` -- see `docs/trusted-ats-redirects.md` |
+
+Three real bugs this run's own live/E2E testing caught and fixed (a `file://` scheme
+misclassification, and iframe-sourced fields being discovered but not fillable) -- see
+`docs/phase12-spa-ats-hardening.md`'s bug list.
+
+Capability evidence this run was recorded with the new `REAL_BROWSER`/`REAL_BROWSER_REPEATED`
+verification types (CLAUDE.md Phase 12 section 41) rather than `LIVE_PUBLIC` -- several providers'
+`field_discovery`/`captcha_handoff`/`resume_upload` capabilities were genuinely re-observed across
+Phase 11 and Phase 12 and are now `REAL_BROWSER_REPEATED` with `repeat_count=2`.

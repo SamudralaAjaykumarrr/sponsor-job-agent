@@ -59,12 +59,13 @@ class BrowserCapabilityRow:
         }
 
 
-# Dated: 2026-08-22 (Phase 11's own bounded live validation run,
-# scripts/phase11_live_validation.py) plus the local sandbox E2E suite
-# (tests/test_browser_assist_e2e.py, tests/test_browser_assist_phase11_e2e.py
-# -- real Chromium against tests/browser_fixtures.py). Update the row (and
-# this comment's date) the next time a provider is genuinely re-checked --
-# never bump verification without a fresh observation.
+# Dated: 2026-08-22 (Phase 12's own bounded live validation run,
+# scripts/phase12_live_validation.py, plus the local sandbox E2E suite --
+# tests/test_browser_assist_e2e.py, tests/test_browser_assist_phase11_e2e.py,
+# tests/test_browser_assist_phase12_e2e.py -- real Chromium against
+# tests/browser_fixtures.py). Update the row (and this comment's date) the
+# next time a provider is genuinely re-checked -- never bump verification
+# without a fresh observation.
 _ROWS: list[BrowserCapabilityRow] = [
     BrowserCapabilityRow(
         provider="greenhouse", verification=BrowserVerification.LIVE_FORM_VERIFIED,
@@ -78,13 +79,20 @@ _ROWS: list[BrowserCapabilityRow] = [
         final_submit_automation=False,
         confirmation_capture="verified on local sandbox fixture (success-page text + confirmation id regex); "
                               "not exercised against a real submission (never submitted for real)",
-        notes="Live-opened a real GitLab (job-boards.greenhouse.io token 'gitlab') application page this and "
-              "last phase: 24 real fields detected including resume upload and a genuine sponsorship question, "
-              "submit button detected and never clicked. Phase 11 additionally found and safely CLICKED a real "
-              "NAVIGATION_SAFE 'Apply' control on this same posting (apply-first-click genuinely proven "
-              "end-to-end on a real, unrelated ATS) -- see docs/apply-entry-navigation.md. A real live run also "
-              "caught and fixed a step-progress false positive: an unrelated on-page date ('7/31') was initially "
-              "misread as 'step 7 of 31' by an early, too-permissive regex.",
+        notes="Live-opened a real GitLab application page every phase since Phase 3: 23-24 real fields detected "
+              "including resume upload and a genuine sponsorship question, submit button detected and never "
+              "clicked. Phase 11 additionally found and safely CLICKED a real NAVIGATION_SAFE 'Apply' control on "
+              "this same posting (apply-first-click genuinely proven end-to-end on a real, unrelated ATS) -- see "
+              "docs/apply-entry-navigation.md. A real live run also caught and fixed a step-progress false "
+              "positive: an unrelated on-page date ('7/31') was initially misread as 'step 7 of 31' by an early, "
+              "too-permissive regex. Phase 12 REGRESSION-CONFIRMED: GitLab's board migrated hosts from "
+              "boards.greenhouse.io/gitlab to job-boards.greenhouse.io/gitlab between phases (a real, organic ATS "
+              "URL-shape change, not a project bug) -- the generic '.greenhouse.io' domain-allowlist suffix match "
+              "and apply-first-click both continued working unchanged against the new host with zero code "
+              "changes, 23 fields detected, apply-entry click succeeded. Phase 12 also live-verified (10/10 real "
+              "links) that GitLab's own CORPORATE careers page (about.gitlab.com, not a greenhouse.io domain) "
+              "linking out to job-boards.greenhouse.io classifies TRUSTED_ATS_REDIRECT -- the first genuine "
+              "real-world company-career-page-to-ATS-domain trust proof, see docs/trusted-ats-redirects.md.",
     ),
     BrowserCapabilityRow(
         provider="lever", verification=BrowserVerification.LIVE_FORM_VERIFIED,
@@ -98,9 +106,16 @@ _ROWS: list[BrowserCapabilityRow] = [
               "22 real fields detected (name/email/phone/resume/EEOC demographic questions), submit button "
               "detected and never clicked. This is the SAME real form the Phase 8 providers_lever.py adapter "
               "documented as having no structured API schema -- the browser engine reaches it anyway by reading "
-              "the rendered DOM directly, which is exactly the gap browser-assist exists to close. Phase 11: an "
-              "apply-entry-shaped control was also found on this page but classified EXTERNAL_REDIRECT (an "
-              "off-host link) -- correctly NEVER clicked; apply-first-click itself remains NOT_TESTED for Lever.",
+              "the rendered DOM directly, which is exactly the gap browser-assist exists to close. Phase 11/12: "
+              "an apply-entry-shaped control is found on this page but classifies EXTERNAL_REDIRECT with "
+              "redirect_trust=UNTRUSTED (the destination is neither this page's own host nor a recognized ATS "
+              "vendor domain -- Phase 12's trusted-redirect model correctly does NOT reclassify it, confirming "
+              "this was never simply an untrusted-host false negative) -- correctly NEVER clicked; the API's "
+              "`applyUrl` is already the real form directly, so apply-first-click is genuinely not needed for "
+              "this tenant. Phase 12 also observed the hCaptcha widget's own iframe on this page as an "
+              "'unexpected host' when the iframe scan runs standalone -- in the real production discovery path "
+              "this is moot, since the existing page-content CAPTCHA check runs BEFORE the iframe scan and pauses "
+              "the session first (verified by code inspection, see app.applications.browser_runtime._do_discover).",
     ),
     BrowserCapabilityRow(
         provider="ashby", verification=BrowserVerification.LIVE_FORM_VERIFIED,
@@ -111,9 +126,13 @@ _ROWS: list[BrowserCapabilityRow] = [
         final_submit_automation=False,
         confirmation_capture="verified on local sandbox fixture only",
         notes="Live-opened a real posting on Ashby's own public careers board (api.ashbyhq.com/posting-api/"
-              "job-board/ashby): 28 real fields detected including free-response questions and demographic "
-              "self-identification choices, submit button detected and never clicked. Phase 11: an apply-entry-"
-              "shaped control was found but classified EXTERNAL_REDIRECT -- correctly never clicked.",
+              "job-board/ashby): 27-28 real fields detected including free-response questions and demographic "
+              "self-identification choices, submit button detected and never clicked. Phase 12 REGRESSION-"
+              "CONFIRMED: the API's `applyUrl` now resolves directly to the '/application' form page itself (no "
+              "apply-entry control found at all this run, distinct from Phase 11's EXTERNAL_REDIRECT finding on "
+              "a different posting) -- the generic DOM-scan engine reached and mapped the form either way, "
+              "showing apply-first-click is genuinely posting-shape-dependent for Ashby, never a fixed provider "
+              "property.",
     ),
     BrowserCapabilityRow(
         provider="smartrecruiters", verification=BrowserVerification.NOT_TESTED,
@@ -121,15 +140,24 @@ _ROWS: list[BrowserCapabilityRow] = [
         multi_step="unknown", login_handoff="not observed",
         captcha_handoff="not observed (never reached the real form)",
         final_submit_automation=False, confirmation_capture="not observed",
-        notes="Live-opened a real posting on SmartRecruiters' own board (jobs.smartrecruiters.com/SmartRecruiters/"
-              "<id>) this phase AND last phase: the candidate-facing URL from the postings API is a job-"
-              "description LANDING page. Phase 11 specifically built and ran the apply-first-click mechanism "
-              "against this exact posting -- a control was found on the page but classified EXTERNAL_REDIRECT "
-              "(an off-host link, correctly never clicked), not the safe same-host Apply action this project's "
-              "apply-first-click flow is built to follow. Honestly still NOT_TESTED at the form level after two "
-              "phases of genuine attempts; see docs/smartrecruiters-application-assist.md for the full finding "
-              "and why a JS-rendered SPA control that our phrase-based DOM scan can't identify remains the "
-              "leading hypothesis, never confirmed.",
+        notes="Phase 12 CONCLUSIVELY CHARACTERIZED (CLAUDE.md Phase 12 section 76 success criterion B) the "
+              "SmartRecruiters limitation, using a web-search-discovered NEWER 'oneclick-ui' client-rendered "
+              "posting shape (jobs.smartrecruiters.com/oneclick-ui/company/<Company>/publication/<uuid>) distinct "
+              "from the classic postingUrl shape Phase 10/11 tried. Opening a real oneclick-ui posting live "
+              "encountered a genuine active bot-detection CAPTCHA challenge (a geo.captcha-delivery.com iframe -- "
+              "DataDome's CAPTCHA delivery domain) BEFORE any application content rendered: 0 fields, 0 apply "
+              "controls, CAPTCHA correctly detected, never bypassed (CLAUDE.md sections 48, 55 -- no anti-bot "
+              "circumvention of any kind was attempted). This is a real, structural limitation of this posting "
+              "shape for unauthenticated automated access, not a bug in this project's DOM-scanning engine -- see "
+              "docs/smartrecruiters-spa-validation.md for the full run. The classic postingUrl shape (Phase 10/11) "
+              "was ALSO re-attempted this phase (Visa's public board) but the company's postings API returned no "
+              "results this run (honestly reported NOT RUN, not fabricated). Generic SPA-hardening mechanisms "
+              "built this phase (bounded DOM-stabilization wait, client-side route detection, trusted-redirect-"
+              "aware apply-entry classification, ambiguous-multi-apply-control detection) are all proven working "
+              "against a deterministic local SmartRecruiters-shaped SPA fixture (tests/browser_fixtures.py's "
+              "smartrecruiters_like_spa_page, exercised end-to-end in "
+              "tests/test_browser_assist_phase12_e2e.py) even though the one real posting type reachable this "
+              "phase was CAPTCHA-blocked. Remains honestly NOT_TESTED at the real-form level.",
     ),
     BrowserCapabilityRow(
         provider="workday", verification=BrowserVerification.NOT_TESTED,
@@ -140,16 +168,21 @@ _ROWS: list[BrowserCapabilityRow] = [
         login_handoff="inconsistent across two live loads of the SAME real posting this phase (see notes)",
         captcha_handoff="not observed this phase",
         final_submit_automation=False, confirmation_capture="not observed this phase",
-        notes="The Phase 3/10 dogfooded tenant (workday.wd5.myworkdayjobs.com/Workday) remains offline (still "
-              "redirects to Workday's own maintenance page, re-checked this phase). Phase 11 found a genuinely "
-              "LIVE public Workday tenant instead (walmart.wd504.myworkdayjobs.com/WalmartExternal, a public "
-              "careers board found via web search, never guessed) and opened a real posting on it. Across two "
-              "runs of the SAME URL, the apply-entry control classification was NOT consistent: once "
-              "NAVIGATION_SAFE (the click did not complete within the bounded timeout -- 0 fields ever reached), "
-              "once LOGIN_TRIGGER (an account/sign-in control was also present and won the candidate scan that "
-              "run). Reported honestly as inconsistent/NOT proven rather than picking whichever run looked "
-              "cleaner -- see docs/workday-tenant-validation.md. Per-tenant observations live in "
-              "app.applications.workday_tenant, never generalized to a blanket 'Workday supported' claim.",
+        notes="The Phase 3/10 dogfooded tenant (workday.wd5.myworkdayjobs.com/Workday) remains offline. Phase 11 "
+              "found a genuinely LIVE public Workday tenant instead (walmart.wd504.myworkdayjobs.com/"
+              "WalmartExternal, found via web search) and opened a real posting on it; Phase 12 repeated the "
+              "SAME URL 3 MORE times (bounded, 3-second spacing, CLAUDE.md Phase 12 sections 18-21) via "
+              "app.applications.workday_tenant.record_attempt -- results: LOGIN_TRIGGER, LOGIN_TRIGGER, "
+              "NAVIGATION_SAFE. app.applications.workday_tenant.classify_stability() correctly computes this as "
+              "VARIABLE (2/3 consistent), not STABLE and not cherry-picked to the cleaner-looking run -- see "
+              "docs/workday-observation-model.md. This CONFIRMS Phase 11's single-pair-of-observations finding "
+              "with genuine repeated evidence rather than resolving it either way; the underlying cause (A/B page "
+              "variation, timing-dependent hydration, or session/cookie state) remains undetermined -- honestly "
+              "reported per CLAUDE.md Phase 12 section 77 ('success means repeated observations clarify behavior; "
+              "it may still remain VARIABLE/ASSIST_ONLY'). Per-tenant observations live in "
+              "app.applications.workday_tenant, never generalized to a blanket 'Workday supported' claim -- and "
+              "app.applications.doctor._check_workday_universal_claim_from_one_tenant statically enforces this "
+              "row can never claim LIVE_FORM_VERIFIED without at least one genuinely STABLE tenant behind it.",
     ),
     BrowserCapabilityRow(
         provider="workable", verification=BrowserVerification.LIVE_FORM_VERIFIED,
@@ -162,10 +195,12 @@ _ROWS: list[BrowserCapabilityRow] = [
         notes="Phase 11 found a genuinely LIVE public Workable tenant ('flosum', apply.workable.com/flosum) via "
               "web search -- Phase 3/10 never located a real tenant. 14 real fields detected (name/email/phone/"
               "address/LinkedIn/salary-expectation/resume upload), submit button detected and never clicked. An "
-              "apply-entry-shaped control was also found but classified EXTERNAL_REDIRECT -- correctly never "
-              "clicked; this tenant's `application_url` from the public widget API is already the real form "
-              "directly, so apply-first-click is genuinely not needed for THIS tenant (never generalized to all "
-              "Workable accounts).",
+              "apply-entry-shaped control was also found but classified EXTERNAL_REDIRECT (redirect_trust="
+              "UNTRUSTED) -- correctly never clicked; this tenant's `application_url` from the public widget API "
+              "is already the real form directly (the page's own JS still performs an ordinary same-tenant "
+              "redirect to add the '/flosum/' path segment, unrelated to apply-entry click-through), so "
+              "apply-first-click is genuinely not needed for THIS tenant (never generalized to all Workable "
+              "accounts). Phase 12 REGRESSION-CONFIRMED: identical 14-field result on a fresh run.",
     ),
     BrowserCapabilityRow(
         provider="bamboohr", verification=BrowserVerification.NOT_TESTED,

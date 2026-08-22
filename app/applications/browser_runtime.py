@@ -35,6 +35,7 @@ module makes no claim of cross-process browser reattachment."""
 import hashlib
 import re
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -47,17 +48,43 @@ from app.applications.apply_entry import (
     EntryDetectionResult,
     EntryStage,
     StepConfidence,
-    classify_apply_control,
+    classify_apply_control_detailed,
     classify_stage,
     detect_entry_result,
     is_confirmation_page_text,
     is_review_page_text,
     parse_step_progress,
+    select_apply_control,
 )
+from app.applications import spa_events
 from app.applications.domain_allowlist import is_allowed_host_for_session
+from app.applications.job_identity import IdentityResult, verify_job_identity
 from app.applications.mapping import match_field
 from app.applications.models import ApplicationField, FieldConfidence, SENSITIVE_CATEGORIES
 from app.applications.schema import DECLINE_TO_SELF_IDENTIFY_PHRASES, find_field
+
+# CLAUDE.md Phase 12 sections 14-15: recursive shadow-DOM-piercing query
+# helper, INLINED INSIDE every DOM-scanning `page.evaluate` function body in
+# this module (Playwright's `evaluate()` requires ONE function expression,
+# not a function declaration followed by a separate arrow function -- this
+# is a nested declaration, spliced in via simple string concatenation right
+# after the arrow function's opening brace, never a second top-level
+# statement). Only ever walks OPEN shadow roots -- `el.shadowRoot` is null/
+# undefined for a closed one, so this never attempts to bypass browser-
+# enforced encapsulation; a closed shadow root's contents simply aren't
+# found, which is the correct, honest "unsupported" outcome (CLAUDE.md
+# section 62), never a bypass attempt.
+_DEEP_QUERY_JS = """
+          function __deepQueryAll(root, selector) {
+            const out = [];
+            const walk = (node) => {
+              out.push(...node.querySelectorAll(selector));
+              node.querySelectorAll('*').forEach((el) => { if (el.shadowRoot) walk(el.shadowRoot); });
+            };
+            walk(root);
+            return out;
+          }
+"""
 
 
 class BrowserRuntimeUnavailable(Exception):
@@ -111,6 +138,11 @@ class DiscoveryOutcome:
     current_step_observed: Optional[int] = None
     total_steps_observed: Optional[int] = None
     step_confidence: str = StepConfidence.UNKNOWN.value
+    # --- CLAUDE.md Phase 12 sections 14-15, 26-27, 41 --------------------
+    iframe_used: bool = False
+    shadow_dom_used: bool = False
+    iframe_host: str = ""
+    render_time_ms: Optional[int] = None
 
 
 @dataclass
@@ -151,6 +183,113 @@ def _require_available() -> None:
         )
 
 
+def _wait_for_stable_state(page) -> dict:
+    """CLAUDE.md Phase 12 sections 10-13: bounded, deterministic wait used
+    instead of trusting `wait_for_load_state("networkidle")` alone -- a
+    genuinely SPA-rendered page may keep issuing background XHR/websocket
+    traffic indefinitely and never reach networkidle at all. Polls, at most
+    `BROWSER_DOM_STABILIZATION_TIMEOUT_MS`, for whichever comes first: (a)
+    recognizable application content (a password field, or an ordinary
+    fillable field), (b) the DOM's own element-count signature settling
+    across `BROWSER_DOM_STABILIZATION_SETTLE_POLLS` consecutive polls (the
+    page finished whatever it was doing, even if nothing recognizable ever
+    appeared -- e.g. a plain job-description landing page with no form), or
+    (c) the timeout. Never an arbitrary long sleep -- every poll interval and
+    the overall bound are configured, not guessed."""
+    timeout_s = config.BROWSER_DOM_STABILIZATION_TIMEOUT_MS / 1000.0
+    poll_s = max(0.05, config.BROWSER_DOM_STABILIZATION_POLL_MS / 1000.0)
+    settle_target = max(1, config.BROWSER_DOM_STABILIZATION_SETTLE_POLLS)
+    start = time.monotonic()
+    deadline = start + timeout_s
+    last_signature = None
+    stable_polls = 0
+    while True:
+        try:
+            has_password = page.locator("input[type=password]").count() > 0
+            has_fields = page.locator(
+                "input:not([type=hidden]):not([type=password]):not([type=submit]):not([type=button]), "
+                "textarea, select"
+            ).count() > 0
+            signature = page.evaluate("() => document.documentElement.outerHTML.length")
+        except Exception:  # noqa: BLE001 -- a page mid-navigation may throw transiently; keep polling
+            has_password, has_fields, signature = False, False, None
+        if has_password or has_fields:
+            return {"reason": "content_ready", "elapsed_ms": int((time.monotonic() - start) * 1000)}
+        if signature is not None and signature == last_signature:
+            stable_polls += 1
+            if stable_polls >= settle_target:
+                return {"reason": "dom_stable", "elapsed_ms": int((time.monotonic() - start) * 1000)}
+        else:
+            stable_polls = 0
+        last_signature = signature
+        if time.monotonic() >= deadline:
+            return {"reason": "timeout", "elapsed_ms": int((time.monotonic() - start) * 1000)}
+        time.sleep(poll_s)
+
+
+def _scan_iframes(page, provider: str, original_url: str) -> dict:
+    """CLAUDE.md Phase 12 section 14: enumerates every frame Playwright can
+    normally read -- this is the same access a browser's own devtools has
+    (Playwright's CDP-backed `Frame.evaluate()`), never a cross-origin
+    sandbox bypass. An allowed-host frame's fields are folded into the main
+    scan; an UNEXPECTED-host frame only pauses the session when it actually
+    contains form-shaped content -- an ad/analytics/tracking iframe (common
+    on real career pages, unrelated to the application flow) must never by
+    itself trigger a pause."""
+    extra_fields: list[dict] = []
+    used = False
+    unexpected_host = ""
+    used_host = ""
+    submit_button = None
+    next_button = None
+    for frame in page.frames:
+        if frame == page.main_frame:
+            continue
+        frame_url = frame.url or ""
+        if not frame_url or frame_url == "about:blank":
+            continue
+        try:
+            frame_fields = _detect_fields(frame)
+        except Exception:  # noqa: BLE001 -- a detached/navigating frame is just skipped
+            frame_fields = []
+        if not frame_fields:
+            continue
+        if is_allowed_host_for_session(provider, original_url, frame_url):
+            for f in frame_fields:
+                f["_frame"] = frame  # see _LiveSession._fill_one/_upload_one
+            extra_fields.extend(frame_fields)
+            used = True
+            used_host = (urlparse(frame_url).hostname or "").lower()
+            # The submit/next control for an in-iframe form lives in the
+            # SAME frame, not the main document -- must be located there too
+            # (a real live test caught fields being correctly discovered and
+            # filled while the button scan silently kept looking only at
+            # the top-level page).
+            try:
+                submit_button = submit_button or _detect_button(frame, _SUBMIT_BUTTON_PHRASES)
+                next_button = next_button or _detect_button(
+                    frame, _NEXT_BUTTON_PHRASES, exclude_phrases=_SUBMIT_BUTTON_PHRASES,
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        else:
+            unexpected_host = (urlparse(frame_url).hostname or "").lower()
+            break
+    return {
+        "fields": extra_fields, "used": used, "unexpected_host": unexpected_host, "host": used_host,
+        "submit_button": submit_button, "next_button": next_button,
+    }
+
+
+def _page_uses_shadow_dom(page) -> bool:
+    try:
+        return bool(page.evaluate(
+            "() => Array.from(document.querySelectorAll('*')).some((el) => !!el.shadowRoot)"
+        ))
+    except Exception:  # noqa: BLE001
+        return False
+
+
 class _LiveSession:
     def __init__(self, session_id: str, provider: str, application_url: str):
         self.session_id = session_id
@@ -180,6 +319,30 @@ class _LiveSession:
         self.context = self.browser.new_context(accept_downloads=True)
         self.page = self.context.new_page()
         self.page.goto(url, timeout=config.BROWSER_ASSIST_TIMEOUT_SECONDS * 1000)
+        # CLAUDE.md Phase 12 sections 10-13: a genuinely SPA-rendered page
+        # may still be hydrating right after `goto()` returns (the initial
+        # HTML is often close to empty) -- wait for either recognizable
+        # content or a settled DOM before the first discovery pass, rather
+        # than trusting the raw post-navigation snapshot.
+        result = _wait_for_stable_state(self.page)
+        if result["reason"] == "timeout":
+            spa_events.record(spa_events.EVENT_DYNAMIC_FORM_TIMEOUT, session_id=self.session_id,
+                               provider=self.provider, duration_ms=result["elapsed_ms"])
+        elif result["reason"] == "content_ready":
+            spa_events.record(spa_events.EVENT_DYNAMIC_FORM_DETECTED, session_id=self.session_id,
+                               provider=self.provider, duration_ms=result["elapsed_ms"])
+
+    def _do_advance_to_route(self, current_url_before: str) -> dict:
+        """CLAUDE.md Phase 12 section 10: detects a client-side route change
+        (URL changed with no full page navigation -- pushState/hashchange/
+        History API) by comparing the URL before and after a bounded
+        stabilization wait, used after any click that might trigger one."""
+        outcome = _wait_for_stable_state(self.page)
+        route_changed = self.page.url != current_url_before
+        if route_changed:
+            spa_events.record(spa_events.EVENT_SPA_ROUTE_DETECTED, session_id=self.session_id,
+                               provider=self.provider, detail=f"{current_url_before} -> {self.page.url}")
+        return {"route_changed": route_changed, **outcome}
 
     def _do_discover(self) -> DiscoveryOutcome:
         page = self.page
@@ -208,16 +371,54 @@ class _LiveSession:
                 return DiscoveryOutcome(pause_reason="MFA_REQUIRED", current_url=current_url)
             return DiscoveryOutcome(pause_reason="LOGIN_REQUIRED", current_url=current_url)
 
+        start = time.monotonic()
         raw_fields = _detect_fields(page)
         submit_button = _detect_button(page, _SUBMIT_BUTTON_PHRASES)
         next_button = _detect_button(page, _NEXT_BUTTON_PHRASES, exclude_phrases=_SUBMIT_BUTTON_PHRASES)
+
+        # CLAUDE.md Phase 12 section 14: an unexpected-host iframe that
+        # actually contains form-shaped content pauses for review; an
+        # allowed-host iframe's fields are merged into the main-document
+        # scan (a real ATS may mount its whole application form inside a
+        # same-origin iframe wrapper).
+        iframe_scan = _scan_iframes(page, self.provider, self.application_url)
+        if iframe_scan["unexpected_host"]:
+            spa_events.record(spa_events.EVENT_IFRAME_UNEXPECTED_HOST, session_id=self.session_id,
+                               provider=self.provider, detail=iframe_scan["unexpected_host"])
+            return DiscoveryOutcome(pause_reason="IFRAME_UNEXPECTED_HOST", current_url=current_url)
+        if iframe_scan["used"]:
+            raw_fields = raw_fields + iframe_scan["fields"]
+            submit_button = submit_button or iframe_scan.get("submit_button")
+            next_button = next_button or iframe_scan.get("next_button")
+            spa_events.record(spa_events.EVENT_IFRAME_FORM_DETECTED, session_id=self.session_id,
+                               provider=self.provider, result=str(len(iframe_scan["fields"])))
+
+        shadow_used = _page_uses_shadow_dom(page)
+        if shadow_used and raw_fields:
+            spa_events.record(spa_events.EVENT_SHADOW_FORM_DETECTED, session_id=self.session_id,
+                               provider=self.provider)
+
         fingerprint = _fingerprint_fields(raw_fields)
 
         current_host = (urlparse(current_url).hostname or "").lower()
         apply_control = _detect_apply_entry_control(page, current_host)
+        if apply_control is not None and apply_control.get("ambiguous"):
+            spa_events.record(spa_events.EVENT_APPLY_CONTROL_UNKNOWN, session_id=self.session_id,
+                               provider=self.provider, detail=apply_control.get("reason", ""))
+            return DiscoveryOutcome(pause_reason="AMBIGUOUS_APPLY_CONTROL", current_url=current_url)
         control_classification = (
             ApplyControlClassification(apply_control["classification"]) if apply_control else None
         )
+        if apply_control is not None:
+            if apply_control.get("redirect_trust") == "TRUSTED_ATS_REDIRECT":
+                event = spa_events.EVENT_TRUSTED_REDIRECT
+            elif apply_control.get("redirect_trust") == "UNTRUSTED":
+                event = spa_events.EVENT_BLOCKED_REDIRECT
+            else:
+                event = spa_events.EVENT_APPLY_CONTROL_DETECTED
+            spa_events.record(event, session_id=self.session_id, provider=self.provider,
+                               result=apply_control["classification"], detail=apply_control.get("reason", ""))
+
         # CLAUDE.md Phase 11 section 4: a page is only ever a review/
         # confirmation stage, never conflated with a plain form page even if
         # it happens to also contain fields.
@@ -227,6 +428,18 @@ class _LiveSession:
             has_form_fields=bool(raw_fields), has_apply_control=apply_control is not None,
             is_review_page=is_review, is_confirmation_page=is_confirmation,
         )
+
+        # CLAUDE.md Phase 12 section 38: verify the page we're about to fill
+        # still corresponds to the job this session was opened for -- only a
+        # CONFIDENTLY extracted requisition-token mismatch stops the flow
+        # (never a guess; see app.applications.job_identity).
+        if stage == EntryStage.APPLICATION_FORM:
+            identity = verify_job_identity(self.application_url, current_url)
+            if identity.result == IdentityResult.MISMATCH:
+                spa_events.record(spa_events.EVENT_JOB_IDENTITY_MISMATCH, session_id=self.session_id,
+                                   provider=self.provider, detail=identity.reason)
+                return DiscoveryOutcome(pause_reason="JOB_IDENTITY_MISMATCH", current_url=current_url)
+
         entry_result = detect_entry_result(
             has_apply_control=apply_control is not None, apply_control_classification=control_classification,
             has_form_fields=bool(raw_fields), login_wall_present=login_wall,
@@ -245,7 +458,8 @@ class _LiveSession:
             total_steps_hint=2 if next_button else 1,
             stage=stage.value, entry_detection_result=entry_result.value, apply_entry_control=apply_control,
             current_step_observed=current_step, total_steps_observed=total_steps,
-            step_confidence=step_confidence.value,
+            step_confidence=step_confidence.value, iframe_used=iframe_scan["used"], shadow_dom_used=shadow_used,
+            iframe_host=iframe_scan.get("host", ""), render_time_ms=int((time.monotonic() - start) * 1000),
         )
 
     def _do_fill(self, raw_fields: list[dict], application_fields: list[ApplicationField]) -> FillOutcome:
@@ -322,21 +536,29 @@ class _LiveSession:
         return outcome
 
     def _fill_one(self, rf: dict, value) -> bool:
+        # CLAUDE.md Phase 12 section 14: a field discovered inside an
+        # allowed-host iframe is tagged with its own Frame object by
+        # `_scan_iframes` -- filling it must target THAT frame, not the main
+        # page (a real live test caught this: the field was correctly
+        # discovered but every fill attempt silently failed since
+        # `self.page.locator()` only ever searches the top-level document).
+        target = rf.get("_frame") or self.page
         try:
             rtype = rf.get("type")
             if rtype in ("radio", "checkbox"):
-                self.page.get_by_label(str(value), exact=False).first.check(timeout=5000)
+                target.get_by_label(str(value), exact=False).first.check(timeout=5000)
             elif rtype == "select":
-                self.page.locator(_selector_for(rf)).select_option(label=str(value), timeout=5000)
+                target.locator(_selector_for(rf)).select_option(label=str(value), timeout=5000)
             else:
-                self.page.locator(_selector_for(rf)).fill(str(value), timeout=5000)
+                target.locator(_selector_for(rf)).fill(str(value), timeout=5000)
             return True
         except Exception:  # noqa: BLE001 -- one unfillable field must never abort the whole pass
             return False
 
     def _upload_one(self, rf: dict, path: str) -> bool:
+        target = rf.get("_frame") or self.page
         try:
-            self.page.locator(_selector_for(rf)).set_input_files(path, timeout=10000)
+            target.locator(_selector_for(rf)).set_input_files(path, timeout=10000)
             return True
         except Exception:  # noqa: BLE001
             return False
@@ -350,30 +572,44 @@ class _LiveSession:
         EXTERNAL_REDIRECT/UNKNOWN control is never clicked here, full stop."""
         current_host = (urlparse(self.page.url).hostname or "").lower()
         control = _detect_apply_entry_control(self.page, current_host)
-        if control is None or control.get("classification") != ApplyControlClassification.NAVIGATION_SAFE.value:
+        if control is None or control.get("ambiguous") \
+                or control.get("classification") != ApplyControlClassification.NAVIGATION_SAFE.value:
+            # CLAUDE.md Phase 12 section 35: apply-entry click-through is
+            # only ever attempted against a control FRESHLY classified
+            # NAVIGATION_SAFE in THIS call -- once the form is already
+            # visible, the caller (app.applications.browser_assist) stops
+            # calling this at all (entry_result flips to
+            # FORM_ALREADY_VISIBLE), so a genuinely already-applied session
+            # never re-clicks and never creates a duplicate route/modal.
             return {"advanced": False, "reason": "no NAVIGATION_SAFE apply-entry control found"}
+        before_url = self.page.url
         try:
             if control.get("id"):
                 self.page.locator(f"#{control['id']}").click(timeout=5000)
             else:
                 self.page.get_by_text(control["text"], exact=False).first.click(timeout=5000)
-            self.page.wait_for_load_state("networkidle", timeout=8000)
         except Exception:  # noqa: BLE001 -- a failed click still means "did not advance"
             return {"advanced": False, "reason": "click on apply-entry control failed"}
-        return {"advanced": True}
+        # CLAUDE.md Phase 12 sections 10-13: bounded DOM-stabilization wait
+        # instead of blind `networkidle` -- a genuinely SPA-rendered apply
+        # form (client-side route change, no full page load) may never
+        # reach networkidle at all.
+        route = self._do_advance_to_route(before_url)
+        return {"advanced": True, **route}
 
     def _do_advance_step(self) -> dict:
         next_button = _detect_button(self.page, _NEXT_BUTTON_PHRASES, exclude_phrases=_SUBMIT_BUTTON_PHRASES)
         if next_button is None:
             return {"advanced": False, "reason": "no next/continue control found"}
+        before_url = self.page.url
         try:
             if next_button.get("id"):
                 self.page.locator(f"#{next_button['id']}").click(timeout=5000)
             else:
                 self.page.get_by_text(next_button["text"], exact=False).first.click(timeout=5000)
-            self.page.wait_for_load_state("networkidle", timeout=5000)
         except Exception:  # noqa: BLE001 -- a failed click still means "did not advance"
             return {"advanced": False, "reason": "click on next/continue control failed"}
+        self._do_advance_to_route(before_url)
         self.current_step += 1
         return {"advanced": True, "current_step": self.current_step}
 
@@ -429,37 +665,57 @@ def _field_key(rf: dict) -> tuple:
 
 
 def _detect_apply_entry_control(page, current_host: str) -> Optional[dict]:
-    """Real-DOM apply-entry candidate scan (CLAUDE.md Phase 11 sections 4,
-    8): looks at every visible button/link/role=button, classifies each via
-    app.applications.apply_entry.classify_apply_control (the SAME
-    deterministic table browser_assist/tests use), and returns the best
-    recognized candidate. A FINAL_SUBMIT or UNKNOWN-classified control is
-    never returned here -- this function's only job is finding a safe
-    pre-form navigation target, not enumerating every button on the page."""
+    """Real-DOM apply-entry candidate scan (CLAUDE.md Phase 11 sections 4, 8;
+    Phase 12 sections 5-6, 36-37): looks at every visible button/link/
+    role=button (including inside open shadow roots -- CLAUDE.md section 15),
+    falling back to aria-label/aria-labelledby text for icon-only controls
+    that have no visible innerText, classifies each via
+    app.applications.apply_entry.classify_apply_control_detailed (the SAME
+    deterministic table browser_assist/tests use, now redirect-trust-aware),
+    and resolves the best candidate via app.applications.apply_entry.
+    select_apply_control -- multiple NAVIGATION_SAFE candidates pointing at
+    genuinely different destinations come back as `{"ambiguous": True, ...}`
+    rather than a guessed pick. A FINAL_SUBMIT or UNKNOWN-classified control
+    is never returned as the chosen control -- this function's only job is
+    finding a safe pre-form navigation target, not enumerating every button
+    on the page."""
     candidates = page.evaluate(
         """
-        () => {
+        () => {"""
+        + _DEEP_QUERY_JS +
+        """
           const isVisible = (el) => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
-          const els = Array.from(document.querySelectorAll(
-            'a, button, input[type=submit], input[type=button], [role="button"]'
-          ));
-          return els.filter(isVisible).map((el) => ({
-            text: ((el.innerText || el.value || '') + '').trim(),
-            href: el.tagName === 'A' ? (el.getAttribute('href') || '') : '',
-            id: el.id || '',
-          })).filter((c) => c.text);
+          const els = __deepQueryAll(document, 'a, button, input[type=submit], input[type=button], [role="button"]');
+          return els.filter(isVisible).map((el) => {
+            const ariaLabel = el.getAttribute('aria-label') || '';
+            let text = ((el.innerText || el.value || '') + '').trim();
+            if (!text && ariaLabel) text = ariaLabel.trim();
+            if (!text) {
+              const labelledBy = el.getAttribute('aria-labelledby');
+              if (labelledBy) {
+                const labelEl = document.getElementById(labelledBy);
+                if (labelEl) text = (labelEl.innerText || '').trim();
+              }
+            }
+            return {
+              text: text,
+              href: el.tagName === 'A' ? (el.getAttribute('href') || '') : '',
+              id: el.id || '',
+            };
+          }).filter((c) => c.text);
         }
         """
     )
-    best: Optional[dict] = None
+    annotated = []
     for c in candidates:
-        classification = classify_apply_control(c["text"], href=c["href"], current_host=current_host)
-        if classification == ApplyControlClassification.NAVIGATION_SAFE:
-            return {"text": c["text"], "href": c["href"], "id": c["id"], "classification": classification.value}
-        if best is None and classification in (
-            ApplyControlClassification.LOGIN_TRIGGER, ApplyControlClassification.EXTERNAL_REDIRECT,
-        ):
-            best = {"text": c["text"], "href": c["href"], "id": c["id"], "classification": classification.value}
+        detail = classify_apply_control_detailed(c["text"], href=c["href"], current_host=current_host)
+        annotated.append({
+            "text": c["text"], "href": c["href"], "id": c["id"], "classification": detail.classification.value,
+            "reason": detail.reason, "redirect_trust": detail.redirect_trust.value if detail.redirect_trust else "",
+        })
+    best, ambiguous_reason = select_apply_control(annotated)
+    if best is None and ambiguous_reason:
+        return {"ambiguous": True, "reason": ambiguous_reason}
     return best
 
 
@@ -494,14 +750,22 @@ def _detect_fields(page) -> list[dict]:
     """Real-browser DOM scan: input/textarea/select, plus grouped radio/
     checkbox sets by `name`, with label/aria-label/placeholder/fieldset-legend
     fallback and a required-indicator check (CLAUDE.md Phase 10 section 9).
-    Never touches password/hidden/submit/button inputs -- those are always
-    left for the human (password) or handled separately (submit)."""
+    Pierces OPEN shadow roots (CLAUDE.md Phase 12 sections 13, 15, 60-62) via
+    the shared `_DEEP_QUERY_JS` helper -- a closed shadow root's contents
+    simply aren't found, the correct honest outcome rather than a bypass
+    attempt. Never touches password/hidden/submit/button inputs -- those are
+    always left for the human (password) or handled separately (submit).
+    `page` may also be a Playwright Frame -- both expose `.evaluate()`
+    identically, so this same function scans an allowed-host iframe's
+    document too (CLAUDE.md Phase 12 section 14)."""
     return page.evaluate(
         """
-        () => {
+        () => {"""
+        + _DEEP_QUERY_JS +
+        """
           const results = [];
           const seenGroups = new Set();
-          document.querySelectorAll('input, textarea, select').forEach((el, idx) => {
+          __deepQueryAll(document, 'input, textarea, select').forEach((el, idx) => {
             const type = (el.getAttribute('type') || el.tagName).toLowerCase();
             if (['hidden', 'password', 'submit', 'button', 'image'].includes(type)) return;
 
@@ -521,7 +785,7 @@ def _detect_fields(page) -> list[dict]:
               const groupKey = 'group:' + (el.name || ('idx' + idx));
               if (seenGroups.has(groupKey)) return;
               seenGroups.add(groupKey);
-              const group = el.name ? document.querySelectorAll(`input[name="${el.name}"]`) : [el];
+              const group = el.name ? __deepQueryAll(document, `input[name="${el.name}"]`) : [el];
               const choices = Array.from(group).map((g) => {
                 let l = '';
                 if (g.labels && g.labels.length) l = g.labels[0].innerText;
@@ -562,9 +826,11 @@ def _detect_fields(page) -> list[dict]:
 def _detect_button(page, include_phrases: tuple, exclude_phrases: tuple = ()) -> Optional[dict]:
     return page.evaluate(
         """
-        ([includePhrases, excludePhrases]) => {
+        ([includePhrases, excludePhrases]) => {"""
+        + _DEEP_QUERY_JS +
+        """
           const isVisible = (el) => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
-          const candidates = Array.from(document.querySelectorAll('button, input[type=submit], [role="button"]'));
+          const candidates = __deepQueryAll(document, 'button, input[type=submit], [role="button"]');
           for (const el of candidates) {
             if (!isVisible(el)) continue;
             const text = ((el.innerText || el.value || '') + '').trim().toLowerCase();
