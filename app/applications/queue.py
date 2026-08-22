@@ -14,7 +14,30 @@ from typing import Optional
 from app.applications.models import ExecutionStatus
 from app.db import db_session
 
-_ACTIVE_CLAIMABLE_STATUSES = (ExecutionStatus.QUEUED.value,)
+# CLAUDE.md Phase 9 section 4 (crash recovery): a worker that crashes AFTER
+# claiming a QUEUED execution advances its status almost immediately
+# (executor.process_execution's first write is STARTED) -- if only QUEUED
+# rows were ever reclaimable, a crash at any point past that first write
+# would strand the row FOREVER even once its lease expires, since it would
+# never again match this WHERE clause. Every status a worker can leave an
+# execution in mid-pipeline (i.e. everything that is not a terminal status
+# and not a status that means "paused for a human/reconciliation" --
+# NEEDS_USER_ACTION/VALIDATION_REQUIRED/SUBMISSION_READY/
+# SUBMISSION_STATUS_UNKNOWN) is included here so lease expiry alone is
+# sufficient to recover it, exactly like Phase 5's poll/verification queues.
+# SUBMITTING/SUBMITTED are deliberately included: a reclaim landing on one of
+# those is made safe by executor.process_execution()'s own resume guard,
+# which converts it straight to SUBMISSION_STATUS_UNKNOWN rather than ever
+# calling provider.submit() a second time -- never a blind retry.
+_ACTIVE_CLAIMABLE_STATUSES = (
+    ExecutionStatus.QUEUED.value,
+    ExecutionStatus.STARTED.value,
+    ExecutionStatus.FORM_DISCOVERED.value,
+    ExecutionStatus.FORM_MAPPED.value,
+    ExecutionStatus.FORM_FILLED.value,
+    ExecutionStatus.SUBMITTING.value,
+    ExecutionStatus.SUBMITTED.value,
+)
 
 
 def utcnow_dt() -> datetime:

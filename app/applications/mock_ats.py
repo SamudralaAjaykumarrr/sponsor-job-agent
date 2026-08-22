@@ -29,6 +29,7 @@ from app.applications.models import (
 )
 from app.applications.provider import ApplicationProvider
 from app.applications.schema import DECLINE_TO_SELF_IDENTIFY_PHRASES, find_field
+from app.db import db_session
 from app.models import Job
 
 PROVIDER_NAME = "mock_ats"
@@ -46,6 +47,11 @@ _SPONSORSHIP_FIELD = FormField(
     "multi_value_single_select", required=True, choices=["Yes", "No"],
 )
 
+_VISA_TYPE_FIELD = FormField(
+    "visa_type_q", "What type of visa sponsorship would you require?",
+    "multi_value_single_select", required=False, choices=["H-1B", "TN", "O-1", "Other"],
+)
+
 _DEMOGRAPHIC_FIELD = FormField(
     "veteran_q", "Veteran Status", "multi_value_single_select", required=False,
     choices=["I am a veteran", "I am not a veteran", "I don't wish to answer"],
@@ -55,6 +61,22 @@ _LEGAL_UNKNOWN_FIELD = FormField(
     "non_compete_q", "Are you subject to any employment agreements and/or post-employment restrictions?",
     "multi_value_single_select", required=True, choices=["Yes", "No"],
 )
+
+# CLAUDE.md Phase 9 section 41: a "page 2" set of fields for the multi_page
+# scenario, so app.applications.schema/mapping's field-mapping engine is
+# exercised against a form whose fields don't all arrive in one flat list
+# conceptually -- FormSnapshot.total_steps records how many pages the real
+# form would have had (surfaced for dashboard/reporting per section 29).
+_PAGE_TWO_FIELDS = [
+    FormField("education_school", "School", "input_text", required=False),
+    FormField("education_degree", "Degree", "input_text", required=False),
+    FormField("linkedin_url", "LinkedIn Profile", "input_text", required=False),
+]
+
+# Error types recognized as safe-to-retry (never used to bypass "never blindly
+# retry an AMBIGUOUS outcome" -- these are all DEFINITE, known failures where
+# nothing was submitted, distinct from status_unknown).
+RETRYABLE_ERROR_TYPES = frozenset({"TIMEOUT", "RATE_LIMITED", "TEMPORARY_HTTP"})
 
 
 def _scenario_for(job: Job) -> str:
@@ -69,6 +91,9 @@ def _fields_for_scenario(scenario: str) -> list[FormField]:
     fields = list(_BASE_FIELDS)
     if scenario == "sponsorship_question":
         fields.append(_SPONSORSHIP_FIELD)
+    elif scenario == "conditional_sponsorship":
+        fields.append(_SPONSORSHIP_FIELD)
+        fields.append(_VISA_TYPE_FIELD)
     elif scenario == "demographic_question":
         fields.append(_DEMOGRAPHIC_FIELD)
     elif scenario == "legal_unknown":
@@ -77,7 +102,29 @@ def _fields_for_scenario(scenario: str) -> list[FormField]:
         fields.append(FormField("cover_letter", "Cover Letter", "input_file", required=True))
     elif scenario == "file_upload":
         fields.append(FormField("resume_text", "Resume Text", "textarea", required=False))
+    elif scenario == "multi_page":
+        fields.extend(_PAGE_TWO_FIELDS)
     return fields
+
+
+def _record_server_side_submission(job: Job, confirmation_id: str) -> None:
+    """Simulates the mock ATS's OWN server-side record of a received
+    application -- genuinely separate storage from application_executions,
+    written even when the CLIENT never observed a successful response
+    (timeout_after_submit). This is what makes
+    MockATSProvider.check_submission_status() a real evidence lookup rather
+    than a fabricated confirmation (CLAUDE.md Phase 9 section 8)."""
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc).isoformat()
+    with db_session() as conn:
+        conn.execute(
+            """INSERT INTO mock_ats_server_records (job_id, external_job_id, confirmation_id, received_at)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(job_id) DO UPDATE SET confirmation_id=excluded.confirmation_id,
+                 received_at=excluded.received_at""",
+            (job.id, job.external_job_id, confirmation_id, now),
+        )
 
 
 class MockATSProvider(ApplicationProvider):
@@ -88,7 +135,7 @@ class MockATSProvider(ApplicationProvider):
         draft_fill_supported=True, file_upload_supported=True,
         submission_supported=True, confirmation_detection_supported=True,
         automation_policy=AutomationPolicy.PERMITTED_AUTO, support_level=SupportLevel.FULL,
-        live_validated=False,
+        live_validated=False, confirmation_recheck_supported=True,
         notes="Deterministic in-process fixture ATS for executor testing only -- never a real ATS.",
     )
 
@@ -99,10 +146,14 @@ class MockATSProvider(ApplicationProvider):
         from app.applications.fingerprint import compute_fingerprint
 
         scenario = _scenario_for(job)
+        if scenario == "form_not_found":
+            return None
         fields = _fields_for_scenario(scenario)
         snap = FormSnapshot(
             provider=PROVIDER_NAME, tenant_identifier=job.company, external_job_id=job.external_job_id,
             fields=fields, captcha_present=(scenario == "captcha"), mfa_required=(scenario == "mfa"),
+            auth_required=(scenario == "login_required"),
+            total_steps=2 if scenario == "multi_page" else 1,
         )
         snap.fingerprint = compute_fingerprint(snap)
         return snap
@@ -176,7 +227,17 @@ class MockATSProvider(ApplicationProvider):
         return DraftResult(mapping=mapping, filled_field_ids=filled, unresolved_field_ids=unresolved,
                             file_uploads_ready=uploads)
 
-    def validate(self, job: Job, form: FormSnapshot, draft: DraftResult) -> ValidationResult:
+    def validate(self, job: Job, form: FormSnapshot | None, draft: DraftResult) -> ValidationResult:
+        if form is None:
+            # discover_form() returned None (e.g. the "form_not_found"
+            # scenario) -- honestly ASSIST_ONLY, matching every other
+            # provider's behavior when form discovery itself failed.
+            return ValidationResult(
+                ok=False, policy=AutomationPolicy.ASSIST_ONLY,
+                policy_reasons=[PolicyReason.SUBMISSION_INTERFACE_UNSUPPORTED],
+                detail=["Application form could not be discovered for this posting."],
+            )
+
         detail: list[str] = []
         reasons: list[PolicyReason] = []
 
@@ -186,6 +247,9 @@ class MockATSProvider(ApplicationProvider):
         if form.mfa_required:
             reasons.append(PolicyReason.MFA_REQUIRED)
             detail.append("MFA/login required to submit.")
+        if form.auth_required:
+            reasons.append(PolicyReason.AUTH_REQUIRED)
+            detail.append("A candidate account/login is required to submit this application.")
 
         for name in draft.unresolved_field_ids:
             mf = next((m for m in draft.mapping.mapped if m.form_field.name == name), None)
@@ -214,12 +278,38 @@ class MockATSProvider(ApplicationProvider):
 
     def submit(self, job: Job, form: FormSnapshot, draft: DraftResult) -> SubmitResult:
         scenario = _scenario_for(job)
+        if scenario == "timeout_before_submit":
+            # No server-side record -- the request never reached the mock
+            # ATS at all, unlike timeout_after_submit below.
+            return SubmitResult(
+                success=False, status_unknown=True, error_type="TIMEOUT",
+                error_message_safe="mock_ats: request timed out before reaching the server.",
+            )
+        if scenario == "rate_limited":
+            return SubmitResult(success=False, error_type="RATE_LIMITED",
+                                 error_message_safe="mock_ats: 429 Too Many Requests.")
+        if scenario == "service_unavailable":
+            return SubmitResult(success=False, error_type="TEMPORARY_HTTP",
+                                 error_message_safe="mock_ats: 503 Service Unavailable.")
+        if scenario == "rejection":
+            return SubmitResult(success=False, error_type="SUBMISSION_REJECTED",
+                                 error_message_safe="mock_ats: application rejected by ATS-side validation.")
+        if scenario == "duplicate_application":
+            return SubmitResult(success=False, error_type="SUBMISSION_REJECTED",
+                                 error_message_safe="mock_ats: an application for this candidate already exists.")
+
+        confirmation_id = f"MOCK-{job.id}-{job.external_job_id or 'X'}"
         if scenario == "timeout_after_submit":
+            # CLAUDE.md Phase 9 section 7/41: the request DID reach the
+            # server (recorded below) but the client never observed the
+            # response -- a genuine "may have gone through" case, distinct
+            # from timeout_before_submit above.
+            _record_server_side_submission(job, confirmation_id)
             return SubmitResult(
                 success=False, status_unknown=True, error_type="TIMEOUT",
                 error_message_safe="mock_ats: request sent but no response received before timeout.",
             )
-        confirmation_id = f"MOCK-{job.id}-{job.external_job_id or 'X'}"
+        _record_server_side_submission(job, confirmation_id)
         return SubmitResult(
             success=True, confirmation_id=confirmation_id,
             confirmation_url=f"https://mock-ats.local/applications/{confirmation_id}",
@@ -236,3 +326,26 @@ class MockATSProvider(ApplicationProvider):
             confirmed=True, confirmation_id=submit_result.confirmation_id,
             confirmation_url=submit_result.confirmation_url, confirmation_text_fingerprint=fp,
         )
+
+    def check_submission_status(self, job: Job, execution: dict) -> ConfirmationResult | None:
+        """CLAUDE.md Phase 9 section 8: genuine evidence lookup against the
+        mock ATS's own server-side record table -- returns confirmed=True
+        only when a real row exists (e.g. after timeout_after_submit),
+        confirmed=False when the mock ATS genuinely has no record (a real
+        negative), never a guess."""
+        with db_session() as conn:
+            row = conn.execute(
+                "SELECT * FROM mock_ats_server_records WHERE job_id = ?", (job.id,)
+            ).fetchone()
+        if row is None:
+            return ConfirmationResult(confirmed=False)
+        return ConfirmationResult(
+            confirmed=True, confirmation_id=row["confirmation_id"],
+            confirmation_url=f"https://mock-ats.local/applications/{row['confirmation_id']}",
+        )
+
+    def check_job_still_active(self, job: Job) -> bool | None:
+        scenario = _scenario_for(job)
+        if scenario == "job_removed":
+            return False
+        return True

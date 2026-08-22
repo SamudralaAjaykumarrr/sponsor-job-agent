@@ -455,3 +455,77 @@ standalone distributed executor-worker daemon was not built (the atomic
 claim primitives are implemented/tested, but `queue_application()`/
 `process_execution()` run synchronously today via CLI/dashboard, not a
 long-running worker loop) — see the recommended Phase 9 list.
+
+## Phase 9 acceptance verification
+
+Verified 2026-08-22.
+
+| Criterion | Evidence |
+|---|---|
+| Full regression (SQLite) | `pytest -m "not postgres and not browser"`: **692 passed**, 37 deselected |
+| Full regression (PostgreSQL, `pgserver`) | `pytest -m postgres`: **33 passed** (4 pre-existing Phase 6/8 + Phase 6/7 postgres files + 5 new `test_applications_postgres_phase9.py` + others), 696 deselected |
+| Browser-assist tests | `pytest -m browser`: 4 tests, structurally correct (skip cleanly) — **could not fully execute** in this sandbox: Playwright installs, chromium binary downloads, but launching it fails on a missing system shared library (`libnspr4.so`) that requires root (`playwright install-deps`) to install, which this environment doesn't have. Not a code defect — the skip path itself is exercised and correct. |
+| Static/compile check | `python -m compileall app scripts tests`: clean, exit 0 |
+| Distributed leasing/duplicate-safety (real Postgres) | `tests/test_applications_postgres_phase9.py` (5 tests): 4 concurrent threads claiming a shared batch of 12 executions never double-claim; 6 threads racing `queue_application()` for the same job produce exactly 1 execution; a full `ApplicationWorker` cycle reaches `APPLIED` against real Postgres; the global hourly rate limit caps submissions across a single worker cycle; **4 real concurrent `ApplicationWorker` instances** processing a shared 16-job batch produce exactly one clean `APPLIED` execution per job with no dangling leases |
+| Crash recovery | `tests/test_application_worker_crash_recovery.py` (4 tests): a row artificially left in `SUBMITTING`/`SUBMITTED` (simulating a crash) is resumed as `SUBMISSION_STATUS_UNKNOWN` without a second `submit()` call, twice in a row; a row never claimed past `QUEUED` (crash before submit) is recovered via lease expiry and completes normally; a row left mid-pipeline (`FORM_DISCOVERED`) is also lease-recoverable |
+| Worker daemon | `tests/test_application_worker.py` (4 tests): claim→APPLIED via real mock ATS, CAPTCHA→`NEEDS_USER_ACTION` and never re-claimed, ASSIST-mode prep never feeds the submission circuit breaker, drain mode blocks new claims |
+| Submission circuit breaker | `tests/test_application_circuit.py` (7 tests): closed-by-default, consecutive-failure trip, half-open probe + recovery, never-permanently-disabled, inflight-slot limit, and explicit proof the submission and discovery breakers are independent for the same provider name |
+| Reconciliation evidence pass | `tests/test_application_reconcile_worker.py` (3 tests): genuine mock-ATS server-side evidence auto-resolves to `APPLIED`; genuine absence of evidence auto-resolves to `WITHDRAWN`; a provider without `confirmation_recheck_supported` is left completely untouched |
+| Scheduler | `tests/test_application_scheduler.py` (7 tests): off when `APPLICATION_AUTO_PREPARE_ENABLED=false`; queues `ASSIST` by default; queues `AUTO_PERMITTED` only when `AUTO_SUBMIT_ENABLED` AND job eligibility both agree; never double-queues; respects the active-execution guard even against a stale `READY_TO_APPLY` state; respects rate limits; a `CONTRACT` job is never queued |
+| Daily budget accounting | `tests/test_application_budget.py` (3 tests): PREPARE-only runs never count as submitted; a confirmed application counts both submitted and confirmed; `NEEDS_USER_ACTION` counted separately from failed |
+| Application doctor (Phase 9 checks) | `tests/test_application_doctor_phase9.py` (5 tests): expired lease, orphan lease, duplicate confirmation, multiple simultaneous leases on one job, and a clean-database baseline with zero false positives |
+| Attempt history | `tests/test_application_attempts.py` (4 tests): record/list, no secret-shaped columns, bounded history per execution, filter by worker/result |
+| Mock ATS expansion | `tests/test_application_mock_ats_expansion.py` (11 tests): login-required, 429, 503, rejection, duplicate-application, multi-page (`total_steps`), conditional sponsorship field, job-removed, form-not-found, and the timeout-before-vs-after-submit evidence distinction |
+| Capability matrix | `tests/test_application_capability_matrix.py` (4 tests): every registered provider present, only `mock_ats` claims submission/recheck support |
+| Dashboard (Phase 9 pages) | `tests/test_application_dashboard_phase9.py` (6 tests): `/application-workers`, `/applications/capability-matrix`, budget/fleet sections on `/applications`, drain/resume-drain, manual scheduler/reconcile-worker triggers, submission-circuit admin actions |
+| Live end-to-end run (ad hoc script, real SQLite) | ingest → `scheduler.run_cycle()` (queued) → `ApplicationWorker._run_cycle()` (APPLIED) → `run_doctor()` (0 serious, 0 warning) → capability matrix rendered → budget/fleet metrics all consistent (`submitted_today=1`, `confirmed_today=1`, `application_provider_circuit_state={'mock_ats': 'CLOSED'}`) |
+| Live dashboard verification | Started the real app (fresh temp DB): `/`, `/applications`, `/application-workers`, `/applications/capability-matrix`, `/applications/doctor`, `/metrics`, `/health`, `/readiness`, `/fleet` all returned 200 |
+| No secrets/private data committed | `git status`/`git diff` reviewed — no `.env`, `data/app.db`, `candidate_data/profile.json`, or `data/browser_assist_runtime/` staged; `.gitignore` extended for the new browser-assist runtime directory |
+
+### Real bugs this phase caught and fixed
+
+1. **Resumed-mid-submission double-submit risk** in
+   `app.applications.executor.process_execution()` — a row left in
+   `SUBMITTING`/`SUBMITTED` by a crash had no guard against `submit()` being
+   called a second time on resume. Fixed with an explicit early-return to
+   `SUBMISSION_STATUS_UNKNOWN`. Caught by this phase's own crash-recovery
+   test design, not by an incidental failure.
+2. **Postgres `DatatypeMismatch` on `jobs.sponsorship_conflict`** —
+   `app.jobs_repo.insert_job`/`update_job` passed a raw Python `bool`
+   through to psycopg, which maps it to Postgres's native `boolean` type,
+   conflicting with the schema's `INTEGER` column. SQLite silently accepted
+   the same code, which is exactly why no prior Postgres test (none of
+   which ran a job through the *full* pipeline) had caught it. Fixed with an
+   explicit `bool -> int` coercion helper. Caught live by
+   `tests/test_applications_postgres_phase9.py`'s very first run.
+3. **`app.db_postgres._TABLES_WITHOUT_ID_PK` missing the new
+   `application_provider_circuit_state` table** (primary key `provider`, not
+   `id`) — its `INSERT ... ON CONFLICT DO NOTHING` was getting an incorrect
+   `RETURNING id` appended, raising `UndefinedColumn`. Caught by the same
+   Postgres test run immediately after fixing bug 2.
+4. **`MockATSProvider.validate()` crashed on `form=None`** — every other
+   provider already guarded against `discover_form()` returning `None`;
+   the mock never had to until this phase added the `form_not_found`
+   scenario. Fixed with the same guard pattern as
+   `GenericAssistOnlyProvider`/`LeverApplicationProvider`.
+5. **Claimable execution statuses too narrow for real crash recovery** —
+   `app.applications.queue._ACTIVE_CLAIMABLE_STATUSES` originally only
+   included `QUEUED`, but `process_execution()`'s first write moves status
+   to `STARTED` almost immediately, meaning a crash anywhere past that
+   point would have left the row permanently unclaimable even after its
+   lease expired. Found by design review while implementing the worker
+   daemon (before writing the crash-recovery tests, which then confirmed
+   the fix), not by a failing test surfacing it after the fact.
+
+### Known Phase 9 limitations
+
+See `docs/phase9-production-application-workers.md`'s "Honest limitations"
+section for the full list. In short: `mock_ats` remains the only provider
+with `submission_supported=True`; the automated reconciliation pass has
+nothing to reconcile against for any real ATS (none expose a
+`check_submission_status`-shaped interface); browser-assist is implemented
+and unit-testable but could not be executed against a real headless
+browser in this sandbox (missing root-only system libraries); the
+multi-service Docker Compose demo (now including an `application-worker-1`
+service) remains written and YAML-validated but unrun, for the same
+Docker-unavailable reason recorded in Phase 6/`docs/deployment-postgres.md`.

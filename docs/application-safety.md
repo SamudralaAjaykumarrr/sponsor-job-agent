@@ -102,3 +102,45 @@ short structural `detail` string. `application_answer_snapshots` minimizes
 sensitive-category (demographic/legal/voluntary-disclosure/signature)
 values to a bounded SHA-256 fingerprint rather than storing them verbatim.
 No password, MFA code, session token, or CAPTCHA token is ever stored.
+`application_attempts` (Phase 9) follows the same rule — ids/stage/result/
+timestamps/bounded safe-error-text only, never field values.
+
+## Phase 9 additions (worker fleet / distributed operation)
+
+- **Crash recovery never risks a double submission.** `process_execution()`
+  refuses to call `provider.submit()` again for an execution already sitting
+  in `SUBMITTING`/`SUBMITTED` (a worker crash between those two points) —
+  it converts straight to `SUBMISSION_STATUS_UNKNOWN` instead. See
+  `docs/application-worker-architecture.md`'s "Crash recovery" section.
+- **Pre-submission revalidation.** Immediately before actually calling
+  `submit()`, the job is re-fetched fresh and eligibility re-derived from
+  scratch — a JD re-analysis that flipped sponsorship negative (or
+  employment type to a hard-skip category) between preparation and
+  execution becomes `ExecutionStatus.JOB_NO_LONGER_ACTIVE`, never a
+  submission. See CLAUDE.md Phase 9 sections 24-27.
+- **A separate submission circuit breaker** (`app.applications.circuit`,
+  own table `application_provider_circuit_state`) from the discovery
+  circuit breaker — a provider's discovery polling being paused never
+  automatically blocks or permits application submission for that same
+  provider, and vice versa. Tripped far more conservatively (fewer
+  consecutive failures, longer cooldown by default) since a submission
+  failure is more consequential than a discovery GET failing. Like the
+  discovery breaker, it never permanently disables a provider.
+- **Reconciliation stays human-driven.** The new automated evidence pass
+  (`app.applications.reconcile_worker`, CLAUDE.md section 8) never itself
+  decides an execution's fate — it only calls a provider's OPTIONAL,
+  genuinely legitimate `check_submission_status()` hook (unimplemented,
+  i.e. `None`/unsupported, for every real ATS adapter in this project) and,
+  when that returns real evidence, funnels the result through the exact
+  same `reconcile_execution()` a human operator would use. See
+  `docs/application-reconciliation.md`.
+- **Browser assist never submits.** `app.applications.browser_assist`
+  (optional, off by default, requires Playwright installed separately)
+  never clicks a submit/apply action under any condition, never fills a
+  sensitive-category field, and never persists a password/MFA
+  code/cookie/token — every browser context is fresh and ephemeral. See
+  `docs/application-browser-assist.md`.
+- **Drain mode never starts a new submission.** A draining worker finishes
+  any in-progress preparation it already claimed, but
+  `process_execution(execution_id, allow_submission=False)` stops at
+  `SUBMISSION_READY` instead of ever calling `submit()`.

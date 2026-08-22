@@ -24,11 +24,14 @@
   </style>
 </head>
 <body>
-  <p><a href="/">&larr; back to dashboard</a> · <a href="/applications/doctor">Application Doctor</a></p>
+  <p><a href="/">&larr; back to dashboard</a> · <a href="/applications/doctor">Application Doctor</a> ·
+     <a href="/application-workers">Application Workers</a> ·
+     <a href="/applications/capability-matrix">Provider Capability Matrix</a></p>
   <h1>Applications</h1>
 
   <div class="banner {{ 'banner-on' if executor_enabled else 'banner-off' }}">
     Application executor: <strong>{{ 'ON' if executor_enabled else 'OFF' }}</strong> ·
+    Auto-prepare: <strong>{{ 'ON' if auto_prepare_enabled else 'OFF' }}</strong> ·
     Auto submit: <strong>{{ 'ON' if auto_submit_enabled else 'OFF' }}</strong>
     {% if not executor_enabled %}— set APPLICATION_EXECUTOR_ENABLED=true to allow queuing applications.{% endif %}
   </div>
@@ -36,6 +39,23 @@
   <div class="metrics">
     {% for key in ["applications_ready", "applications_queued", "applications_prepared", "applications_needs_user_action", "applications_submitted", "applications_confirmed", "applications_failed", "applications_duplicate_blocked", "submission_unknown"] %}
     <div class="metric"><b>{{ metrics[key] }}</b>{{ key.replace('applications_', '').replace('_', ' ') }}</div>
+    {% endfor %}
+  </div>
+
+  <h2>Fleet &amp; daily budget</h2>
+  <div class="metrics">
+    <div class="metric"><b>{{ fleet.application_workers_online }}</b>workers online</div>
+    <div class="metric"><b>{{ fleet.application_workers_draining }}</b>workers draining</div>
+    <div class="metric"><b>{{ fleet.application_queue_depth }}</b>queue depth</div>
+    <div class="metric"><b>{{ fleet.application_leases_active }}</b>leases active</div>
+    <div class="metric"><b>{{ budget.submitted_today }}</b>submitted today</div>
+    <div class="metric"><b>{{ budget.confirmed_today }}</b>confirmed today</div>
+    <div class="metric"><b>{{ budget.failed_today }}</b>failed today</div>
+    <div class="metric"><b>{{ budget.needs_user_action_today }}</b>needs user action today</div>
+    <div class="metric"><b>{{ budget.hourly_budget_remaining }}</b>hourly budget left</div>
+    <div class="metric"><b>{{ budget.daily_budget_remaining }}</b>daily budget left</div>
+    {% for provider, state in fleet.application_provider_circuit_state.items() %}
+    <div class="metric"><b>{{ state }}</b>circuit: {{ provider }}</div>
     {% endfor %}
   </div>
 

@@ -53,7 +53,13 @@ from app.db import (
 # statements against these never get an automatic `RETURNING id` appended
 # (and no caller anywhere reads .lastrowid after inserting into them --
 # verified by grep across app/).
-_TABLES_WITHOUT_ID_PK = {"workers", "provider_circuit_state", "schema_migrations"}
+_TABLES_WITHOUT_ID_PK = {
+    "workers", "provider_circuit_state", "schema_migrations",
+    # CLAUDE.md Phase 9: application_provider_circuit_state mirrors
+    # provider_circuit_state's own `provider TEXT PRIMARY KEY` shape (see
+    # app/migrations.py::_m022_application_provider_circuit_state_table).
+    "application_provider_circuit_state",
+}
 
 _INSERT_TABLE_RE = re.compile(r"^\s*INSERT\s+INTO\s+([A-Za-z_][A-Za-z0-9_]*)", re.IGNORECASE)
 

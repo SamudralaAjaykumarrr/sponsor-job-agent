@@ -55,6 +55,7 @@ _JOB_STATE_MIRROR: dict[ExecutionStatus, ApplicationState] = {
     ExecutionStatus.DUPLICATE_APPLICATION_BLOCKED: ApplicationState.DUPLICATE_APPLICATION_BLOCKED,
     ExecutionStatus.WITHDRAWN: ApplicationState.WITHDRAWN,
     ExecutionStatus.SUBMISSION_STATUS_UNKNOWN: ApplicationState.SUBMISSION_STATUS_UNKNOWN,
+    ExecutionStatus.JOB_NO_LONGER_ACTIVE: ApplicationState.JOB_NO_LONGER_ACTIVE,
 }
 
 
@@ -211,7 +212,8 @@ DASHBOARD_BUCKETS: dict[str, tuple[str, ...]] = {
     "submitting": (ExecutionStatus.SUBMITTING.value, ExecutionStatus.SUBMITTED.value),
     "applied": (ExecutionStatus.SUBMISSION_CONFIRMED.value, ExecutionStatus.APPLIED.value),
     "failed": (ExecutionStatus.SUBMISSION_FAILED.value, ExecutionStatus.RETRYABLE_SUBMISSION_FAILURE.value,
-               ExecutionStatus.PERMANENT_SUBMISSION_FAILURE.value, ExecutionStatus.DUPLICATE_APPLICATION_BLOCKED.value),
+               ExecutionStatus.PERMANENT_SUBMISSION_FAILURE.value, ExecutionStatus.DUPLICATE_APPLICATION_BLOCKED.value,
+               ExecutionStatus.JOB_NO_LONGER_ACTIVE.value),
 }
 
 

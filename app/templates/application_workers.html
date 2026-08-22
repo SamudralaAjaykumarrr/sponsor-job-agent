@@ -1,0 +1,134 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Application Workers — Sponsor Job Agent</title>
+  <style>
+    body { font-family: -apple-system, Arial, sans-serif; margin: 2rem; background: #f7f7f9; color: #1a1a1a; }
+    table { width: 100%; border-collapse: collapse; background: white; margin-bottom: 1.5rem; }
+    th, td { padding: 8px 10px; border-bottom: 1px solid #eee; text-align: left; font-size: 0.85rem; }
+    th { background: #fafafa; }
+    .tag { padding: 2px 8px; border-radius: 10px; font-size: 0.75rem; font-weight: 600; }
+    .tag-WORKING, .tag-IDLE, .tag-STARTING { background: #d1ecf1; color: #0c5460; }
+    .tag-DRAINING { background: #fff3cd; color: #856404; }
+    .tag-STOPPED, .tag-OFFLINE { background: #eee; color: #555; }
+    .tag-CLOSED { background: #d4edda; color: #155724; }
+    .tag-OPEN { background: #f8d7da; color: #721c24; }
+    .tag-HALF_OPEN { background: #fff3cd; color: #856404; }
+    .metrics { display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 1rem; }
+    .metric { background: white; border: 1px solid #ddd; border-radius: 6px; padding: 0.5rem 0.75rem; font-size: 0.8rem; }
+    .metric b { display: block; font-size: 1.1rem; }
+    form.inline { display: inline; }
+    button { font-size: 0.75rem; padding: 2px 8px; }
+    .banner { padding: 0.75rem 1rem; border-radius: 6px; margin-bottom: 1rem; font-size: 0.9rem; }
+    .banner-off { background: #fff3cd; color: #856404; }
+    .banner-on { background: #d4edda; color: #155724; }
+    .no-pii { color: #888; font-size: 0.75rem; }
+  </style>
+</head>
+<body>
+  <p><a href="/">&larr; back to dashboard</a> · <a href="/applications">Applications</a> · <a href="/fleet">Discovery Fleet</a></p>
+  <h1>Application Worker Fleet</h1>
+  <p class="no-pii">No candidate PII is ever shown here -- worker id/host/status/capabilities/heartbeat only.</p>
+
+  <div class="banner {{ 'banner-on' if executor_enabled else 'banner-off' }}">
+    Executor: <strong>{{ 'ON' if executor_enabled else 'OFF' }}</strong> ·
+    Auto-prepare: <strong>{{ 'ON' if auto_prepare_enabled else 'OFF' }}</strong> ·
+    Auto submit: <strong>{{ 'ON' if auto_submit_enabled else 'OFF' }}</strong>
+  </div>
+
+  <div class="metrics">
+    <div class="metric"><b>{{ fleet.application_workers_online }}</b>online</div>
+    <div class="metric"><b>{{ fleet.application_workers_draining }}</b>draining</div>
+    <div class="metric"><b>{{ fleet.application_queue_depth }}</b>queue depth</div>
+    <div class="metric"><b>{{ fleet.application_leases_active }}</b>leases active</div>
+    <div class="metric"><b>{{ fleet.application_attempts_total_1h }}</b>attempts (1h)</div>
+    <div class="metric"><b>{{ fleet.application_attempts_failed_1h }}</b>attempts failed (1h)</div>
+    <div class="metric"><b>{{ budget.submitted_today }}</b>submitted today</div>
+    <div class="metric"><b>{{ budget.daily_budget_remaining }}</b>daily budget left</div>
+  </div>
+
+  <h2>Workers</h2>
+  <table>
+    <thead>
+      <tr><th>Worker ID</th><th>Host</th><th>Status</th><th>Capabilities</th><th>Heartbeat</th>
+          <th>Executions processed</th><th>Submissions attempted</th><th>Errors</th><th>Version</th><th>Actions</th></tr>
+    </thead>
+    <tbody>
+      {% for w in workers %}
+      <tr>
+        <td>{{ w.worker_id }}</td>
+        <td>{{ w.hostname }}</td>
+        <td><span class="tag tag-{{ w.status }}">{{ w.status }}</span></td>
+        <td>{{ w.capabilities }}</td>
+        <td>{{ w.last_heartbeat_at }}</td>
+        <td>{{ w.portals_processed }}</td>
+        <td>{{ w.jobs_processed }}</td>
+        <td>{{ w.errors }}</td>
+        <td>{{ w.worker_version }}</td>
+        <td>
+          {% if w.status == 'DRAINING' %}
+          <form class="inline" method="post" action="/application-workers/{{ w.worker_id }}/resume-drain">
+            <button type="submit">Resume</button></form>
+          {% elif w.status not in ('STOPPED', 'OFFLINE') %}
+          <form class="inline" method="post" action="/application-workers/{{ w.worker_id }}/drain">
+            <button type="submit">Drain</button></form>
+          {% endif %}
+          {% if w.status not in ('STOPPED', 'OFFLINE') %}
+          <form class="inline" method="post" action="/application-workers/{{ w.worker_id }}/mark-offline">
+            <button type="submit">Mark offline</button></form>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% if not workers %}<p>No application workers have registered yet -- start one with
+     <code>python -m app.applications.worker run</code>.</p>{% endif %}
+
+  <h2>Submission provider circuits</h2>
+  <table>
+    <thead><tr><th>Provider</th><th>State</th><th>Actions</th></tr></thead>
+    <tbody>
+      {% for c in circuit_rows %}
+      <tr>
+        <td>{{ c.provider }}</td>
+        <td><span class="tag tag-{{ c.state }}">{{ c.state }}</span></td>
+        <td>
+          <form class="inline" method="post" action="/applications/circuit/{{ c.provider }}/force-probe">
+            <button type="submit">Force probe</button></form>
+          <form class="inline" method="post" action="/applications/circuit/{{ c.provider }}/close">
+            <button type="submit">Close circuit</button></form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% if not circuit_rows %}<p>No submission attempts recorded yet.</p>{% endif %}
+
+  <h2>Recent application attempts</h2>
+  <table>
+    <thead><tr><th>Started</th><th>Execution</th><th>Provider</th><th>Worker</th><th>Result</th><th>Error</th></tr></thead>
+    <tbody>
+      {% for a in attempts %}
+      <tr>
+        <td>{{ a.started_at }}</td>
+        <td>{{ a.execution_id }}</td>
+        <td>{{ a.provider }}</td>
+        <td>{{ a.worker_id }}</td>
+        <td>{{ a.result }}</td>
+        <td>{{ a.error_type or '-' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% if not attempts %}<p>No application attempts recorded yet.</p>{% endif %}
+
+  <h2>Configuration</h2>
+  <ul>
+    {% for k, v in config.items() %}
+    <li>{{ k }}: {{ v }}</li>
+    {% endfor %}
+  </ul>
+</body>
+</html>

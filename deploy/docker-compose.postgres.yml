@@ -1,7 +1,14 @@
 # Production-oriented multi-service local demo (CLAUDE.md Phase 6 sections
-# 40, 42): PostgreSQL + dashboard + two workers, all sharing the same
-# DATABASE_URL. This is an EXAMPLE for local demonstration/testing, not
-# infrastructure this build deploys anywhere -- see docs/deployment-postgres.md.
+# 40, 42; Phase 9 section 54): PostgreSQL + dashboard + two discovery workers
+# + one application worker, all sharing the same DATABASE_URL. This is an
+# EXAMPLE for local demonstration/testing, not infrastructure this build
+# deploys anywhere -- see docs/deployment-postgres.md,
+# docs/application-worker-architecture.md.
+#
+# AUTO_SUBMIT_ENABLED is deliberately left unset (false) below. Set
+# APPLICATION_EXECUTOR_ENABLED=true (and, only if you have genuinely
+# reviewed and want it, AUTO_SUBMIT_ENABLED=true) yourself before the
+# application-worker service will do anything beyond idle heartbeating.
 #
 # Usage:
 #   cd deploy
@@ -72,6 +79,23 @@ services:
       REGISTRY_SHARD_INDEX: "1"
       STRUCTURED_LOGGING_ENABLED: "true"
     command: ["python", "-m", "app.workers.cli", "run"]
+
+  application-worker-1:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://sponsor_job_agent:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/sponsor_job_agent
+      # Lets this worker claim/prepare queued applications (ASSIST mode).
+      # AUTO_SUBMIT_ENABLED is deliberately NOT set here -- it stays false,
+      # so this example never actually submits anything anywhere.
+      APPLICATION_EXECUTOR_ENABLED: "true"
+      STRUCTURED_LOGGING_ENABLED: "true"
+    command: ["python", "-m", "app.applications.worker", "run"]
 
 volumes:
   sponsor_job_agent_pgdata:

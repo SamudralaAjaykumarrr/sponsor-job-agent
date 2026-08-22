@@ -286,3 +286,72 @@ APPLICATION_WORKER_CONCURRENCY = _env_int("APPLICATION_WORKER_CONCURRENCY", 2)
 # ANALYZE / ASSIST / AUTO_PERMITTED. ASSIST remains the default -- see
 # CLAUDE.md Phase 8 section 3 ("ASSIST remains default").
 APPLICATION_DEFAULT_MODE = os.getenv("APPLICATION_DEFAULT_MODE", "ASSIST").strip().upper() or "ASSIST"
+
+# --- Phase 9: production application-worker fleet ---------------------------
+# See docs/phase9-production-application-workers.md,
+# docs/application-worker-architecture.md.
+#
+# Safe defaults: OFF until the user explicitly opts in. Neither flag below
+# changes anything about APPLICATION_EXECUTOR_ENABLED/AUTO_SUBMIT_ENABLED
+# above (CLAUDE.md Phase 9 section 12) -- they only gate whether the
+# scheduler/worker loop runs at all.
+
+# CLAUDE.md Phase 9 section 37: AUTO_PREPARE (auto-queue+prepare eligible
+# jobs) is independent of AUTO_SUBMIT_ENABLED (submit permission). The
+# scheduler (app.applications.scheduler) only ever queues in ASSIST mode
+# unless AUTO_SUBMIT_ENABLED is ALSO true -- see
+# app.applications.scheduler.run_cycle().
+APPLICATION_AUTO_PREPARE_ENABLED = _env_bool("APPLICATION_AUTO_PREPARE_ENABLED", False)
+APPLICATION_SCHEDULER_MAX_QUEUE_PER_CYCLE = _env_int("APPLICATION_SCHEDULER_MAX_QUEUE_PER_CYCLE", 5)
+APPLICATION_SCHEDULER_CYCLE_SECONDS = _env_int("APPLICATION_SCHEDULER_CYCLE_SECONDS", 300)
+
+# Application worker daemon (app.applications.worker) -- mirrors the Phase 5
+# discovery-worker settings above, but deliberately far more conservative:
+# application submission is rare, high-consequence, and rate-limited, so it
+# is never treated like bulk job-discovery polling (CLAUDE.md Phase 9
+# section 35 "no spray-and-pray").
+APPLICATION_WORKER_HEARTBEAT_SECONDS = _env_int("APPLICATION_WORKER_HEARTBEAT_SECONDS", 15)
+APPLICATION_WORKER_IDLE_SLEEP_SECONDS = _env_float("APPLICATION_WORKER_IDLE_SLEEP_SECONDS", 10.0)
+APPLICATION_WORKER_CYCLE_TIME_BUDGET_SECONDS = _env_int("APPLICATION_WORKER_CYCLE_TIME_BUDGET_SECONDS", 60)
+APPLICATION_MAX_EXECUTIONS_PER_WORKER_CYCLE = _env_int("APPLICATION_MAX_EXECUTIONS_PER_WORKER_CYCLE", 5)
+APPLICATION_WORKER_SHUTDOWN_GRACE_SECONDS = _env_int("APPLICATION_WORKER_SHUTDOWN_GRACE_SECONDS", 30)
+APPLICATION_SUPERVISOR_MAX_WORKERS = _env_int("APPLICATION_SUPERVISOR_MAX_WORKERS", 4)
+# A claimed-but-skipped item (circuit open / provider at its concurrency
+# limit) gets a short cooldown extension rather than a bare release --
+# same busy-spin-avoidance rationale as Phase 5 section 29/CLAUDE.md Phase 8
+# section 40.
+APPLICATION_SKIP_COOLDOWN_SECONDS = _env_int("APPLICATION_SKIP_COOLDOWN_SECONDS", 10)
+
+# Per-provider submission concurrency -- deliberately tiny (never treated
+# like discovery's PROVIDER_CONCURRENCY_DEFAULT=3+) since a real submission
+# in flight is a consequential, rate-limited action, not a cheap GET.
+APPLICATION_PROVIDER_CONCURRENCY_DEFAULT = _env_int("APPLICATION_PROVIDER_CONCURRENCY_DEFAULT", 1)
+
+# Submission circuit breaker (app.applications.circuit) -- separate state
+# from the discovery circuit breaker (app.workers.circuit), tripped far more
+# conservatively: fewer consecutive failures, longer cooldown, since a
+# submission failure is more consequential than a discovery poll failure.
+APPLICATION_CIRCUIT_BREAKER_FAILURE_THRESHOLD = _env_float("APPLICATION_CIRCUIT_BREAKER_FAILURE_THRESHOLD", 0.5)
+APPLICATION_CIRCUIT_BREAKER_COOLDOWN_SECONDS = _env_int("APPLICATION_CIRCUIT_BREAKER_COOLDOWN_SECONDS", 300)
+APPLICATION_CIRCUIT_CONSECUTIVE_TRIP_THRESHOLD = _env_int("APPLICATION_CIRCUIT_CONSECUTIVE_TRIP_THRESHOLD", 3)
+
+# Dead-lettering for the application queue -- CONSECUTIVE PERMANENT failures
+# only (never transient), same distinction as Phase 5's DEAD_LETTER_MAX_ATTEMPTS.
+APPLICATION_DEAD_LETTER_MAX_ATTEMPTS = _env_int("APPLICATION_DEAD_LETTER_MAX_ATTEMPTS", 3)
+
+# Reconciliation worker (app.applications.reconcile_worker) -- an automated
+# EVIDENCE-GATHERING pass only; it never itself marks an execution APPLIED
+# without genuine provider-side evidence (CLAUDE.md Phase 9 section 8), and
+# app.applications.reconcile.reconcile_execution() remains the only function
+# that actually changes a SUBMISSION_STATUS_UNKNOWN execution's status.
+RECONCILE_WORKER_ENABLED = _env_bool("RECONCILE_WORKER_ENABLED", False)
+RECONCILE_WORKER_INTERVAL_SECONDS = _env_int("RECONCILE_WORKER_INTERVAL_SECONDS", 900)
+
+# Browser-assist (CLAUDE.md Phase 9 sections 21-22) -- optional, Playwright-
+# backed, visible-browser-only preparation aid. Off by default; requires the
+# `playwright` package AND its browser binaries to be installed separately
+# (`playwright install chromium`), never a default/implicit test dependency.
+BROWSER_ASSIST_ENABLED = _env_bool("BROWSER_ASSIST_ENABLED", False)
+BROWSER_ASSIST_HEADLESS = _env_bool("BROWSER_ASSIST_HEADLESS", False)
+BROWSER_ASSIST_TIMEOUT_SECONDS = _env_int("BROWSER_ASSIST_TIMEOUT_SECONDS", 30)
+BROWSER_ASSIST_PROFILE_DIR = DATA_DIR / "browser_assist_runtime"

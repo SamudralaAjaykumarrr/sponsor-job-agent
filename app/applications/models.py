@@ -41,6 +41,11 @@ class ExecutionStatus(str, Enum):
     DUPLICATE_APPLICATION_BLOCKED = "DUPLICATE_APPLICATION_BLOCKED"
     WITHDRAWN = "WITHDRAWN"
     SUBMISSION_STATUS_UNKNOWN = "SUBMISSION_STATUS_UNKNOWN"
+    # CLAUDE.md Phase 9 sections 24-27: caught by the final revalidation pass
+    # immediately before submission -- the job disappeared, or its JD flipped
+    # to non-eligible, between preparation and the submit attempt. Distinct
+    # from PERMANENT_SUBMISSION_FAILURE: no submission request was ever sent.
+    JOB_NO_LONGER_ACTIVE = "JOB_NO_LONGER_ACTIVE"
 
 
 # Once an execution reaches one of these, `application_executions.active` is
@@ -58,6 +63,7 @@ TERMINAL_STATUSES = frozenset({
     ExecutionStatus.PERMANENT_SUBMISSION_FAILURE,
     ExecutionStatus.DUPLICATE_APPLICATION_BLOCKED,
     ExecutionStatus.WITHDRAWN,
+    ExecutionStatus.JOB_NO_LONGER_ACTIVE,
 })
 
 # NEEDS_USER_ACTION/VALIDATION_REQUIRED/SUBMISSION_STATUS_UNKNOWN are
@@ -188,6 +194,14 @@ class ApplicationCapabilities:
     support_level: SupportLevel
     live_validated: bool = False
     notes: str = ""
+    # CLAUDE.md Phase 9 section 8: whether this provider exposes a genuine,
+    # legitimate way to re-check a specific application's status after the
+    # fact (e.g. a provider-side status lookup) -- used ONLY by
+    # app.applications.reconcile_worker to gather real evidence for a
+    # SUBMISSION_STATUS_UNKNOWN execution. False for every real ATS adapter
+    # in this phase (none expose such an interface to candidates); True only
+    # for the deterministic MockATSProvider fixture, to prove the mechanism.
+    confirmation_recheck_supported: bool = False
 
     def as_dict(self) -> dict:
         return {
@@ -202,6 +216,7 @@ class ApplicationCapabilities:
             "support_level": self.support_level.value,
             "live_validated": self.live_validated,
             "notes": self.notes,
+            "confirmation_recheck_supported": self.confirmation_recheck_supported,
         }
 
 
@@ -226,6 +241,10 @@ class FormSnapshot:
     captcha_present: bool = False
     mfa_required: bool = False
     auth_required: bool = False
+    # CLAUDE.md Phase 9 section 29: how many pages/steps the real form has,
+    # when genuinely known -- never guessed for a real provider that doesn't
+    # expose this; defaults to 1 (a single-page form, the common case).
+    total_steps: int = 1
     discovered_at: str = field(default_factory=utcnow)
 
     def field_signature(self) -> list[dict]:

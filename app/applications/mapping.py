@@ -63,6 +63,10 @@ FIELD_ALIASES: dict[str, tuple[FieldCategory, list[str]]] = {
         "will you now or in the future require sponsorship for a visa to remain in your current location",
         "do you now or will you in the future require sponsorship for employment visa status",
     ]),
+    "sponsorship_type": (FieldCategory.SPONSORSHIP, [
+        "what type of visa sponsorship would you require", "visa type", "type of visa sponsorship",
+        "sponsorship type",
+    ]),
     "veteran_status": (FieldCategory.DEMOGRAPHICS, ["veteran status", "protected veteran status"]),
     "disability_status": (FieldCategory.DEMOGRAPHICS, ["disability status", "disabilitystatus"]),
     "gender": (FieldCategory.DEMOGRAPHICS, ["gender", "gender identity"]),

@@ -13,21 +13,37 @@ fill_draft(form, mapping) -> DraftResult
 validate(job, form, draft) -> ValidationResult
 submit(job, form, draft) -> SubmitResult          # only called when validate() says PERMITTED_AUTO
 verify_confirmation(submit_result) -> ConfirmationResult
+check_submission_status(job, execution) -> ConfirmationResult | None   # Phase 9, optional
+check_job_still_active(job) -> bool | None                              # Phase 9, optional
 ```
 
-## Capability matrix (as of Phase 8)
+The two Phase 9 hooks are both optional with safe defaults (`None` — "not
+checkable"/"not supported") on the base class. `check_submission_status()`
+is used only by `app.applications.reconcile_worker` (see
+`docs/application-reconciliation.md`); `check_job_still_active()` is used
+only by `executor.process_execution()`'s pre-submission revalidation (see
+`docs/application-worker-architecture.md`). Neither is required for a
+provider to be otherwise fully functional — a provider that doesn't
+implement them simply participates less in those two specific safety
+mechanisms, never less safely.
 
-| Provider | form_discovery | field_mapping | draft_fill | file_upload | submission | confirmation | support_level | live_validated |
-|---|---|---|---|---|---|---|---|---|
-| `mock_ats` (fixture only) | yes | yes | yes | yes | **yes** | yes | FULL | no (deterministic fixture) |
-| `greenhouse` | **yes** | yes | yes | yes | no | no | PARTIAL | **yes** |
-| `lever` | no | no | no | no | no | no | UNSUPPORTED | **yes** (absence confirmed live) |
-| everything else (Ashby, Workable, SmartRecruiters, BambooHR, Breezy, Recruitee, Comeet, Teamtailor, Workday, Jobvite, Pinpoint, JazzHR, iCIMS, Oracle) | no | no | no | no | no | no | UNSUPPORTED | no |
+## Capability matrix
+
+See `docs/application-provider-capabilities.md` for the full, current,
+generated table (`python -m app.applications.cli capability-matrix` /
+`GET /applications/capability-matrix`). Summary as of Phase 9: `mock_ats`
+is the only provider with `submission_supported=True` and
+`confirmation_recheck_supported=True`; `greenhouse` has live-verified form
+discovery but stays `ASSIST_ONLY` for submission; `lever` and every other
+ATS this project discovers jobs from are `UNSUPPORTED` for application
+(discoverability was never treated as proof of application support).
 
 `GET /providers` doesn't show the application matrix (that's the Phase 3-7
 discovery matrix); the application matrix is served at
-`GET /api/applications/metrics` (aggregate) and via
-`app.applications.provider_registry.all_application_capabilities()`.
+`GET /api/applications/metrics` (aggregate),
+`GET /applications/capability-matrix` (full table), and via
+`app.applications.provider_registry.all_application_capabilities()` /
+`app.applications.capability_matrix.build_matrix()`.
 
 ## Greenhouse: what was actually live-verified
 

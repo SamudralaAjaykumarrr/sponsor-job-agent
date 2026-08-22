@@ -14,3 +14,9 @@ candidate_data/
 !candidate_data/.gitkeep
 .pytest_cache/
 
+# Phase 9: browser-assist runtime scratch space (app.applications.browser_assist)
+# -- never persists cookies/sessions itself (every browser context is
+# ephemeral, closed at the end of every call), but this directory must still
+# never be committed in case any temp/download artifact ever lands here.
+data/browser_assist_runtime/
+

@@ -32,8 +32,8 @@ docker run -e DATABASE_URL=postgresql://... sponsor-job-agent \
 
 ## Multi-service local demo (`deploy/docker-compose.postgres.yml`)
 
-PostgreSQL + dashboard + 2 sharded workers, all sharing one
-`DATABASE_URL`:
+PostgreSQL + dashboard + 2 sharded discovery workers + 1 application worker
+(Phase 9 addition), all sharing one `DATABASE_URL`:
 
 ```
 cd deploy
@@ -46,25 +46,34 @@ POSTGRES_PASSWORD=<pick-one-yourself> docker compose -f docker-compose.postgres.
 - `worker-1`/`worker-2` are sharded (`REGISTRY_SHARD_COUNT=2`,
   `REGISTRY_SHARD_INDEX=0`/`1`) so they demonstrate partitioned, non-
   overlapping polling rather than two workers doing redundant work.
+- `application-worker-1` runs `python -m app.applications.worker run` with
+  `APPLICATION_EXECUTOR_ENABLED=true` (so it can claim/prepare queued
+  applications) but `AUTO_SUBMIT_ENABLED` deliberately left unset (`false`)
+  -- this example never submits anything anywhere. Set
+  `AUTO_SUBMIT_ENABLED=true` yourself only after you've reviewed CLAUDE.md's
+  safety rules and genuinely want that behavior.
 - `STRUCTURED_LOGGING_ENABLED=true` on the workers, so `docker compose logs`
   shows JSON lines with correlation ids.
 
 ### Honest limitation
 
-**Docker/Docker Compose was unavailable in this build's environment**
-(confirmed: the `docker` binary is not present in this WSL 2 distro, and
-the host's Docker Desktop WSL integration was not enabled here). The
-Dockerfile and compose file are written and YAML-validated
+**Docker/Docker Compose was unavailable in this build's environment** (both
+Phase 6 and this phase, confirmed again: `docker` resolves to a path under
+the Windows host's Docker Desktop install, but the daemon is not reachable
+from this WSL 2 distro -- "Docker Desktop WSL integration" is not enabled
+here). The Dockerfile and compose file (including the new
+`application-worker-1` service) are written and YAML-validated
 (`python -c "import yaml; yaml.safe_load(...)"` succeeded), following the
 project's existing conventions, but **this specific multi-service demo was
-not built or run** in this build. The distributed-coordination *logic* it
-would exercise (leasing, circuit breaker, rate limiting, orphan reaping)
+not built or run**. The distributed-coordination *logic* it would exercise
+(leasing, circuit breaker, rate limiting, orphan reaping, crash recovery)
 was validated directly against a real PostgreSQL server instead (via
-`pgserver`, which needs no Docker/root) -- see `docs/distributed-workers.md`
-and `scripts/multi_machine_simulation.py`. If Docker is available in your
-environment, running the compose file above is the natural next
-validation step; it was not skipped by choice, only by environment
-constraint.
+`pgserver`, which needs no Docker/root) -- see `docs/distributed-workers.md`,
+`docs/application-worker-architecture.md`,
+`tests/test_applications_postgres_phase9.py`, and
+`scripts/multi_machine_simulation.py`. If Docker is available in your
+environment, running the compose file above is the natural next validation
+step; it was not skipped by choice, only by environment constraint.
 
 ## Environment variables
 

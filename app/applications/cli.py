@@ -87,6 +87,61 @@ def _cmd_doctor(_: argparse.Namespace) -> int:
     return 1 if report.serious_count else 0
 
 
+def _cmd_worker(args: argparse.Namespace) -> int:
+    from app.applications.worker import main as worker_main
+
+    argv = ["run"]
+    if args.once:
+        argv.append("--once")
+    if args.workers != 1:
+        argv.extend(["--workers", str(args.workers)])
+    if args.drain:
+        argv.append("--drain")
+    return worker_main(argv)
+
+
+def _cmd_drain(args: argparse.Namespace) -> int:
+    from app.applications.worker_admin import request_drain, resume_from_drain
+
+    if args.resume:
+        ok = resume_from_drain(args.worker_id)
+    else:
+        ok = request_drain(args.worker_id)
+    print(f"{'resumed' if args.resume else 'drain requested'}: {ok}")
+    return 0 if ok else 1
+
+
+def _cmd_scheduler(args: argparse.Namespace) -> int:
+    from app.applications.scheduler import run_cycle
+
+    result = run_cycle(limit=args.limit)
+    print(f"scheduler cycle: {result.as_dict()}")
+    return 0
+
+
+def _cmd_reconcile_worker(args: argparse.Namespace) -> int:
+    from app.applications.reconcile_worker import run_pass
+
+    result = run_pass(limit=args.limit)
+    print(f"reconciliation pass: {result.as_dict()}")
+    return 0
+
+
+def _cmd_budget(_: argparse.Namespace) -> int:
+    from app.applications.budget import collect
+
+    for k, v in collect().as_dict().items():
+        print(f"  {k}: {v}")
+    return 0
+
+
+def _cmd_capability_matrix(_: argparse.Namespace) -> int:
+    from app.applications.capability_matrix import render_text
+
+    print(render_text())
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m app.applications.cli")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -118,6 +173,32 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_doctor = sub.add_parser("doctor", help="run the application executor integrity checker")
     p_doctor.set_defaults(func=_cmd_doctor)
+
+    p_worker = sub.add_parser("worker", help="run the Phase 9 application-executor worker daemon")
+    p_worker.add_argument("--once", action="store_true")
+    p_worker.add_argument("--workers", type=int, default=1)
+    p_worker.add_argument("--drain", action="store_true")
+    p_worker.set_defaults(func=_cmd_worker)
+
+    p_drain = sub.add_parser("drain", help="request (or resume from) drain mode for a running application worker")
+    p_drain.add_argument("worker_id")
+    p_drain.add_argument("--resume", action="store_true")
+    p_drain.set_defaults(func=_cmd_drain)
+
+    p_scheduler = sub.add_parser("scheduler", help="run one application-scheduler cycle (auto-prepare)")
+    p_scheduler.add_argument("--limit", type=int, default=None)
+    p_scheduler.set_defaults(func=_cmd_scheduler)
+
+    p_reconcile_worker = sub.add_parser("reconcile-worker",
+                                         help="run one automated reconciliation evidence pass")
+    p_reconcile_worker.add_argument("--limit", type=int, default=50)
+    p_reconcile_worker.set_defaults(func=_cmd_reconcile_worker)
+
+    p_budget = sub.add_parser("budget", help="print today's application budget accounting")
+    p_budget.set_defaults(func=_cmd_budget)
+
+    p_matrix = sub.add_parser("capability-matrix", help="print the truthful provider capability matrix")
+    p_matrix.set_defaults(func=_cmd_capability_matrix)
 
     return parser
 

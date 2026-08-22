@@ -66,6 +66,13 @@ class ApplicationState(str, Enum):
     DUPLICATE_APPLICATION_BLOCKED = "DUPLICATE_APPLICATION_BLOCKED"
     WITHDRAWN = "WITHDRAWN"
 
+    # --- Phase 9 (CLAUDE.md Phase 9 sections 24-27): a job that was found to
+    # be no longer active, or whose JD changed materially, immediately before
+    # submission -- distinct from SUBMISSION_FAILED (that means a submission
+    # attempt was made and failed; this means submission was correctly never
+    # attempted at all).
+    JOB_NO_LONGER_ACTIVE = "JOB_NO_LONGER_ACTIVE"
+
 
 class ApplicationMode(str, Enum):
     ANALYZE = "ANALYZE"

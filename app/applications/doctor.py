@@ -4,9 +4,11 @@ them. `python -m app.applications.cli doctor` exits nonzero on any SERIOUS
 issue, mirroring app.registry.doctor / app.sponsorship.doctor."""
 
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 
+from app import config
 from app.applications.models import ExecutionMode
-from app.applications.provider_registry import get_application_provider
+from app.applications.provider_registry import all_application_capabilities, get_application_provider
 from app.db import db_session
 from app.jobs_repo import get_job
 from app.matching.employment_type import classify_employment_type
@@ -52,6 +54,17 @@ def run_doctor() -> DoctorReport:
         _check_unknown_sponsorship_submitted(conn, report)
         _check_likely_sponsorship_auto_submitted(conn, report)
         _check_submitted_without_permitted_policy(conn, report)
+        # --- Phase 9 (CLAUDE.md Phase 9 section 48) ---
+        _check_expired_execution_lease(conn, report)
+        _check_orphan_execution_lease(conn, report)
+        _check_multiple_active_leases_same_job(conn, report)
+        _check_duplicate_confirmation(conn, report)
+        _check_submission_capable_provider_without_policy(report)
+        _check_auto_submit_enabled_for_unsupported_provider(report)
+        _check_unknown_submission_retried(conn, report)
+        _check_non_full_time_queued(conn, report)
+        _check_non_confirmed_sponsorship_queued(conn, report)
+        _check_rate_limit_accounting_inconsistency(conn, report)
     return report
 
 
@@ -182,3 +195,122 @@ def _check_submitted_without_permitted_policy(conn, report: DoctorReport) -> Non
             report.issues.append(Issue("serious", "submitted_without_permitted_policy",
                                         f"execution {r['execution_id']} (job {r['job_id']}) auto-submitted with "
                                         f"automation_policy='{r['automation_policy']}' (expected PERMITTED_AUTO)"))
+
+
+# --- Phase 9 checks (CLAUDE.md Phase 9 section 48) --------------------------
+
+def _check_expired_execution_lease(conn, report: DoctorReport) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    rows = conn.execute(
+        "SELECT execution_id, job_id, lease_expires_at FROM application_executions "
+        "WHERE active = 1 AND lease_owner IS NOT NULL AND lease_expires_at IS NOT NULL AND lease_expires_at < ?",
+        (now,),
+    ).fetchall()
+    for r in rows:
+        report.issues.append(Issue("warning", "expired_execution_lease",
+                                    f"execution {r['execution_id']} (job {r['job_id']}) has an expired lease "
+                                    f"(expired {r['lease_expires_at']}) -- reclaimable, but not yet reclaimed"))
+
+
+def _check_orphan_execution_lease(conn, report: DoctorReport) -> None:
+    """A lease held on an execution that is no longer active=1 is a bug --
+    app.applications.queue always releases the lease before/at the point an
+    execution reaches a terminal state via the normal worker path."""
+    rows = conn.execute(
+        "SELECT execution_id, job_id FROM application_executions WHERE active = 0 AND lease_owner IS NOT NULL"
+    ).fetchall()
+    for r in rows:
+        report.issues.append(Issue("serious", "orphan_execution_lease",
+                                    f"execution {r['execution_id']} (job {r['job_id']}) is terminal but still "
+                                    f"holds a lease -- should have been released"))
+
+
+def _check_multiple_active_leases_same_job(conn, report: DoctorReport) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    rows = conn.execute(
+        """SELECT job_id, COUNT(*) AS n FROM application_executions
+           WHERE lease_owner IS NOT NULL AND lease_expires_at IS NOT NULL AND lease_expires_at > ?
+           GROUP BY job_id HAVING n > 1""",
+        (now,),
+    ).fetchall()
+    for r in rows:
+        report.issues.append(Issue("serious", "multiple_active_leases_same_job",
+                                    f"job {r['job_id']} has {r['n']} executions simultaneously leased"))
+
+
+def _check_duplicate_confirmation(conn, report: DoctorReport) -> None:
+    rows = conn.execute(
+        "SELECT confirmation_id, COUNT(*) AS n FROM application_executions "
+        "WHERE confirmation_id IS NOT NULL AND confirmation_id != '' GROUP BY confirmation_id HAVING n > 1"
+    ).fetchall()
+    for r in rows:
+        report.issues.append(Issue("serious", "duplicate_confirmation",
+                                    f"confirmation_id '{r['confirmation_id']}' is used by {r['n']} executions"))
+
+
+def _check_submission_capable_provider_without_policy(report: DoctorReport) -> None:
+    for cap in all_application_capabilities():
+        if cap["submission_supported"] and cap["automation_policy"] != "PERMITTED_AUTO":
+            report.issues.append(Issue("serious", "submission_capable_provider_without_policy",
+                                        f"provider '{cap['provider']}' declares submission_supported=True but "
+                                        f"automation_policy='{cap['automation_policy']}' (expected PERMITTED_AUTO)"))
+
+
+def _check_auto_submit_enabled_for_unsupported_provider(report: DoctorReport) -> None:
+    if not config.AUTO_SUBMIT_ENABLED:
+        return
+    for cap in all_application_capabilities():
+        if cap["submission_supported"] and not (cap["live_validated"] or cap["provider"] == "mock_ats"):
+            report.issues.append(Issue("warning", "auto_submit_enabled_for_unvalidated_provider",
+                                        f"AUTO_SUBMIT_ENABLED is true and provider '{cap['provider']}' declares "
+                                        f"submission_supported=True but live_validated=False"))
+
+
+def _check_unknown_submission_retried(conn, report: DoctorReport) -> None:
+    rows = conn.execute(
+        "SELECT execution_id, job_id, attempt_count FROM application_executions "
+        "WHERE status = 'SUBMISSION_STATUS_UNKNOWN' AND attempt_count > 1"
+    ).fetchall()
+    for r in rows:
+        report.issues.append(Issue("serious", "unknown_submission_retried",
+                                    f"execution {r['execution_id']} (job {r['job_id']}) reached "
+                                    f"SUBMISSION_STATUS_UNKNOWN after {r['attempt_count']} submit attempts on the "
+                                    f"same execution row -- should never exceed 1"))
+
+
+def _check_non_full_time_queued(conn, report: DoctorReport) -> None:
+    rows = conn.execute("SELECT execution_id, job_id FROM application_executions WHERE active = 1").fetchall()
+    for r in rows:
+        job = get_job(r["job_id"])
+        if job is None:
+            continue
+        etype = classify_employment_type(job.employment_type, job.title, job.description)
+        if etype not in (EmploymentType.FULL_TIME, EmploymentType.UNKNOWN):
+            report.issues.append(Issue("serious", "non_full_time_queued",
+                                        f"execution {r['execution_id']} (job {r['job_id']}) is active with "
+                                        f"employment_type={etype.value}"))
+
+
+def _check_non_confirmed_sponsorship_queued(conn, report: DoctorReport) -> None:
+    rows = conn.execute(
+        "SELECT execution_id, job_id FROM application_executions WHERE active = 1 AND mode = ?",
+        (ExecutionMode.AUTO_PERMITTED.value,),
+    ).fetchall()
+    for r in rows:
+        job = get_job(r["job_id"])
+        if job is not None and job.sponsorship_status != SponsorshipStatus.CONFIRMED_SPONSOR:
+            report.issues.append(Issue("serious", "non_confirmed_sponsorship_queued",
+                                        f"execution {r['execution_id']} (job {r['job_id']}) is AUTO_PERMITTED with "
+                                        f"sponsorship_status={job.sponsorship_status.value}"))
+
+
+def _check_rate_limit_accounting_inconsistency(conn, report: DoctorReport) -> None:
+    hour_cutoff = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    hourly = conn.execute(
+        "SELECT COUNT(*) AS c FROM application_audit_log WHERE event_type = 'submit_attempted' AND created_at >= ?",
+        (hour_cutoff,),
+    ).fetchone()["c"]
+    if hourly > config.MAX_APPLICATIONS_PER_HOUR:
+        report.issues.append(Issue("serious", "rate_limit_accounting_inconsistency",
+                                    f"{hourly} submit attempts recorded in the last hour, exceeding "
+                                    f"MAX_APPLICATIONS_PER_HOUR={config.MAX_APPLICATIONS_PER_HOUR}"))

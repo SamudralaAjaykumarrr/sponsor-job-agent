@@ -21,6 +21,15 @@ from app.applications.executor import (
 )
 from app.applications.reconcile import reconcile_execution
 from app.applications.tracker import can_transition
+from app.applications import budget as applications_budget
+from app.applications import capability_matrix as applications_capability_matrix
+from app.applications import circuit as applications_circuit
+from app.applications import attempts as applications_attempts
+from app.applications import scheduler as applications_scheduler
+from app.applications import reconcile_worker as applications_reconcile_worker
+from app.applications.worker_admin import request_drain as application_request_drain
+from app.applications.worker_admin import resume_from_drain as application_resume_from_drain
+from app.applications.worker_capabilities import WorkerCapability, has_capability as application_worker_has_capability
 from app.candidate.profile import load_profile, missing_fields
 from app.config import BASE_DIR
 from app.db import init_db
@@ -524,9 +533,97 @@ def applications_page(
             "buckets": list(applications_repo.DASHBOARD_BUCKETS.keys()),
             "executor_enabled": config.APPLICATION_EXECUTOR_ENABLED,
             "auto_submit_enabled": config.AUTO_SUBMIT_ENABLED,
+            "auto_prepare_enabled": config.APPLICATION_AUTO_PREPARE_ENABLED,
             "metrics": applications_metrics.collect(),
+            "fleet": applications_metrics.collect_worker_fleet(),
+            "budget": applications_budget.collect().as_dict(),
         },
     )
+
+
+# --- Phase 9: production application-worker fleet ---------------------------
+
+@app.get("/application-workers", response_class=HTMLResponse)
+def application_workers_page(request: Request):
+    all_workers = workers_repo.list_workers(limit=200)
+    app_workers = [
+        w for w in all_workers
+        if application_worker_has_capability(w.get("capabilities") or "[]", WorkerCapability.APPLICATION_PREPARE)
+        or application_worker_has_capability(w.get("capabilities") or "[]", WorkerCapability.APPLICATION_SUBMIT)
+    ]
+    circuit_rows = [{"provider": p, "state": s} for p, s in applications_circuit.all_states().items()]
+    return templates.TemplateResponse(
+        request, "application_workers.html",
+        {
+            "workers": app_workers,
+            "attempts": applications_attempts.list_recent_attempts(limit=100),
+            "fleet": applications_metrics.collect_worker_fleet(),
+            "budget": applications_budget.collect().as_dict(),
+            "circuit_rows": circuit_rows,
+            "executor_enabled": config.APPLICATION_EXECUTOR_ENABLED,
+            "auto_submit_enabled": config.AUTO_SUBMIT_ENABLED,
+            "auto_prepare_enabled": config.APPLICATION_AUTO_PREPARE_ENABLED,
+            "config": {
+                "application_worker_concurrency": config.APPLICATION_WORKER_CONCURRENCY,
+                "application_lease_seconds": config.APPLICATION_LEASE_SECONDS,
+                "application_provider_concurrency_default": config.APPLICATION_PROVIDER_CONCURRENCY_DEFAULT,
+                "application_circuit_breaker_cooldown_seconds": config.APPLICATION_CIRCUIT_BREAKER_COOLDOWN_SECONDS,
+            },
+        },
+    )
+
+
+@app.post("/application-workers/{worker_id}/drain")
+def application_worker_drain(worker_id: str):
+    application_request_drain(worker_id)
+    return RedirectResponse(url="/application-workers", status_code=303)
+
+
+@app.post("/application-workers/{worker_id}/resume-drain")
+def application_worker_resume_drain(worker_id: str):
+    application_resume_from_drain(worker_id)
+    return RedirectResponse(url="/application-workers", status_code=303)
+
+
+@app.post("/application-workers/{worker_id}/mark-offline")
+def application_worker_mark_offline(worker_id: str):
+    workers_repo.mark_worker_offline(worker_id)
+    return RedirectResponse(url="/application-workers", status_code=303)
+
+
+@app.post("/applications/circuit/{provider}/force-probe")
+def application_circuit_force_probe(provider: str):
+    applications_circuit.force_probe(provider)
+    return RedirectResponse(url="/application-workers", status_code=303)
+
+
+@app.post("/applications/circuit/{provider}/close")
+def application_circuit_close(provider: str):
+    applications_circuit.force_close(provider)
+    return RedirectResponse(url="/application-workers", status_code=303)
+
+
+@app.post("/applications/scheduler/run")
+def application_scheduler_run_once():
+    result = applications_scheduler.run_cycle()
+    return JSONResponse(result.as_dict())
+
+
+@app.post("/applications/reconcile-worker/run")
+def application_reconcile_worker_run_once():
+    result = applications_reconcile_worker.run_pass()
+    return JSONResponse(result.as_dict())
+
+
+@app.get("/applications/capability-matrix", response_class=HTMLResponse)
+def application_capability_matrix_page(request: Request):
+    matrix = applications_capability_matrix.build_matrix()
+    return templates.TemplateResponse(request, "application_capability_matrix.html", {"matrix": matrix})
+
+
+@app.get("/api/applications/budget")
+def api_applications_budget():
+    return JSONResponse(applications_budget.collect().as_dict())
 
 
 @app.get("/applications/doctor", response_class=HTMLResponse)

@@ -59,34 +59,65 @@ auto-reconciles or auto-retries a submission.
 
 `app/applications/worker_capabilities.py`'s `WorkerCapability` enum
 (`DISCOVERY`, `REGISTRY_VERIFY`, `APPLICATION_PREPARE`, `APPLICATION_SUBMIT`)
-is the declared-capability model for a future distributed executor worker
-fleet, following the same JSON-list-on-the-`workers`-row pattern as Phase
-5-6's discovery workers (`app.workers.repo.upsert_worker(..., capabilities=...)`).
-A worker that never passes `capabilities` is capability-less for the
-executor queues by default — opt-in, not opt-out.
+is the declared-capability model. Phase 9's `app.applications.worker.
+ApplicationWorker` is the standalone daemon that actually declares
+`APPLICATION_PREPARE`/`APPLICATION_SUBMIT` and drives the queue continuously
+— see `docs/application-worker-architecture.md` for the full design
+(leasing, crash recovery, submission circuit breaker, drain mode,
+supervisor). `queue_application()`/`process_execution()` remain available
+for direct synchronous CLI/dashboard use exactly as in Phase 8; the worker
+daemon is simply another caller of the same functions.
 
-**Current implementation status**: the atomic claim primitives
-(`app.applications.queue.claim_execution_batch`/`release_execution_lease`/
-`extend_execution_lease`) are implemented and tested (including against
-real concurrent threads and real PostgreSQL — see
-`tests/test_applications_concurrency.py`, `tests/test_applications_postgres.py`),
-but a standalone always-running executor worker daemon
-(`app/workers/runner.py`'s equivalent for the application queue) was not
-built in this phase — `queue_application()` + `process_execution()` are run
-synchronously today (CLI/dashboard-triggered), which is sufficient for the
-`ASSIST`-first product this phase targets. Building the daemon is
-straightforward follow-on work using the same claim/lease/ack pattern as
-`app.workers.runner`, and is the top item in the recommended Phase 9 list.
+```
+python -m app.applications.worker run [--once] [--workers N] [--drain]
+python -m app.applications.cli worker [--once] [--workers N] [--drain]
+python -m app.applications.cli drain WORKER_ID [--resume]
+python -m app.applications.cli scheduler [--limit N]
+python -m app.applications.cli reconcile-worker [--limit N]
+python -m app.applications.cli budget
+python -m app.applications.cli capability-matrix
+```
+
+## Dashboard (Phase 9 additions)
+
+- `GET /application-workers` — worker fleet (id/host/status/capabilities/
+  heartbeat/counters, drain/resume/mark-offline actions), submission
+  provider circuits (force-probe/close), and recent attempt history.
+- `GET /applications/capability-matrix` — the truthful provider matrix.
+- `POST /applications/scheduler/run`, `POST /applications/reconcile-worker/run`
+  — manual triggers (JSON result).
+- `GET /api/applications/budget` — daily budget accounting.
+- `/applications` now also shows fleet/budget/circuit summaries inline.
+
+## Continuous scheduler (auto-prepare)
+
+`app.applications.scheduler.run_cycle()` (`APPLICATION_AUTO_PREPARE_ENABLED`,
+independent of `AUTO_SUBMIT_ENABLED` — CLAUDE.md Phase 9 section 37) finds
+eligible `READY_TO_APPLY` jobs (ordered by the existing Phase 1-2
+`priority_score`, which already encodes fresh/strong-match/CONFIRMED/
+FULL_TIME/Remote>Hybrid>Onsite), skips anything with an active execution or
+over its rate limit, and calls `queue_application()` — in `AUTO_PERMITTED`
+mode only when `AUTO_SUBMIT_ENABLED` is *also* true and that specific job
+already clears `auto_submit_eligible`, otherwise `ASSIST`. Never bypasses
+any eligibility/duplicate/rate-limit gate — it is purely a caller of
+`queue_application()`, with no direct access to form/submit machinery.
 
 ## Doctor checks
 
 `python -m app.applications.cli doctor` (also `/applications/doctor`) is
-read-only and exits nonzero on any serious issue: `applied_without_
-confirmation`, `execution_missing_job`, `duplicate_active_execution`,
-`wrong_resume_job_mapping`, `missing_answer_snapshot`,
-`unsupported_provider_auto_submit`, `non_full_time_in_submission`,
-`unknown_sponsorship_submitted`, `no_sponsorship_submitted`,
-`likely_sponsorship_auto_submitted`, `submitted_without_permitted_policy`.
+read-only and exits nonzero on any serious issue. Phase 8 checks:
+`applied_without_confirmation`, `execution_missing_job`,
+`duplicate_active_execution`, `wrong_resume_job_mapping`,
+`missing_answer_snapshot`, `unsupported_provider_auto_submit`,
+`non_full_time_in_submission`, `unknown_sponsorship_submitted`,
+`no_sponsorship_submitted`, `likely_sponsorship_auto_submitted`,
+`submitted_without_permitted_policy`. Phase 9 additions:
+`expired_execution_lease`, `orphan_execution_lease`,
+`multiple_active_leases_same_job`, `duplicate_confirmation`,
+`submission_capable_provider_without_policy`,
+`auto_submit_enabled_for_unvalidated_provider`,
+`unknown_submission_retried`, `non_full_time_queued`,
+`non_confirmed_sponsorship_queued`, `rate_limit_accounting_inconsistency`.
 
 ## Rate limits
 

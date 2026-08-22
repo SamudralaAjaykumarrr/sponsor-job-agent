@@ -130,7 +130,12 @@ def _auto_submit_permitted(job: Job, mode, eligibility, provider, validation) ->
     return True, "all AUTO_PERMITTED conditions met"
 
 
-def process_execution(execution_id: str) -> dict:
+def process_execution(execution_id: str, *, allow_submission: bool = True) -> dict:
+    """`allow_submission=False` (CLAUDE.md Phase 9 section 13, drain mode):
+    runs the full prepare/map/fill/validate pipeline exactly as normal but
+    never calls provider.submit(), landing in SUBMISSION_READY instead --
+    used by a draining application worker that must finish safe in-progress
+    preparation but never start a new submission."""
     execution = repo.get_execution(execution_id)
     if execution is None:
         raise ValueError(f"execution {execution_id} not found")
@@ -149,6 +154,25 @@ def process_execution(execution_id: str) -> dict:
         # exactly as-is until app.applications.reconcile.reconcile_execution()
         # (an explicit human/operator action) resolves it.
         return execution
+
+    if execution["status"] in (ExecutionStatus.SUBMITTING.value, ExecutionStatus.SUBMITTED.value):
+        # CLAUDE.md Phase 9 sections 7/33 (acceptance scenario E): a worker
+        # that crashed (killed, network partition) after writing SUBMITTING
+        # but before recording a final outcome left an execution whose
+        # provider.submit() call may or may not have actually reached the
+        # provider. Resuming this function from scratch would call submit()
+        # a SECOND time -- a real double-submission risk this exact code
+        # path used to have no guard against. Never blindly retry: convert
+        # straight to SUBMISSION_STATUS_UNKNOWN so only explicit
+        # reconciliation (human, or app.applications.reconcile_worker's
+        # genuine-evidence path) can resolve it.
+        correlation_id = job.correlation_id or execution.get("correlation_id") or ""
+        repo.update_execution(execution_id, job_id, ExecutionStatus.SUBMISSION_STATUS_UNKNOWN,
+                               requires_user_action=1,
+                               user_action_reason="execution resumed while in-flight after an interruption -- "
+                                                   "submission outcome unknown, reconciliation required")
+        repo.log_event(execution_id, job_id, "failed", detail="resumed_mid_submission", correlation_id=correlation_id)
+        return repo.get_execution(execution_id)
 
     correlation_id = job.correlation_id or execution.get("correlation_id") or ""
     mode = ExecutionMode(execution["mode"])
@@ -225,7 +249,49 @@ def process_execution(execution_id: str) -> dict:
                         detail=";".join(r.value for r in validation.policy_reasons), correlation_id=correlation_id)
         return repo.get_execution(execution_id)
 
-    auto_ok, auto_reason = _auto_submit_permitted(job, mode, eligibility, provider, validation)
+    if not allow_submission:
+        # CLAUDE.md Phase 9 section 13 (drain mode): finish safe in-progress
+        # preparation, but never start a new submission -- the fully
+        # prepared draft is preserved exactly as a normal ASSIST review item.
+        repo.update_execution(execution_id, job_id, ExecutionStatus.SUBMISSION_READY,
+                               requires_user_action=1, user_action_reason="worker draining -- submission deferred",
+                               automation_policy=validation.policy.value, policy_reasons=policy_reasons_json)
+        repo.log_event(execution_id, job_id, "validated", detail="draining_defer_submission", correlation_id=correlation_id)
+        return repo.get_execution(execution_id)
+
+    # --- CLAUDE.md Phase 9 sections 24-27: revalidate immediately before
+    # submission using a FRESH read of the job -- time may have passed since
+    # eligibility was first checked at the top of this call (form discovery/
+    # mapping can involve real network requests), and a discovery cycle may
+    # have reanalyzed this job (e.g. a JD edit flipping sponsorship negative)
+    # in the meantime. Never submit against stale eligibility state.
+    fresh_job = get_job(job_id)
+    if fresh_job is None:
+        repo.update_execution(execution_id, job_id, ExecutionStatus.JOB_NO_LONGER_ACTIVE,
+                               error_type="JOB_NO_LONGER_ACTIVE", error_message_safe="job no longer exists")
+        repo.log_event(execution_id, job_id, "failed", detail="job_missing_before_submit", correlation_id=correlation_id)
+        return repo.get_execution(execution_id)
+
+    still_active = provider.check_job_still_active(fresh_job)
+    if still_active is False:
+        repo.update_execution(execution_id, job_id, ExecutionStatus.JOB_NO_LONGER_ACTIVE,
+                               error_type="JOB_NO_LONGER_ACTIVE",
+                               error_message_safe="provider reports this posting is no longer active")
+        repo.log_event(execution_id, job_id, "failed", detail="job_inactive_before_submit", correlation_id=correlation_id)
+        return repo.get_execution(execution_id)
+
+    fresh_eligibility = evaluate_executor_eligibility(fresh_job)
+    if fresh_eligibility.hard_skip:
+        # Covers, among others, "JD changed to no sponsorship" / employment
+        # type flipped to a hard-skip category since preparation began --
+        # always a hard stop, never a submission.
+        repo.update_execution(execution_id, job_id, ExecutionStatus.JOB_NO_LONGER_ACTIVE,
+                               error_type="REVALIDATION_HARD_SKIP",
+                               error_message_safe="; ".join(fresh_eligibility.reasons)[:500])
+        repo.log_event(execution_id, job_id, "failed", detail="revalidation_hard_skip", correlation_id=correlation_id)
+        return repo.get_execution(execution_id)
+
+    auto_ok, auto_reason = _auto_submit_permitted(fresh_job, mode, fresh_eligibility, provider, validation)
     if not auto_ok:
         repo.update_execution(execution_id, job_id, ExecutionStatus.SUBMISSION_READY,
                                requires_user_action=1, user_action_reason=auto_reason,
@@ -233,7 +299,7 @@ def process_execution(execution_id: str) -> dict:
         repo.log_event(execution_id, job_id, "validated", detail=auto_reason, correlation_id=correlation_id)
         return repo.get_execution(execution_id)
 
-    rl = rate_limit.check_rate_limits(job.company)
+    rl = rate_limit.check_rate_limits(fresh_job.company)
     if not rl.allowed:
         repo.update_execution(execution_id, job_id, ExecutionStatus.NEEDS_USER_ACTION,
                                requires_user_action=1, user_action_reason=rl.reason,
@@ -241,7 +307,7 @@ def process_execution(execution_id: str) -> dict:
         repo.log_event(execution_id, job_id, "user_action_required", detail=rl.reason, correlation_id=correlation_id)
         return repo.get_execution(execution_id)
 
-    dup = duplicate.check_duplicate(job)
+    dup = duplicate.check_duplicate(fresh_job)
     if dup.is_duplicate:
         repo.update_execution(execution_id, job_id, ExecutionStatus.DUPLICATE_APPLICATION_BLOCKED,
                                error_type="DUPLICATE", error_message_safe=dup.reason)
@@ -254,7 +320,7 @@ def process_execution(execution_id: str) -> dict:
     repo.log_event(execution_id, job_id, "submit_attempted", detail=f"provider={provider.name}",
                     correlation_id=correlation_id)
 
-    result = provider.submit(job, form, draft)
+    result = provider.submit(fresh_job, form, draft)
 
     if result.status_unknown:
         repo.update_execution(execution_id, job_id, ExecutionStatus.SUBMISSION_STATUS_UNKNOWN,

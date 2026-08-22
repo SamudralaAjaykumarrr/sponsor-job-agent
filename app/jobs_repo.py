@@ -31,10 +31,24 @@ def _row_to_job(row: sqlite3.Row) -> Job:
     return Job.model_validate(data)
 
 
+def _coerce_sql_value(v):
+    """CLAUDE.md Phase 6's schema rule: boolean flags stay INTEGER (0/1) in
+    BOTH backends -- SQLite silently accepts a Python bool (coerces it), but
+    psycopg maps a Python bool to Postgres's native `boolean` type, which
+    then conflicts with an `INTEGER` column (a real DatatypeMismatch caught
+    live by this phase's own Postgres acceptance testing, e.g.
+    jobs.sponsorship_conflict). Every value written to a `jobs` row must be
+    coerced explicitly rather than relying on SQLite's permissiveness."""
+    if hasattr(v, "value"):
+        return v.value
+    if isinstance(v, bool):
+        return int(v)
+    return v
+
+
 def insert_job(job: Job) -> int:
     with db_session() as conn:
-        values = [getattr(job, col) for col in _COLUMNS]
-        values = [v.value if hasattr(v, "value") else v for v in values]
+        values = [_coerce_sql_value(getattr(job, col)) for col in _COLUMNS]
         placeholders = ", ".join("?" for _ in _COLUMNS)
         cols = ", ".join(_COLUMNS)
         cur = conn.execute(f"INSERT INTO jobs ({cols}) VALUES ({placeholders})", values)
@@ -45,9 +59,7 @@ def update_job(job_id: int, **fields) -> None:
     if not fields:
         return
     fields["updated_at"] = utcnow()
-    cleaned = {}
-    for k, v in fields.items():
-        cleaned[k] = v.value if hasattr(v, "value") else v
+    cleaned = {k: _coerce_sql_value(v) for k, v in fields.items()}
     set_clause = ", ".join(f"{k} = ?" for k in cleaned)
     with db_session() as conn:
         conn.execute(f"UPDATE jobs SET {set_clause} WHERE id = ?", [*cleaned.values(), job_id])

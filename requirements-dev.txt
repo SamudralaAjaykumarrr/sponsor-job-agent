@@ -10,3 +10,14 @@
 # validate app/db_postgres.py + app/workers/leasing_postgres.py against,
 # never in production and never for the default sqlite-mode app.
 pgserver>=0.1.4
+
+# Phase 9 test-only dependency for the OPTIONAL browser-assist layer
+# (app/applications/browser_assist.py). Only used by tests marked
+# `@pytest.mark.browser` (`pytest -m browser`), which are skipped
+# automatically if `playwright` isn't installed or its chromium binary
+# isn't available. After `pip install -r requirements-dev.txt`, also run
+# `playwright install chromium` (and, on Linux without the needed system
+# shared libraries already present, `playwright install-deps chromium` --
+# requires root/sudo, never run automatically by this project). See
+# docs/application-browser-assist.md.
+playwright>=1.40

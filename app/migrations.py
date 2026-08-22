@@ -554,6 +554,98 @@ def _m020_workers_capabilities_column(conn, backend: str) -> None:
     add_columns_if_missing(conn, backend, "workers", [("capabilities", "TEXT DEFAULT '[]'")])
 
 
+def _m021_application_attempts_table(conn, backend: str) -> None:
+    """CLAUDE.md Phase 9 section 6: bounded, append-only per-attempt history
+    for the application executor worker fleet -- the application-side
+    equivalent of Phase 5's poll_attempts, but with fields specific to the
+    prepare/validate/submit/confirm pipeline. Never stores secrets or
+    candidate answer values (only ids/stages/results/timestamps)."""
+    id_column = "id BIGSERIAL PRIMARY KEY" if backend == "postgres" else "id INTEGER PRIMARY KEY AUTOINCREMENT"
+    conn.execute(
+        f"""CREATE TABLE IF NOT EXISTS application_attempts (
+            {id_column},
+            attempt_id TEXT NOT NULL UNIQUE,
+            execution_id TEXT NOT NULL,
+            job_id INTEGER NOT NULL,
+            worker_id TEXT NOT NULL,
+            provider TEXT NOT NULL DEFAULT '',
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            stage TEXT NOT NULL DEFAULT '',
+            result TEXT NOT NULL DEFAULT '',
+            retryable INTEGER NOT NULL DEFAULT 0,
+            submission_request_started_at TEXT,
+            submission_request_finished_at TEXT,
+            confirmation_observed INTEGER NOT NULL DEFAULT 0,
+            error_type TEXT DEFAULT '',
+            safe_error_message TEXT DEFAULT '',
+            correlation_id TEXT DEFAULT ''
+        )"""
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_application_attempts_execution ON application_attempts (execution_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_application_attempts_job ON application_attempts (job_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_application_attempts_worker ON application_attempts (worker_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_application_attempts_started ON application_attempts (started_at)")
+
+
+def _m022_application_provider_circuit_state_table(conn, backend: str) -> None:
+    """CLAUDE.md Phase 9 section 34: a SEPARATE circuit-breaker/inflight-slot
+    table for application SUBMISSION attempts, distinct from Phase 5's
+    provider_circuit_state (discovery polling). A provider whose discovery
+    circuit is open must not automatically block application submission (and
+    vice versa) -- the semantics genuinely differ (submission failures are
+    rarer, more consequential, and should trip far more conservatively)."""
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS application_provider_circuit_state (
+            provider TEXT PRIMARY KEY,
+            state TEXT NOT NULL DEFAULT 'CLOSED',
+            consecutive_failures INTEGER NOT NULL DEFAULT 0,
+            window_attempts INTEGER NOT NULL DEFAULT 0,
+            window_failures INTEGER NOT NULL DEFAULT 0,
+            opened_at TEXT,
+            half_open_probe_at TEXT,
+            half_open_inflight INTEGER NOT NULL DEFAULT 0,
+            inflight INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL
+        )"""
+    )
+
+
+def _m023_mock_ats_server_records_table(conn, backend: str) -> None:
+    """Test/demo fixture ONLY (provider == 'mock_ats' can never collide with
+    a real provider name, matching every prior phase's benchmark-fixture
+    convention). Represents "the ATS's own server-side record of a
+    submission" -- genuinely separate storage from application_executions,
+    so app.applications.mock_ats.MockATSProvider.check_submission_status()
+    can demonstrate CLAUDE.md Phase 9 section 8's "check provider-supported
+    confirmation method" mechanism against real (if synthetic) evidence
+    rather than fabricating an answer."""
+    id_column = "id BIGSERIAL PRIMARY KEY" if backend == "postgres" else "id INTEGER PRIMARY KEY AUTOINCREMENT"
+    conn.execute(
+        f"""CREATE TABLE IF NOT EXISTS mock_ats_server_records (
+            {id_column},
+            job_id INTEGER NOT NULL,
+            external_job_id TEXT DEFAULT '',
+            confirmation_id TEXT NOT NULL,
+            received_at TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_mock_ats_server_records_job ON mock_ats_server_records (job_id)"
+    )
+
+
+def _m024_jobs_application_worker_columns(conn, backend: str) -> None:
+    """CLAUDE.md Phase 9 sections 24-27: lets the final pre-submission
+    revalidation pass compare against the JD fingerprint recorded at
+    preparation time without a second table -- additive, nullable."""
+    add_columns_if_missing(conn, backend, "application_executions", [
+        ("prepared_jd_fingerprint", "TEXT DEFAULT ''"),
+        ("prepared_employment_type", "TEXT DEFAULT ''"),
+        ("prepared_sponsorship_status", "TEXT DEFAULT ''"),
+    ])
+
+
 MIGRATIONS: list[tuple[int, str, Callable]] = [
     (2, "phase6_worker_identity_columns", _m002_worker_identity_columns),
     (3, "phase6_schema_drift_table", _m003_schema_drift_table),
@@ -574,6 +666,10 @@ MIGRATIONS: list[tuple[int, str, Callable]] = [
     (18, "phase8_application_audit_log_table", _m018_application_audit_log_table),
     (19, "phase8_application_form_baselines_table", _m019_application_form_baselines_table),
     (20, "phase8_workers_capabilities_column", _m020_workers_capabilities_column),
+    (21, "phase9_application_attempts_table", _m021_application_attempts_table),
+    (22, "phase9_application_provider_circuit_state_table", _m022_application_provider_circuit_state_table),
+    (23, "phase9_mock_ats_server_records_table", _m023_mock_ats_server_records_table),
+    (24, "phase9_jobs_application_worker_columns", _m024_jobs_application_worker_columns),
 ]
 
 # Version 1 is the implicit Phase 1-5 baseline schema, applied by

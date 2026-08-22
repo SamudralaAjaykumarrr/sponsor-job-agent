@@ -175,3 +175,19 @@ one: `app.applications.executor.queue_application()` /
 `process_execution()`, gated by `APPLICATION_EXECUTOR_ENABLED`
 (off by default). See `docs/phase8-application-executor.md` and
 `docs/application-safety.md` for the full executor design.
+
+## Phase 9: who actually runs the executor stage now
+
+Same relationship as Phase 5 added for discovery above. `app.agent.
+scheduler.AgentScheduler` (this document) and `app.workers.cli run` (Phase
+5) still only take a job through analysis/resume generation to `READY_TO_
+APPLY`/`REVIEW_REQUIRED` -- they never queue or execute an application.
+Phase 9 adds `app.applications.scheduler.run_cycle()` (`APPLICATION_AUTO_
+PREPARE_ENABLED`, off by default) as the equivalent continuous driver for
+the *next* stage: it finds eligible `READY_TO_APPLY` jobs and calls the same
+`queue_application()` a human would from the dashboard, and one or more
+`python -m app.applications.worker run` processes then claim and execute
+those queued applications, completely independently of the discovery fleet
+(separate worker capabilities, separate queue table, separate circuit
+breaker). See `docs/phase9-production-application-workers.md` and
+`docs/application-worker-architecture.md`.

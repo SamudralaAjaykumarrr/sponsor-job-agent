@@ -96,3 +96,22 @@ class ApplicationProvider(ABC):
             confirmed=True, confirmation_id=submit_result.confirmation_id,
             confirmation_url=submit_result.confirmation_url,
         )
+
+    def check_submission_status(self, job: Job, execution: dict) -> Optional[ConfirmationResult]:
+        """CLAUDE.md Phase 9 section 8: an OPTIONAL, genuinely-legitimate
+        provider-side status re-check used only by
+        app.applications.reconcile_worker to gather evidence for a
+        SUBMISSION_STATUS_UNKNOWN execution. Returns None when this provider
+        has no such interface (the base/default -- true for every real ATS
+        adapter in this phase) so the reconciliation worker never fabricates
+        evidence. A provider that DOES implement this must only ever return
+        genuine evidence obtained from the provider itself -- never a guess."""
+        return None
+
+    def check_job_still_active(self, job: Job) -> Optional[bool]:
+        """CLAUDE.md Phase 9 section 25: OPTIONAL liveness re-check performed
+        immediately before submission. Returns True/False only when this
+        provider can genuinely tell (e.g. a live lookup came back 404/410);
+        returns None (the default -- 'not checkable') when it cannot, which
+        must never be treated as 'inactive'."""
+        return None

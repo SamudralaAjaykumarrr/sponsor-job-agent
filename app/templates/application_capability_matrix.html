@@ -1,0 +1,49 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Provider Capability Matrix — Sponsor Job Agent</title>
+  <style>
+    body { font-family: -apple-system, Arial, sans-serif; margin: 2rem; background: #f7f7f9; color: #1a1a1a; }
+    table { width: 100%; border-collapse: collapse; background: white; }
+    th, td { padding: 8px 10px; border-bottom: 1px solid #eee; text-align: left; font-size: 0.82rem; vertical-align: top; }
+    th { background: #fafafa; }
+    .yes { color: #155724; font-weight: 600; }
+    .no { color: #721c24; }
+    .notes { max-width: 320px; color: #555; }
+  </style>
+</head>
+<body>
+  <p><a href="/">&larr; back to dashboard</a> · <a href="/applications">Applications</a></p>
+  <h1>Application Provider Capability Matrix</h1>
+  <p>Truthful, code-derived matrix -- every cell is exactly what each provider's
+     <code>ApplicationCapabilities</code> declaration says, never inferred from discoverability alone.</p>
+  <table>
+    <thead>
+      <tr>
+        <th>Provider</th><th>Form/schema</th><th>Mapping</th><th>Draft</th><th>Upload</th>
+        <th>Auto-submit</th><th>Confirmation</th><th>Recheck</th><th>Live tested</th>
+        <th>Support level</th><th>Policy</th><th>Notes</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in matrix.rows %}
+      <tr>
+        <td>{{ r.provider }}</td>
+        <td class="{{ 'yes' if r.form_discovery_supported else 'no' }}">{{ r.form_discovery_supported }}</td>
+        <td class="{{ 'yes' if r.field_mapping_supported else 'no' }}">{{ r.field_mapping_supported }}</td>
+        <td class="{{ 'yes' if r.draft_fill_supported else 'no' }}">{{ r.draft_fill_supported }}</td>
+        <td class="{{ 'yes' if r.file_upload_supported else 'no' }}">{{ r.file_upload_supported }}</td>
+        <td class="{{ 'yes' if r.submission_supported else 'no' }}">{{ r.submission_supported }}</td>
+        <td class="{{ 'yes' if r.confirmation_detection_supported else 'no' }}">{{ r.confirmation_detection_supported }}</td>
+        <td class="{{ 'yes' if r.confirmation_recheck_supported else 'no' }}">{{ r.confirmation_recheck_supported }}</td>
+        <td class="{{ 'yes' if r.live_validated else 'no' }}">{{ r.live_validated }}</td>
+        <td>{{ r.support_level }}</td>
+        <td>{{ r.automation_policy }}</td>
+        <td class="notes">{{ r.notes }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</body>
+</html>

@@ -20,6 +20,12 @@ class WorkerStatus(str, Enum):
     DEGRADED = "DEGRADED"
     STOPPING = "STOPPING"
     STOPPED = "STOPPED"
+    # CLAUDE.md Phase 9 section 13: an operator-requested drain (graceful
+    # rolling deployment) -- the worker keeps heartbeating in this status
+    # but stops claiming new work and never starts a new submission. Only
+    # ever set via an explicit operator action
+    # (app.applications.worker_admin.request_drain), never automatically.
+    DRAINING = "DRAINING"
     # Phase 6: assigned only by app.workers.reaper.reap_orphans() when a
     # worker's heartbeat has gone stale past a configurable threshold --
     # never assigned by the worker itself (a live worker only ever sets

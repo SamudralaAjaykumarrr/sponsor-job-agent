@@ -355,3 +355,42 @@ See `docs/phase8-application-executor.md`, `docs/application-provider-interface.
   `/api/executions/{id}`).
 - `APPLICATION_EXECUTOR_ENABLED` / `AUTO_SUBMIT_ENABLED` — both default
   `false`; printed on every startup (never silently enabled).
+
+## Phase 9: production application-worker fleet
+
+See `docs/phase9-production-application-workers.md`,
+`docs/application-worker-architecture.md`, `docs/application-reconciliation.md`,
+`docs/application-browser-assist.md`, `docs/application-provider-capabilities.md`.
+
+- `app/applications/worker.py` — `ApplicationWorker`, the standalone
+  distributed daemon (`python -m app.applications.worker run`) that
+  continuously drives Phase 8's `process_execution()` pipeline: claim (via
+  Phase 8's already-built `app.applications.queue`) → submission-circuit
+  check → execute → attempt-history record → lease release. Declares only
+  `APPLICATION_PREPARE`/`APPLICATION_SUBMIT` worker capabilities, logically
+  separate from the discovery worker fleet.
+- `app/applications/supervisor.py` — local multi-process supervisor,
+  mirroring `app.workers.supervisor.Supervisor`.
+- `app/applications/circuit.py` — a SEPARATE submission circuit breaker
+  (own table `application_provider_circuit_state`) from the discovery
+  circuit breaker, tripped more conservatively.
+- `app/applications/attempts.py` — per-attempt history (`application_attempts`).
+- `app/applications/scheduler.py` — continuous auto-prepare scheduler
+  (`APPLICATION_AUTO_PREPARE_ENABLED`, independent of `AUTO_SUBMIT_ENABLED`).
+- `app/applications/budget.py` — deterministic daily budget accounting.
+- `app/applications/reconcile_worker.py` — automated reconciliation
+  *evidence* pass; never itself resolves an execution — always funnels
+  through the existing `reconcile_execution()`.
+- `app/applications/capability_matrix.py` — the truthful, generated
+  provider capability report.
+- `app/applications/browser_assist.py` — optional Playwright-based visible-
+  browser preparation aid (`BROWSER_ASSIST_ENABLED`, off by default);
+  never clicks submit, never persists cookies/sessions/passwords.
+- Two real bugs caught and fixed by this phase's own testing: a
+  resumed-`SUBMITTING`-row double-submit risk in `executor.process_execution()`
+  (now converts to `SUBMISSION_STATUS_UNKNOWN` instead), and a Postgres
+  `bool`→`INTEGER` column type mismatch in `app.jobs_repo.insert_job`/
+  `update_job` (only ever manifested against real Postgres, never SQLite).
+- Dashboard: `/application-workers` (fleet/circuits/attempts),
+  `/applications/capability-matrix`, manual scheduler/reconcile-worker
+  triggers, daily-budget/fleet summaries folded into `/applications`.

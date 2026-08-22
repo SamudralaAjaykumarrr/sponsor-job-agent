@@ -1,7 +1,12 @@
 # Sponsor Job Agent -- production-oriented image (CLAUDE.md Phase 6 section
-# 41). One image serves both roles via CMD/entrypoint override:
-#   dashboard: uvicorn app.main:app ...  (this file's default CMD)
-#   worker:    python -m app.workers.cli run ...
+# 41, extended by Phase 9). One image serves every role via CMD/entrypoint
+# override:
+#   dashboard:           uvicorn app.main:app ...  (this file's default CMD)
+#   discovery worker:    python -m app.workers.cli run ...
+#   application worker:  python -m app.applications.worker run ...
+# The application worker role additionally requires APPLICATION_EXECUTOR_ENABLED=true
+# to start at all (it refuses otherwise) and AUTO_SUBMIT_ENABLED remains false
+# by default in every example below -- see deploy/docker-compose.postgres.yml.
 #
 # Deliberately excludes (see .dockerignore): .env, candidate_data/, data/,
 # output/ -- no candidate data or database files are ever baked into the

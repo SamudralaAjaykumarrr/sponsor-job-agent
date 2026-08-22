@@ -560,3 +560,79 @@ and must remain first; no downstream executor code path may bypass it.
 - Synthetic/fixture data for this layer (the mock ATS, `mock_scenario` provider_metadata keys)
   must only ever be exercised via `provider == "mock_ats"` jobs, which can never collide with a
   real provider name — never write a real job's provider/external_job_id through the mock path.
+
+## Application Worker Fleet Rules (recorded after Phase 9, apply to all future phases)
+
+- `app.applications.executor.process_execution()` must never call `provider.submit()` for an
+  execution whose stored status is already `SUBMITTING` or `SUBMITTED` — that means a prior
+  invocation (this process or another) reached the submit step but never recorded a final
+  outcome (a crash), and the request may or may not have reached the provider. Resuming such a
+  row must always convert straight to `SUBMISSION_STATUS_UNKNOWN` instead. This guard was
+  missing before Phase 9's own crash-recovery testing caught it live; never remove or weaken it,
+  and never add a second code path that calls `submit()` without first checking it.
+- `app.applications.queue.claim_execution_batch`'s claimable-status set must include every
+  status an execution can be left in mid-pipeline (not just `QUEUED`) so that lease expiry
+  alone — never a second crash-detection mechanism — is sufficient to recover a crashed
+  worker's abandoned execution, matching the discovery fleet's existing guarantee. Any new
+  `ExecutionStatus` value that represents "still actively being worked by a worker, not yet
+  paused for a human" must be added to this set.
+- `app.applications.circuit` (submission circuit breaker, table
+  `application_provider_circuit_state`) and `app.workers.circuit` (discovery circuit breaker,
+  table `provider_circuit_state`) are permanently separate mechanisms — a provider's discovery
+  circuit state must never gate application submission, and vice versa. Both must remain
+  self-healing (never permanently disable a provider).
+- `app.applications.worker.ApplicationWorker` and `app.workers.runner.Worker` remain logically
+  separate worker fleets: an `ApplicationWorker` declares only `APPLICATION_PREPARE`/
+  `APPLICATION_SUBMIT` capabilities and must never claim from `app.workers.queue`/
+  `app.workers.leasing` (the discovery poll/verification queues), and a discovery worker must
+  never claim from `app.applications.queue`.
+- A claimed application execution that is skipped without ever being attempted (submission
+  circuit open, provider at its submission concurrency limit) gets a short lease-cooldown
+  extension, never a bare release — same busy-spin-avoidance rule Phase 5 established for
+  discovery, extended here.
+- `app.applications.scheduler.run_cycle()` (`APPLICATION_AUTO_PREPARE_ENABLED`) and
+  `AUTO_SUBMIT_ENABLED` remain independent switches (CLAUDE.md Phase 9 section 37) — the
+  scheduler queuing a job in `ASSIST` mode must never depend on `AUTO_SUBMIT_ENABLED`, and a job
+  is only ever queued in `AUTO_PERMITTED` mode when both that flag AND the specific job's own
+  `auto_submit_eligible` are true.
+- `app.applications.reconcile_worker.run_pass()` must never itself decide a
+  `SUBMISSION_STATUS_UNKNOWN` execution's fate — it may only call a provider's optional
+  `check_submission_status()` hook (default unsupported/`None` for every real ATS adapter) and,
+  when that returns genuine evidence, funnel the result through the existing
+  `app.applications.reconcile.reconcile_execution()` — the same function a human operator uses.
+  Never add a code path that marks an execution `APPLIED`/`WITHDRAWN` by any other route.
+- `ApplicationProvider.check_submission_status()` and `.check_job_still_active()` must only ever
+  return genuine evidence obtained from the provider itself (or `None`/`True` meaning "not
+  checkable") — never a guess, and `confirmation_recheck_supported` must be set `True` only on a
+  provider that genuinely implements the hook with real evidence, matching
+  `submission_supported`'s existing "only if genuinely tested" bar.
+- `app.applications.executor.process_execution()`'s pre-submission revalidation (fresh
+  `get_job()` + fresh `evaluate_executor_eligibility()` immediately before the `SUBMITTING`
+  transition) must never be removed or bypassed — a hard-skip result at this point always
+  becomes `ExecutionStatus.JOB_NO_LONGER_ACTIVE`, never a submission.
+- `app.applications.browser_assist` (optional, `BROWSER_ASSIST_ENABLED`, requires Playwright
+  installed separately) must never click a final submit/apply action, must never fill a
+  `DEMOGRAPHICS`/`VOLUNTARY_DISCLOSURE`/`LEGAL_ATTESTATION`/`SIGNATURE`-category field, and must
+  never use `launch_persistent_context()` or save `storage_state` to disk — every browser
+  context is fresh and ephemeral, closed at the end of every call. No stealth/fingerprint-
+  spoofing/CAPTCHA-solving/proxy-rotation/anti-bot-bypass/hidden-login/MFA-interception may ever
+  be added to it.
+- A worker's `DRAINING` status (`app.workers.models.WorkerStatus.DRAINING`) is only ever set by
+  an explicit operator action (`app.applications.worker_admin.request_drain`), never
+  automatically. A draining `ApplicationWorker` must keep heartbeating, must stop claiming new
+  executions, and must call `process_execution(..., allow_submission=False)` for any execution
+  it finishes processing — never start a new submission while draining.
+- Boolean fields written to any table shared with the Postgres backend must be coerced to `int`
+  (`0`/`1`) before being passed to `conn.execute()`, matching the existing "boolean flags stay
+  INTEGER in both backends" schema rule — SQLite silently accepts a raw Python `bool`, but
+  psycopg maps it to Postgres's native `boolean` type, which conflicts with an `INTEGER` column
+  (a real bug Phase 9's own Postgres testing caught in `app.jobs_repo`). Any new table/column
+  added in a future phase that stores a Python `bool` must go through the same coercion pattern
+  (see `app.jobs_repo._coerce_sql_value`) rather than relying on SQLite's permissiveness.
+- Any new table whose primary key is not literally a column named `id` must be added to
+  `app.db_postgres._TABLES_WITHOUT_ID_PK`, or its INSERT statements will break under the
+  Postgres backend's automatic `RETURNING id` / `.lastrowid` emulation.
+- Synthetic benchmark/fixture data for this layer (`mock_ats_server_records`, any future
+  application-worker load-test script) follows the same isolated-temp-DB-only,
+  never-collide-with-a-real-name convention as every prior phase's benchmarks — never write
+  synthetic rows into a real registry or a developer's real `data/app.db`.
