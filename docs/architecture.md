@@ -506,3 +506,39 @@ See `docs/phase12-spa-ats-hardening.md`, `docs/spa-application-navigation.md`,
 - Dashboard: workday-tenants page now shows per-tenant stability; capability-evidence page now
   shows repeat counts; browser-session detail now shows iframe/shadow-DOM usage and URL
   provenance.
+
+### Phase 13: provider resilience and real-world ATS reliability
+
+- `app/applications/title_normalization.py` (new) — deterministic title canonicalization
+  (order/punctuation only), never fuzzy similarity as identity proof.
+- `app/applications/job_identity.py` (extended) — `verify_job_identity_full()`, a formal
+  multi-signal `JobIdentityVerification` (company/title/requisition-id/tenant-site/location),
+  layered on top of the unchanged Phase 12 single-signal URL-token check. Only `VERIFIED` may
+  continue unattended by default (`meets_min_confidence()`); `PROBABLE`/`AMBIGUOUS`/
+  `INSUFFICIENT` pause `PAUSED_JOB_IDENTITY_UNVERIFIED`, and a confirmed `MISMATCH` always pauses
+  `PAUSED_JOB_IDENTITY_MISMATCH` unconditionally. Evidence persisted append-only to
+  `job_identity_verifications`.
+- `app/applications/provider_health.py` (new) — real-browser assist-flow health per (provider,
+  tenant, site): `HEALTHY`/`DEGRADED`/`VARIABLE`/`STALE`/`CAPTCHA_BLOCKED`/`AUTH_GATED`/
+  `SCHEMA_DRIFT`/`UNVERIFIED`/`UNSUPPORTED`, deliberately separate from both the discovery and
+  submission circuit breakers.
+- `app/applications/confirmation_evidence.py` (new) — `STRONG`/`MODERATE`/`WEAK`/`NONE`
+  confirmation-evidence grading; only `STRONG`/`MODERATE` may ever confirm.
+- `app/applications/checkpoints.py` (new) — append-only session checkpoint log +
+  advisory ordering-anomaly detection, layered on top of the unchanged reconstruct-and-resume
+  mechanism.
+- `app/applications/resume_integrity.py` (new) — refuses to start a browser session when the
+  job's resume was generated against a JD fingerprint that has since diverged.
+- `app/applications/canary.py` (new) — safe, read-only, PII-free application-flow canary,
+  reusing `browser_runtime`'s own detection primitives.
+- A real bug caught by this phase's own bounded live canary validation: a bare
+  `"captcha" in content_lower` whole-page-text substring check (present since Phase 10) matched a
+  defensively-loaded reCAPTCHA v3 script tag on Greenhouse/Lever/Ashby/Workable's current real
+  pages, even with no challenge ever rendered. Fixed by narrowing to DOM-element-based checks
+  alone (verified against both the real E2E fixture and a second live run).
+- Live findings: Greenhouse and Workable reach a real form with upload/final-submit controls, no
+  CAPTCHA; SmartRecruiters' own board reaches a form too (a different posting shape than Phase
+  12's DataDome finding); Lever's demo genuinely embeds a visible hCaptcha widget (true positive);
+  Ashby carries ambiguous reCAPTCHA v3 telemetry (conservatively still pauses); Workday's Walmart
+  tenant showed `VARIABLE` stability across two more bounded observations.
+- Dashboard: new `/applications/provider-health` page; 3 new JSON API endpoints.

@@ -237,6 +237,75 @@ def collect_phase12() -> dict:
     }
 
 
+def collect_phase13() -> dict:
+    """CLAUDE.md Phase 13 section 63's exact metric-shaped names. Every value
+    is a live query over PERSISTED state, same principle as every other
+    collect_* function in this module."""
+    from app.applications.provider_health import ProviderAssistHealth, list_health
+
+    with db_session() as conn:
+        job_identity_verified_total = conn.execute(
+            "SELECT COUNT(*) AS c FROM job_identity_verifications WHERE result = 'VERIFIED'"
+        ).fetchone()["c"]
+        job_identity_mismatch_total = conn.execute(
+            "SELECT COUNT(*) AS c FROM job_identity_verifications WHERE result = 'MISMATCH'"
+        ).fetchone()["c"]
+        job_identity_unverified_total = conn.execute(
+            "SELECT COUNT(*) AS c FROM job_identity_verifications WHERE result IN "
+            "('PROBABLE', 'AMBIGUOUS', 'INSUFFICIENT')"
+        ).fetchone()["c"]
+        provider_canary_runs_total = conn.execute(
+            "SELECT COUNT(*) AS c FROM provider_canary_runs"
+        ).fetchone()["c"]
+        provider_canary_failures_total = conn.execute(
+            "SELECT COUNT(*) AS c FROM provider_canary_runs WHERE ok = 0"
+        ).fetchone()["c"]
+        provider_schema_drift_total = conn.execute(
+            "SELECT COALESCE(SUM(schema_drift_count), 0) AS c FROM application_provider_health"
+        ).fetchone()["c"]
+        captcha_handoffs_total = conn.execute(
+            "SELECT COUNT(*) AS c FROM browser_assist_sessions WHERE status = 'PAUSED_CAPTCHA'"
+        ).fetchone()["c"]
+        login_handoffs_total = conn.execute(
+            "SELECT COUNT(*) AS c FROM browser_assist_sessions WHERE status IN "
+            "('PAUSED_LOGIN_REQUIRED', 'PAUSED_MFA_REQUIRED')"
+        ).fetchone()["c"]
+        applications_closed_before_submit = conn.execute(
+            "SELECT COUNT(*) AS c FROM application_executions WHERE status = 'JOB_NO_LONGER_ACTIVE'"
+        ).fetchone()["c"]
+        session_reconstructions_total = conn.execute(
+            "SELECT COALESCE(SUM(reconstructed_count), 0) AS c FROM browser_assist_sessions"
+        ).fetchone()["c"]
+        confirmation_strong_total = conn.execute(
+            "SELECT COUNT(*) AS c FROM browser_assist_sessions WHERE confirmation_evidence_strength = 'STRONG'"
+        ).fetchone()["c"]
+        confirmation_unknown_total = conn.execute(
+            "SELECT COUNT(*) AS c FROM browser_assist_sessions WHERE status = 'SUBMISSION_STATUS_UNKNOWN'"
+        ).fetchone()["c"]
+
+    health_rows = list_health()
+    provider_capability_stale = sum(1 for e in health_rows if e["health"] == ProviderAssistHealth.STALE.value)
+
+    return {
+        "job_identity_verified_total": job_identity_verified_total,
+        "job_identity_mismatch_total": job_identity_mismatch_total,
+        "job_identity_unverified_total": job_identity_unverified_total,
+        "provider_assist_health": {
+            f"{e['row']['provider']}/{e['row']['tenant']}/{e['row']['site']}": e["health"] for e in health_rows
+        },
+        "provider_canary_runs_total": provider_canary_runs_total,
+        "provider_canary_failures_total": provider_canary_failures_total,
+        "provider_capability_stale": provider_capability_stale,
+        "provider_schema_drift_total": provider_schema_drift_total,
+        "captcha_handoffs_total": captcha_handoffs_total,
+        "login_handoffs_total": login_handoffs_total,
+        "applications_closed_before_submit": applications_closed_before_submit,
+        "session_reconstructions_total": session_reconstructions_total,
+        "confirmation_strong_total": confirmation_strong_total,
+        "confirmation_unknown_total": confirmation_unknown_total,
+    }
+
+
 def collect_worker_fleet() -> dict:
     """CLAUDE.md Phase 9 section 49: application-worker-fleet-shaped
     observability, kept separate from collect() above (which is purely

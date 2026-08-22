@@ -883,6 +883,167 @@ def _m032_browser_assist_sessions_spa_columns(conn, backend: str) -> None:
     ])
 
 
+
+# =============================================================================
+# Phase 13: provider resilience and real-world ATS reliability (CLAUDE.md
+# Phase 13 durable rules). Every table/column below is additive, matching
+# this module's own "no rollback needed" design note.
+# =============================================================================
+
+def _m033_job_identity_verifications_table(conn, backend: str) -> None:
+    """CLAUDE.md Phase 13 sections 4-5: bounded, append-only identity-check
+    evidence -- one row per verification attempt (pre-upload, pre-final-
+    submit, etc), never overwritten, so the full history of what was
+    compared is auditable. No candidate PII -- every column is already-
+    public job-posting metadata (title/company/provider/tenant/url/ids)."""
+    id_column = "id BIGSERIAL PRIMARY KEY" if backend == "postgres" else "id INTEGER PRIMARY KEY AUTOINCREMENT"
+    conn.execute(
+        f"""CREATE TABLE IF NOT EXISTS job_identity_verifications (
+            {id_column},
+            job_id INTEGER NOT NULL,
+            session_id TEXT DEFAULT '',
+            stage TEXT NOT NULL DEFAULT '',
+            provider TEXT DEFAULT '',
+            provider_job_id TEXT DEFAULT '',
+            requisition_id TEXT DEFAULT '',
+            stored_title TEXT DEFAULT '',
+            observed_title TEXT DEFAULT '',
+            stored_company TEXT DEFAULT '',
+            observed_company TEXT DEFAULT '',
+            stored_url TEXT DEFAULT '',
+            observed_url TEXT DEFAULT '',
+            tenant TEXT DEFAULT '',
+            site TEXT DEFAULT '',
+            signals_compared TEXT DEFAULT '',
+            signals_matched TEXT DEFAULT '',
+            signals_mismatched TEXT DEFAULT '',
+            result TEXT NOT NULL,
+            reason TEXT DEFAULT '',
+            parser_version TEXT DEFAULT '',
+            verified_at TEXT NOT NULL
+        )"""
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_job_identity_verifications_job "
+                 "ON job_identity_verifications (job_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_job_identity_verifications_result "
+                 "ON job_identity_verifications (result)")
+
+
+def _m034_application_provider_health_table(conn, backend: str) -> None:
+    """CLAUDE.md Phase 13 sections 11-12: application/browser-assist provider
+    health, tracked separately from discovery health (app.workers.circuit's
+    `provider_circuit_state`) and from application SUBMISSION circuit health
+    (app.applications.circuit's `application_provider_circuit_state`) -- a
+    third, distinct concern: is this provider's real-browser ASSIST flow
+    (form discovery/fill, not submission) currently trustworthy. Keyed by
+    (provider, tenant, site) with tenant/site defaulting to '' for providers
+    with no tenant concept."""
+    id_column = "id BIGSERIAL PRIMARY KEY" if backend == "postgres" else "id INTEGER PRIMARY KEY AUTOINCREMENT"
+    conn.execute(
+        f"""CREATE TABLE IF NOT EXISTS application_provider_health (
+            {id_column},
+            provider TEXT NOT NULL,
+            tenant TEXT NOT NULL DEFAULT '',
+            site TEXT NOT NULL DEFAULT '',
+            last_success TEXT,
+            last_failure TEXT,
+            last_live_validation TEXT,
+            consecutive_failures INTEGER NOT NULL DEFAULT 0,
+            schema_drift_count INTEGER NOT NULL DEFAULT 0,
+            captcha_observed INTEGER NOT NULL DEFAULT 0,
+            auth_gate_observed INTEGER NOT NULL DEFAULT 0,
+            form_verified INTEGER NOT NULL DEFAULT 0,
+            form_fingerprint TEXT DEFAULT '',
+            parser_version TEXT DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_application_provider_health_key "
+        "ON application_provider_health (provider, tenant, site)"
+    )
+
+
+def _m035_application_checkpoints_table(conn, backend: str) -> None:
+    """CLAUDE.md Phase 13 sections 37-38: append-only checkpoint log for a
+    browser-assist session's meaningful REVERSIBLE stages -- distinct from
+    `browser_assist_sessions.status/stage` (the single current-state row):
+    this is the ordered history a reconstruction can be reasoned about
+    against, and what a future operator/doctor check inspects for
+    consistency (e.g. a FILE_READY checkpoint recorded after a
+    READY_FOR_FINAL_SUBMIT one would be an ordering anomaly). Recording a
+    checkpoint never itself performs any recovery action."""
+    id_column = "id BIGSERIAL PRIMARY KEY" if backend == "postgres" else "id INTEGER PRIMARY KEY AUTOINCREMENT"
+    conn.execute(
+        f"""CREATE TABLE IF NOT EXISTS application_checkpoints (
+            {id_column},
+            session_id TEXT NOT NULL,
+            job_id INTEGER,
+            execution_id TEXT DEFAULT '',
+            checkpoint TEXT NOT NULL,
+            detail TEXT DEFAULT '',
+            created_at TEXT NOT NULL
+        )"""
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_application_checkpoints_session "
+                 "ON application_checkpoints (session_id)")
+
+
+def _m036_provider_canary_runs_table(conn, backend: str) -> None:
+    """CLAUDE.md Phase 13 sections 13-14, 56: safe, read-only application-flow
+    canary runs -- never fills candidate PII, never uploads a resume, never
+    clicks a final submit or submits an application. One row per canary
+    execution against one configured public URL."""
+    id_column = "id BIGSERIAL PRIMARY KEY" if backend == "postgres" else "id INTEGER PRIMARY KEY AUTOINCREMENT"
+    conn.execute(
+        f"""CREATE TABLE IF NOT EXISTS provider_canary_runs (
+            {id_column},
+            provider TEXT NOT NULL DEFAULT '',
+            tenant TEXT DEFAULT '',
+            site TEXT DEFAULT '',
+            url TEXT NOT NULL,
+            ok INTEGER NOT NULL DEFAULT 0,
+            captcha_detected INTEGER NOT NULL DEFAULT 0,
+            login_detected INTEGER NOT NULL DEFAULT 0,
+            apply_entry_found INTEGER NOT NULL DEFAULT 0,
+            apply_entry_followed INTEGER NOT NULL DEFAULT 0,
+            form_found INTEGER NOT NULL DEFAULT 0,
+            upload_control_found INTEGER NOT NULL DEFAULT 0,
+            final_submit_found INTEGER NOT NULL DEFAULT 0,
+            step_hint TEXT DEFAULT '',
+            error TEXT DEFAULT '',
+            ran_at TEXT NOT NULL
+        )"""
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_provider_canary_runs_provider "
+                 "ON provider_canary_runs (provider)")
+
+
+def _m037_jobs_resume_jd_fingerprint_column(conn, backend: str) -> None:
+    """CLAUDE.md Phase 13 sections 43-45: records which JD fingerprint the
+    currently-generated resume artifact was built against, so a pre-upload
+    check can detect a JD that materially changed AFTER the resume was
+    generated (`app.applications.resume_integrity`) without re-diffing JD
+    text on every check -- reuses the same `jd_sponsorship_fingerprint`
+    value Phase 7 already computes per job, never a second, parallel
+    fingerprinting scheme."""
+    add_columns_if_missing(conn, backend, "jobs", [
+        ("resume_jd_fingerprint", "TEXT DEFAULT ''"),
+    ])
+
+
+def _m038_confirmation_evidence_column(conn, backend: str) -> None:
+    """CLAUDE.md Phase 13 sections 49-51: records the graded evidence
+    STRENGTH (STRONG/MODERATE/WEAK/NONE) behind a browser-assist session's
+    confirmation, alongside the existing raw confirmation_id/url/fingerprint
+    columns -- never itself changes what counts as `confirmed`, only makes
+    the strength of that evidence inspectable after the fact."""
+    add_columns_if_missing(conn, backend, "browser_assist_sessions", [
+        ("confirmation_evidence_strength", "TEXT DEFAULT ''"),
+    ])
+
+
 MIGRATIONS: list[tuple[int, str, Callable]] = [
     (2, "phase6_worker_identity_columns", _m002_worker_identity_columns),
     (3, "phase6_schema_drift_table", _m003_schema_drift_table),
@@ -915,6 +1076,12 @@ MIGRATIONS: list[tuple[int, str, Callable]] = [
     (30, "phase12_workday_tenant_attempts_table", _m030_workday_tenant_attempts_table),
     (31, "phase12_capability_evidence_repeat_count_column", _m031_capability_evidence_repeat_count_column),
     (32, "phase12_browser_assist_sessions_spa_columns", _m032_browser_assist_sessions_spa_columns),
+    (33, "phase13_job_identity_verifications_table", _m033_job_identity_verifications_table),
+    (34, "phase13_application_provider_health_table", _m034_application_provider_health_table),
+    (35, "phase13_application_checkpoints_table", _m035_application_checkpoints_table),
+    (36, "phase13_provider_canary_runs_table", _m036_provider_canary_runs_table),
+    (37, "phase13_jobs_resume_jd_fingerprint_column", _m037_jobs_resume_jd_fingerprint_column),
+    (38, "phase13_confirmation_evidence_column", _m038_confirmation_evidence_column),
 ]
 
 # Version 1 is the implicit Phase 1-5 baseline schema, applied by

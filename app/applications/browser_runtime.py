@@ -57,11 +57,21 @@ from app.applications.apply_entry import (
     select_apply_control,
 )
 from app.applications import spa_events
+from app.applications.confirmation_evidence import classify_confirmation_evidence
 from app.applications.domain_allowlist import is_allowed_host_for_session
-from app.applications.job_identity import IdentityResult, verify_job_identity
+from app.applications.job_identity import (
+    IdentityResult,
+    JobIdentitySignals,
+    JobIdentityVerdict,
+    meets_min_confidence,
+    verify_job_identity,
+    verify_job_identity_full,
+)
 from app.applications.mapping import match_field
 from app.applications.models import ApplicationField, FieldConfidence, SENSITIVE_CATEGORIES
+from app.applications import provider_health
 from app.applications.schema import DECLINE_TO_SELF_IDENTIFY_PHRASES, find_field
+from app.applications.workday_tenant import parse_workday_tenant
 
 # CLAUDE.md Phase 12 sections 14-15: recursive shadow-DOM-piercing query
 # helper, INLINED INSIDE every DOM-scanning `page.evaluate` function body in
@@ -164,6 +174,10 @@ class ConfirmationOutcome:
     # must branch on this before ever treating `confirmed=False` here as
     # "nothing happened yet".
     already_applied: bool = False
+    # CLAUDE.md Phase 13 section 51: the graded ConfirmationEvidenceStrength
+    # value (STRONG/MODERATE/WEAK/NONE) behind this outcome -- see
+    # app.applications.confirmation_evidence.
+    evidence_strength: str = ""
 
 
 def playwright_available() -> bool:
@@ -281,6 +295,66 @@ def _scan_iframes(page, provider: str, original_url: str) -> dict:
     }
 
 
+def _tenant_site_for(provider: str, url: str) -> tuple[str, str]:
+    """CLAUDE.md Phase 13 section 11: tenant/site is only a meaningful
+    concept for tenant-shaped providers (Workday today) -- every other
+    provider's health/identity rows carry empty tenant/site, matching
+    app.applications.workday_tenant's own 'never fabricate a tenant that
+    isn't actually present' rule."""
+    if (provider or "").lower() != "workday":
+        return "", ""
+    info = parse_workday_tenant(url)
+    return (info.tenant, info.site) if info.recognized else ("", "")
+
+
+def _extract_observed_job_meta(page) -> dict:
+    """CLAUDE.md Phase 13 sections 4, 8: bounded, deterministic JSON-LD
+    extraction -- reads `<script type="application/ld+json">` blocks
+    looking for a schema.org JobPosting entry (title/hiringOrganization.name/
+    identifier/jobLocation), the same standard, publicly-documented
+    mechanism search engines use. Never executes arbitrary page JS beyond a
+    single `JSON.parse` of already-embedded, page-authored data -- the same
+    risk profile as this module's existing `page.content()`/
+    `page.inner_text()` calls. Returns {} when no JobPosting block is
+    present; never guesses a substitute from other page text."""
+    try:
+        data = page.evaluate(
+            """
+            () => {
+              const scripts = Array.from(document.querySelectorAll('script[type="application/ld+json"]'));
+              for (const s of scripts) {
+                let parsed;
+                try { parsed = JSON.parse(s.textContent || '{}'); } catch (e) { continue; }
+                const items = Array.isArray(parsed) ? parsed : [parsed];
+                for (const item of items) {
+                  if (item && item['@type'] === 'JobPosting') {
+                    const org = item.hiringOrganization;
+                    const ident = item.identifier;
+                    let location = '';
+                    const loc = item.jobLocation;
+                    const locObj = Array.isArray(loc) ? loc[0] : loc;
+                    if (locObj && locObj.address) {
+                      const addr = locObj.address;
+                      location = addr.addressLocality || addr.addressRegion || addr.streetAddress || '';
+                    }
+                    return {
+                      title: item.title || '',
+                      company: (org && (org.name || '')) || '',
+                      identifier: (ident && (ident.value || (typeof ident === 'string' ? ident : ''))) || '',
+                      location: location,
+                    };
+                  }
+                }
+              }
+              return null;
+            }
+            """
+        )
+    except Exception:  # noqa: BLE001 -- a malformed page must never break discovery
+        return {}
+    return data or {}
+
+
 def _page_uses_shadow_dom(page) -> bool:
     try:
         return bool(page.evaluate(
@@ -291,10 +365,22 @@ def _page_uses_shadow_dom(page) -> bool:
 
 
 class _LiveSession:
-    def __init__(self, session_id: str, provider: str, application_url: str):
+    def __init__(self, session_id: str, provider: str, application_url: str, *,
+                 job_id: Optional[int] = None, expected_title: str = "", expected_company: str = "",
+                 expected_location: str = ""):
         self.session_id = session_id
         self.provider = provider
         self.application_url = application_url
+        # CLAUDE.md Phase 13 sections 4, 9-10: the job's own stored
+        # title/company/location, carried into the live session so
+        # `_do_discover` can run the full multi-signal identity check
+        # immediately before an upload / final-submit moment without a
+        # second DB round-trip.
+        self.job_id = job_id
+        self.expected_title = expected_title
+        self.expected_company = expected_company
+        self.expected_location = expected_location
+        self.tenant, self.site = _tenant_site_for(provider, application_url)
         self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"bsess-{session_id[:16]}")
         self._pw_cm = None
         self.playwright = None
@@ -356,17 +442,38 @@ class _LiveSession:
         except Exception:  # noqa: BLE001
             body_text = ""
 
+        # CLAUDE.md Phase 13 sections 6, 17-20: a bounded LIVE canary run
+        # against real, current Greenhouse/Lever/Ashby/Workable postings
+        # (scripts/phase13_live_validation.py) caught a real false positive
+        # here -- these providers' real pages now defensively load a
+        # reCAPTCHA library SCRIPT TAG (invisible v3 verification) on every
+        # visit, with no challenge ever rendered to anyone. The old bare
+        # `"captcha" in content_lower` check matched that script's own src
+        # URL text, pausing every ordinary visit as CAPTCHA_PRESENT. The
+        # three DOM-ELEMENT checks below (an actual captcha-classed/id'd
+        # element, or a captcha-src iframe -- i.e. a widget that would
+        # actually be VISIBLE to a person) are the correct signal, and
+        # already catch the real E2E fixture (tests/browser_fixtures.py's
+        # `<div class="g-recaptcha">`, since "recaptcha" contains "captcha"
+        # as a substring) -- removing the raw whole-page-text check is a
+        # pure precision improvement, not a loosened safety boundary: a
+        # genuinely rendered SmartRecruiters/DataDome-style challenge still
+        # trips this via its own challenge iframe/class, and this project
+        # never attempts to solve or bypass one either way.
         has_captcha = (
-            "captcha" in content_lower
-            or page.locator("iframe[src*='captcha' i]").count() > 0
+            page.locator("iframe[src*='captcha' i]").count() > 0
             or page.locator("[class*='captcha' i]").count() > 0
             or page.locator("[id*='captcha' i]").count() > 0
         )
         if has_captcha:
+            provider_health.record_failure(self.provider, provider_health.FailureKind.CAPTCHA,
+                                            tenant=self.tenant, site=self.site)
             return DiscoveryOutcome(pause_reason="CAPTCHA_PRESENT", current_url=current_url)
 
         login_wall = page.locator("input[type=password]").count() > 0
         if login_wall:
+            provider_health.record_failure(self.provider, provider_health.FailureKind.AUTH_GATE,
+                                            tenant=self.tenant, site=self.site)
             if any(p in content_lower for p in _MFA_PHRASES):
                 return DiscoveryOutcome(pause_reason="MFA_REQUIRED", current_url=current_url)
             return DiscoveryOutcome(pause_reason="LOGIN_REQUIRED", current_url=current_url)
@@ -439,6 +546,77 @@ class _LiveSession:
                 spa_events.record(spa_events.EVENT_JOB_IDENTITY_MISMATCH, session_id=self.session_id,
                                    provider=self.provider, detail=identity.reason)
                 return DiscoveryOutcome(pause_reason="JOB_IDENTITY_MISMATCH", current_url=current_url)
+
+        # CLAUDE.md Phase 13 sections 4, 9-10 (acceptance correction): a
+        # formal, multi-signal identity recheck immediately before the two
+        # highest-stakes moments -- a resume upload (a file-type field is
+        # about to be filled) or READY_FOR_FINAL_SUBMIT (a submit control
+        # was just found). Only a VERIFIED verdict may continue unattended.
+        # MISMATCH (a confirmed contradiction) and PROBABLE/AMBIGUOUS/
+        # INSUFFICIENT (not enough independent evidence to proceed
+        # unattended, even though nothing was confirmed wrong) both stop the
+        # flow -- they are recorded as DISTINCT pause reasons/statuses
+        # (JOB_IDENTITY_MISMATCH vs JOB_IDENTITY_UNVERIFIED) so a human/
+        # doctor/dashboard can tell "this looks like the wrong job" apart
+        # from "we simply could not confirm this is the right job", but
+        # neither is ever treated as safe to continue past unattended.
+        has_upload_field = any(f.get("type") == "file" for f in raw_fields)
+        # Scoped to a genuine APPLICATION_FORM/FINAL_REVIEW stage -- a
+        # landing-page lookalike whose only control merely reads "Submit
+        # Application" (CLAUDE.md Phase 11 sections 5-6's FINAL_SUBMIT-
+        # lookalike case) has no real form/fields at all and must never
+        # trigger this gate; `apply_entry.py`'s own apply-entry safety
+        # already handles that page never being auto-clicked.
+        is_form_or_review_stage = stage in (EntryStage.APPLICATION_FORM, EntryStage.FINAL_REVIEW)
+        if config.APPLICATION_IDENTITY_REQUIRED and is_form_or_review_stage and (
+            has_upload_field or submit_button is not None
+        ):
+            observed_meta = _extract_observed_job_meta(page)
+            # Provider is never compared here -- both sides would trivially
+            # be `self.provider` (this session's own belief, not an
+            # independent observation of the current page), which would
+            # inflate confidence without genuine evidence. Tenant/site ARE
+            # independently re-derived from the CURRENT url (never the
+            # fixed self.tenant/self.site captured at session-open time),
+            # so a genuine tenant/site drift is a real comparable signal.
+            observed_tenant, observed_site = _tenant_site_for(self.provider, current_url)
+            observed_signals = JobIdentitySignals(
+                title=observed_meta.get("title", ""), company=observed_meta.get("company", ""),
+                tenant=observed_tenant, site=observed_site, url=current_url,
+                requisition_id=observed_meta.get("identifier", ""), location=observed_meta.get("location", ""),
+            )
+            stored_signals = JobIdentitySignals(
+                title=self.expected_title, company=self.expected_company, location=self.expected_location,
+                tenant=self.tenant, site=self.site, url=self.application_url,
+            )
+            full_check = verify_job_identity_full(stored_signals, observed_signals)
+            check_stage = "PRE_UPLOAD" if has_upload_field else "PRE_FINAL_SUBMIT"
+            if self.job_id is not None:
+                from app.applications import job_identity as _job_identity
+                _job_identity.record_verification(
+                    self.job_id, stage=check_stage, stored=stored_signals, observed=observed_signals,
+                    verification=full_check, session_id=self.session_id,
+                )
+            if full_check.verdict == JobIdentityVerdict.MISMATCH:
+                spa_events.record(spa_events.EVENT_JOB_IDENTITY_MISMATCH, session_id=self.session_id,
+                                   provider=self.provider, stage=check_stage, detail=full_check.reason)
+                return DiscoveryOutcome(pause_reason="JOB_IDENTITY_MISMATCH", current_url=current_url)
+            if not meets_min_confidence(full_check.verdict, config.APPLICATION_IDENTITY_MIN_CONFIDENCE):
+                # PROBABLE / AMBIGUOUS / INSUFFICIENT (by default) -- never
+                # confirmed wrong, but never confidently confirmed right
+                # either. CLAUDE.md Phase 13 acceptance correction: none of
+                # these may continue unattended past an upload/final-submit
+                # gate unless an operator has explicitly LOWERED
+                # APPLICATION_IDENTITY_MIN_CONFIDENCE below its "VERIFIED"
+                # default -- a deliberate, documented risk acceptance.
+                spa_events.record(spa_events.EVENT_JOB_IDENTITY_UNVERIFIED, session_id=self.session_id,
+                                   provider=self.provider, stage=check_stage,
+                                   result=full_check.verdict.value, detail=full_check.reason)
+                return DiscoveryOutcome(pause_reason="JOB_IDENTITY_UNVERIFIED", current_url=current_url)
+
+        if raw_fields:
+            provider_health.record_success(self.provider, tenant=self.tenant, site=self.site,
+                                            form_fingerprint=fingerprint)
 
         entry_result = detect_entry_result(
             has_apply_control=apply_control is not None, apply_control_classification=control_classification,
@@ -632,15 +810,27 @@ class _LiveSession:
         # never count. `_SUCCESS_PHRASES` are all deliberately affirmative,
         # completed-action phrases ("thank you for applying"), never a bare
         # noun like "confirmation" alone.
-        if not any(p in lowered for p in _SUCCESS_PHRASES):
-            return ConfirmationOutcome(confirmed=False, current_url=current_url)
+        phrase_matched = any(p in lowered for p in _SUCCESS_PHRASES)
         match = _CONFIRMATION_ID_RE.search(text)
         confirmation_id = match.group(1) if match else ""
+        # CLAUDE.md Phase 13 sections 49-51: grade the evidence STRENGTH
+        # before deciding `confirmed` -- only STRONG/MODERATE evidence may
+        # ever confirm (see ConfirmationGrade.confirms()); a lone
+        # confirmation-shaped URL/id with no trusted phrase match is WEAK
+        # and never confirms on its own, matching the existing
+        # phrase-required behavior exactly (no functional change, now
+        # explicitly graded and recorded).
+        grade = classify_confirmation_evidence(
+            phrase_matched=phrase_matched, confirmation_id=confirmation_id, current_url=current_url,
+        )
+        if not grade.confirms():
+            return ConfirmationOutcome(confirmed=False, current_url=current_url,
+                                        evidence_strength=grade.strength.value)
         snippet = text.strip()[:300]
         fingerprint = hashlib.sha256(snippet.encode("utf-8")).hexdigest()[:24]
         return ConfirmationOutcome(
             confirmed=True, current_url=current_url, confirmation_id=confirmation_id,
-            confirmation_text_fingerprint=fingerprint,
+            confirmation_text_fingerprint=fingerprint, evidence_strength=grade.strength.value,
         )
 
     def _do_close(self) -> None:
@@ -863,11 +1053,20 @@ def is_live(session_id: str) -> bool:
         return session_id in _REGISTRY
 
 
-def open_session(session_id: str, *, provider: str, url: str) -> DiscoveryOutcome:
+def open_session(session_id: str, *, provider: str, url: str, job_id: Optional[int] = None,
+                  expected_title: str = "", expected_company: str = "",
+                  expected_location: str = "") -> DiscoveryOutcome:
     """Launches a real (visible unless BROWSER_HEADLESS) browser, navigates to
     `url`, and returns the initial discovery outcome. Raises
     BrowserRuntimeUnavailable / BrowserRuntimeBusy rather than silently
-    no-op-ing."""
+    no-op-ing. `job_id`/`expected_title`/`expected_company`/`expected_location`
+    are optional and feed the Phase 13 pre-upload/pre-final-submit job-
+    identity recheck (see `_do_discover`) -- CLAUDE.md Phase 13 acceptance
+    correction: omitting them means the recheck has NOTHING to compare
+    (INSUFFICIENT), and INSUFFICIENT now BLOCKS unattended continuation past
+    an upload/final-submit gate exactly like every other non-VERIFIED
+    verdict, so a caller that wants unattended continuation past that gate
+    MUST supply real, verified title/company for the job."""
     _require_available()
     with _REGISTRY_LOCK:
         if len(_REGISTRY) >= max(1, config.BROWSER_ASSIST_CONCURRENCY):
@@ -875,7 +1074,8 @@ def open_session(session_id: str, *, provider: str, url: str) -> DiscoveryOutcom
                 f"BROWSER_ASSIST_CONCURRENCY={config.BROWSER_ASSIST_CONCURRENCY} reached -- "
                 "close or finish an existing browser-assist session first."
             )
-        live = _LiveSession(session_id, provider, url)
+        live = _LiveSession(session_id, provider, url, job_id=job_id, expected_title=expected_title,
+                             expected_company=expected_company, expected_location=expected_location)
         _REGISTRY[session_id] = live
     try:
         live.run(live._do_open, url, timeout=config.BROWSER_ASSIST_TIMEOUT_SECONDS + 15)

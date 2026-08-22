@@ -137,3 +137,20 @@ Capability evidence this run was recorded with the new `REAL_BROWSER`/`REAL_BROW
 verification types (CLAUDE.md Phase 12 section 41) rather than `LIVE_PUBLIC` -- several providers'
 `field_discovery`/`captcha_handoff`/`resume_upload` capabilities were genuinely re-observed across
 Phase 11 and Phase 12 and are now `REAL_BROWSER_REPEATED` with `repeat_count=2`.
+
+## Phase 13: bounded canary re-validation (`scripts/phase13_live_validation.py`)
+
+| Provider | Posting | Result |
+|---|---|---|
+| Greenhouse | GitLab | Form + upload control + final-submit control found, no CAPTCHA/login |
+| Workable | Flosum | Form + upload control + final-submit control found, no CAPTCHA/login |
+| SmartRecruiters | SmartRecruiters' own board | Form found, no CAPTCHA (a different posting shape than Phase 12's `oneclick-ui` DataDome finding) |
+| Lever | `leverdemo` | Genuine, visible hCaptcha widget (`class="h-captcha"`, confirmed `visible=True`) -- a true positive |
+| Ashby | Ashby's own board | reCAPTCHA v3 telemetry elements present -- ambiguous, conservatively still pauses |
+| Workday | Walmart | Two bounded repeated observations disagreed -- `VARIABLE`, consistent with Phase 12 |
+
+This run caught a real bug: a bare `"captcha" in content_lower` substring check (present since
+Phase 10) was matching a defensively-loaded reCAPTCHA v3 script tag on Greenhouse/Lever/Ashby/
+Workable's CURRENT real pages even when no challenge was ever rendered. Fixed by narrowing to the
+three DOM-element-based checks alone -- see `docs/ats-canary-validation.md` for the full writeup
+and verification that the real end-to-end CAPTCHA fixture still triggers correctly.

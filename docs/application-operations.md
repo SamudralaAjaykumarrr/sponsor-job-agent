@@ -173,3 +173,20 @@ sharing one database (SQLite file or shared Postgres).
 - `python -m app.applications.cli doctor` gained 4 new checks (unsafe redirect allowlist,
   stage-transition anomalies, job-identity-mismatch surfacing, Workday universal-claim
   protection) — see `docs/phase12-spa-ats-hardening.md`.
+
+## Phase 13 additions
+
+- New pages: `/applications/provider-health` (per provider/tenant/site assist health).
+- New JSON APIs: `/api/applications/provider-health`, `/api/applications/job-identity`,
+  `/api/applications/canary-runs`. `/api/applications/browser-assist/metrics` now also includes
+  `collect_phase13()`'s fields.
+- New CLI commands: `provider-health` (health report), `canary <url> [--provider]` (one safe,
+  read-only canary run), `job-identity [--job-id] [--limit]` (identity-verification evidence).
+- New config: `REAL_ATS_CANARY_ENABLED` (default `false`), `REAL_ATS_CANARY_INTERVAL_HOURS`
+  (default `24`), `PROVIDER_CAPABILITY_MAX_AGE_DAYS` (alias of `CAPABILITY_EVIDENCE_MAX_AGE_DAYS`),
+  `APPLICATION_IDENTITY_REQUIRED` (default `true`), `APPLICATION_IDENTITY_MIN_CONFIDENCE`
+  (default `PROBABLE`), `ASSIST_PROVIDER_MAX_RETRIES` (default `2`).
+- `scripts/phase13_live_validation.py` — bounded, read-only canary validation against Greenhouse,
+  Lever, Ashby, Workable, SmartRecruiters, and a repeated Workday tenant check.
+- `python -m app.applications.cli doctor` gained 8 new checks — see
+  `docs/phase13-provider-resilience.md`.

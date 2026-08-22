@@ -83,3 +83,13 @@ DOM-stabilization wait, and iframe/shadow-DOM discovery (`docs/spa-application-n
 only ever change whether/how a real form is REACHED and FILLED -- none of them, individually or
 together, changes any `ApplicationCapabilities.submission_supported` value. `mock_ats` remains the
 only `True`; every real ATS provider stays `ASSIST_ONLY`.
+
+## Phase 13: provider resilience still never touches submission_supported
+
+The formal job-identity gate, provider assist health tracking, checkpoints, confirmation-evidence
+grading, and the read-only canary (`docs/phase13-provider-resilience.md`) all only ever change
+whether/how a real form is safely REACHED, VERIFIED, and FILLED, or how confidently a manual
+submission's outcome is graded -- none of them changes any `ApplicationCapabilities.
+submission_supported` value. `mock_ats` remains the only `True`; every real ATS provider stays
+`ASSIST_ONLY`. `_check_real_provider_capability_auto_without_authorization` (Phase 11) continues
+to statically enforce this.

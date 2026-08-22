@@ -89,6 +89,16 @@ def run_doctor() -> DoctorReport:
         _check_stage_transition_invalid(conn, report)
         _check_job_identity_mismatch_unresolved(conn, report)
         _check_workday_universal_claim_from_one_tenant(report)
+        # --- Phase 13 (CLAUDE.md Phase 13 section 62) ---
+        _check_provider_healthy_from_stale_evidence(report)
+        _check_closed_job_queued(conn, report)
+        _check_stale_resume_jd_mismatch(conn, report)
+        _check_captcha_blocked_session_marked_automated(conn, report)
+        _check_checkpoint_inconsistency(conn, report)
+        _check_unsafe_retry_state(conn, report)
+        _check_identity_mismatch_but_session_active(conn, report)
+        _check_applied_with_weak_confirmation(conn, report)
+        _check_job_identity_unverified_not_surfaced(conn, report)
     return report
 
 
@@ -674,3 +684,173 @@ def _check_workday_universal_claim_from_one_tenant(report: DoctorReport) -> None
                                     "browser_capability_matrix claims workday=LIVE_FORM_VERIFIED but no tenant/site "
                                     "has genuinely repeated STABLE evidence in workday_tenant_attempts -- never "
                                     "generalize from a single observation"))
+
+
+# =============================================================================
+# Phase 13 (CLAUDE.md Phase 13 section 62).
+# =============================================================================
+
+def _check_provider_healthy_from_stale_evidence(report: DoctorReport) -> None:
+    """CLAUDE.md Phase 13 sections 15, 62: a provider that was PREVIOUSLY
+    genuinely form-verified (row.form_verified=1, i.e. it once passed
+    real-browser discovery cleanly) but whose evidence has since gone STALE
+    must be surfaced for revalidation -- application assist should require
+    review until revalidated, never continue to be silently trusted just
+    because it worked once. app.applications.provider_health.compute_health
+    already computes STALE live on every read (never cached), so this check
+    exists to make that fact actionable in the doctor report rather than
+    only visible on the dashboard."""
+    from app.applications.provider_health import ProviderAssistHealth, list_health
+
+    for entry in list_health():
+        row = entry["row"]
+        if row.get("form_verified") and entry["health"] == ProviderAssistHealth.STALE.value:
+            report.issues.append(Issue(
+                "warning", "provider_healthy_from_stale_evidence",
+                f"provider {row['provider']} (tenant={row['tenant']}, site={row['site']}) was previously "
+                f"form-verified but its evidence is now STALE -- requires revalidation before further trust",
+            ))
+
+
+def _check_closed_job_queued(conn, report: DoctorReport) -> None:
+    """CLAUDE.md Phase 13 section 42: a job already marked JOB_NO_LONGER_ACTIVE
+    must never still have an active execution or browser-assist session
+    queued/in-progress -- preparation must stop the moment a job closes."""
+    rows = conn.execute(
+        "SELECT e.execution_id, e.job_id FROM application_executions e "
+        "JOIN jobs j ON j.id = e.job_id "
+        "WHERE e.active = 1 AND j.application_state = 'JOB_NO_LONGER_ACTIVE'"
+    ).fetchall()
+    for r in rows:
+        report.issues.append(Issue("serious", "closed_job_queued",
+                                    f"execution {r['execution_id']} (job {r['job_id']}) is still active but the job "
+                                    f"is JOB_NO_LONGER_ACTIVE"))
+
+
+def _check_stale_resume_jd_mismatch(conn, report: DoctorReport) -> None:
+    """CLAUDE.md Phase 13 sections 43-45: a job with an active execution or
+    browser-assist session whose resume was generated against a JD
+    fingerprint different from the job's CURRENT one must be flagged -- the
+    resume should have been regenerated before further preparation/upload."""
+    rows = conn.execute(
+        """SELECT j.id AS job_id, j.resume_jd_fingerprint, j.jd_sponsorship_fingerprint
+           FROM jobs j
+           WHERE j.resume_jd_fingerprint IS NOT NULL AND j.resume_jd_fingerprint != ''
+             AND j.jd_sponsorship_fingerprint IS NOT NULL AND j.jd_sponsorship_fingerprint != ''
+             AND j.resume_jd_fingerprint != j.jd_sponsorship_fingerprint
+             AND EXISTS (SELECT 1 FROM application_executions e WHERE e.job_id = j.id AND e.active = 1)"""
+    ).fetchall()
+    for r in rows:
+        report.issues.append(Issue("warning", "stale_resume_jd_mismatch",
+                                    f"job {r['job_id']} has an active execution but its resume was generated "
+                                    f"against a different JD fingerprint than the job's current one -- regenerate "
+                                    f"before uploading"))
+
+
+def _check_captcha_blocked_session_marked_automated(conn, report: DoctorReport) -> None:
+    """A session currently paused on a CAPTCHA must never belong to an
+    execution whose mode is AUTO_PERMITTED -- CAPTCHA presence always means
+    ASSIST/manual handoff, never unattended automation."""
+    rows = conn.execute(
+        """SELECT s.session_id, s.job_id, e.execution_id, e.mode
+           FROM browser_assist_sessions s
+           JOIN application_executions e ON e.execution_id = s.execution_id
+           WHERE s.status = 'PAUSED_CAPTCHA' AND e.mode = 'AUTO_PERMITTED'"""
+    ).fetchall()
+    for r in rows:
+        report.issues.append(Issue("serious", "captcha_blocked_session_marked_automated",
+                                    f"session {r['session_id']} (job {r['job_id']}) is PAUSED_CAPTCHA but its "
+                                    f"linked execution {r['execution_id']} mode is AUTO_PERMITTED"))
+
+
+def _check_checkpoint_inconsistency(conn, report: DoctorReport) -> None:
+    """CLAUDE.md Phase 13 sections 37-38, 62: flags a session whose recorded
+    checkpoint history regressed to an earlier reversible stage with no
+    reconstruction recorded in between (app.applications.checkpoints.
+    find_ordering_anomalies) -- advisory, never blocking."""
+    from app.applications.checkpoints import find_ordering_anomalies
+
+    session_ids = [r["session_id"] for r in conn.execute(
+        "SELECT DISTINCT session_id FROM application_checkpoints"
+    ).fetchall()]
+    for session_id in session_ids:
+        for anomaly in find_ordering_anomalies(session_id):
+            report.issues.append(Issue("warning", "checkpoint_inconsistency",
+                                        f"session {session_id}: {anomaly.reason}"))
+
+
+def _check_unsafe_retry_state(conn, report: DoctorReport) -> None:
+    """CLAUDE.md Phase 13 section 34-35: an execution must never accumulate
+    retry attempts on a status this project treats as DO_NOT_RETRY/PERMANENT
+    -- PERMANENT_SUBMISSION_FAILURE and DUPLICATE_APPLICATION_BLOCKED are
+    terminal-and-final; a subsequent 'submit_attempted' audit event for the
+    SAME execution_id after either would mean a blind retry slipped past the
+    intended one-attempt-per-row design (CLAUDE.md Phase 8 section 37)."""
+    rows = conn.execute(
+        """SELECT e.execution_id, e.job_id, e.status, COUNT(a.id) AS retry_events
+           FROM application_executions e
+           JOIN application_audit_log a ON a.execution_id = e.execution_id
+           WHERE e.status IN ('PERMANENT_SUBMISSION_FAILURE', 'DUPLICATE_APPLICATION_BLOCKED')
+             AND a.event_type = 'submit_attempted'
+           GROUP BY e.execution_id, e.job_id, e.status
+           HAVING COUNT(a.id) > 1"""
+    ).fetchall()
+    for r in rows:
+        report.issues.append(Issue("serious", "unsafe_retry_state",
+                                    f"execution {r['execution_id']} (job {r['job_id']}) is {r['status']} but "
+                                    f"recorded {r['retry_events']} submit_attempted events -- a terminal/permanent "
+                                    f"status must never be blindly retried"))
+
+
+def _check_identity_mismatch_but_session_active(conn, report: DoctorReport) -> None:
+    """CLAUDE.md Phase 13 acceptance correction: a job_identity_verifications
+    row recording anything OTHER than VERIFIED (MISMATCH, or the weaker
+    PROBABLE/AMBIGUOUS/INSUFFICIENT that also must not continue unattended)
+    must never coexist with a still-active (non-terminal) browser session
+    for the same job that isn't itself paused for review -- the check must
+    have stopped the flow, regardless of which non-VERIFIED verdict it was."""
+    rows = conn.execute(
+        """SELECT DISTINCT v.job_id, s.session_id, s.status, v.result
+           FROM job_identity_verifications v
+           JOIN browser_assist_sessions s ON s.job_id = v.job_id AND s.active = 1
+           WHERE v.result != 'VERIFIED' AND s.status NOT LIKE 'PAUSED_%'
+             AND s.status NOT IN ('CLOSED', 'EXPIRED', 'CONFIRMED')"""
+    ).fetchall()
+    for r in rows:
+        report.issues.append(Issue("serious", "identity_mismatch_but_session_active",
+                                    f"job {r['job_id']}: a {r['result']} identity verification was recorded but "
+                                    f"session {r['session_id']} is {r['status']}, not paused for review"))
+
+
+def _check_job_identity_unverified_not_surfaced(conn, report: DoctorReport) -> None:
+    """CLAUDE.md Phase 13 acceptance correction: mirrors
+    _check_job_identity_mismatch_unresolved for the new
+    PAUSED_JOB_IDENTITY_UNVERIFIED status -- a session paused because
+    identity could not be confidently verified must always be surfaced with
+    needs_user_action set, never silently left unattended-looking."""
+    rows = conn.execute(
+        "SELECT session_id, job_id FROM browser_assist_sessions "
+        "WHERE status = 'PAUSED_JOB_IDENTITY_UNVERIFIED' AND needs_user_action = 0"
+    ).fetchall()
+    for r in rows:
+        report.issues.append(Issue("serious", "job_identity_unverified_not_surfaced",
+                                    f"session {r['session_id']} (job {r['job_id']}) is "
+                                    f"PAUSED_JOB_IDENTITY_UNVERIFIED but needs_user_action=0 -- the pause was not "
+                                    f"actually surfaced for review"))
+
+
+def _check_applied_with_weak_confirmation(conn, report: DoctorReport) -> None:
+    """CLAUDE.md Phase 13 sections 49-51: a CONFIRMED browser-assist session
+    must carry STRONG or MODERATE confirmation evidence, never WEAK/NONE/
+    unset -- mirrors _check_applied_without_confirmation's stricter,
+    evidence-STRENGTH-aware successor for the browser-assist path."""
+    rows = conn.execute(
+        """SELECT session_id, job_id, confirmation_evidence_strength FROM browser_assist_sessions
+           WHERE status = 'CONFIRMED'
+             AND (confirmation_evidence_strength IS NULL OR confirmation_evidence_strength IN ('', 'WEAK', 'NONE'))"""
+    ).fetchall()
+    for r in rows:
+        report.issues.append(Issue("serious", "applied_with_weak_confirmation",
+                                    f"session {r['session_id']} (job {r['job_id']}) is CONFIRMED with confirmation "
+                                    f"evidence strength '{r['confirmation_evidence_strength'] or 'unset'}' -- only "
+                                    f"STRONG/MODERATE evidence may confirm"))

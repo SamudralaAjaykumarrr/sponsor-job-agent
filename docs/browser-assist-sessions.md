@@ -136,3 +136,22 @@ bug this phase's own E2E suite caught (see `docs/phase10-real-ats-assist.md`).
   a delayed apply control, an SPA that never renders (bounded timeout), a Workday-like progress
   wizard, ambiguous vs. non-ambiguous multiple apply controls, same-origin iframe form discovery,
   open vs. closed shadow-DOM form discovery, and job-identity mismatch detection.
+
+## Phase 13 additions
+
+- **New columns**: `confirmation_evidence_strength` (`app.applications.confirmation_evidence.
+  ConfirmationEvidenceStrength`).
+- **`start_session()`/`resume_session()`** now pass the job's own `id`/`title`/`company` through
+  to `browser_runtime.open_session()`, enabling the formal multi-signal job-identity recheck
+  before an upload/final-submit (`docs/application-job-identity.md`) -- omitted params mean this
+  recheck reports `INSUFFICIENT` rather than blocking, never a hard requirement change for any
+  existing call site.
+- **`_verify_resume()`** now also calls `app.applications.resume_integrity.
+  verify_resume_freshness()` -- a job whose resume was generated against a JD fingerprint that has
+  since diverged from the job's current one refuses to start a session at all, before ever opening
+  a browser.
+- **An append-only checkpoint log** (`app.applications.checkpoints`) is now recorded after every
+  discovery pass -- see `docs/application-checkpoints.md`.
+- **New tests**: `tests/test_browser_assist_phase13_e2e.py` (marked `browser`) -- provider health
+  after success/CAPTCHA, checkpoint recording, job-identity mismatch/match from a JSON-LD fixture,
+  and confirmation-evidence strength grading.

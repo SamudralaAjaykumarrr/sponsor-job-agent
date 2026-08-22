@@ -32,6 +32,10 @@ EVENT_WORKDAY_VARIABLE_OBSERVATION = "workday_variable_observation"
 EVENT_CAPABILITY_LIVE_REVALIDATION = "capability_live_revalidation"
 EVENT_STAGE_TRANSITION_INVALID = "stage_transition_invalid"
 EVENT_JOB_IDENTITY_MISMATCH = "job_identity_mismatch"
+# CLAUDE.md Phase 13 acceptance correction: a PROBABLE/AMBIGUOUS/INSUFFICIENT
+# JobIdentityVerdict at the pre-upload/pre-final-submit gate -- distinct from
+# a confirmed EVENT_JOB_IDENTITY_MISMATCH above.
+EVENT_JOB_IDENTITY_UNVERIFIED = "job_identity_unverified"
 
 
 def utcnow() -> str:

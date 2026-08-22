@@ -172,6 +172,13 @@ class Job(BaseModel):
     sponsorship_conflict: bool = False
     sponsorship_blocking_reason: str = ""
 
+    # CLAUDE.md Phase 13 sections 43-45: which JD fingerprint the currently
+    # generated resume artifact was built against -- reuses the existing
+    # jd_sponsorship_fingerprint value rather than a second, parallel
+    # fingerprinting scheme. Empty until a resume has actually been
+    # generated for this job.
+    resume_jd_fingerprint: str = ""
+
     technical_match_score: float = 0.0
     matched_skills: str = ""   # comma-separated
     gap_skills: str = ""       # comma-separated

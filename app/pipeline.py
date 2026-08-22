@@ -262,6 +262,11 @@ def generate_assist_outputs(job_id: int) -> Job:
         application_answers_path=str(answers_path),
         cover_letter_path=str(cover_letter_path) if cover_letter_path else None,
         notes=notes,
+        # CLAUDE.md Phase 13 sections 43-45: records which JD fingerprint this
+        # resume artifact was generated against, so a later pre-upload check
+        # can detect a JD that materially changed since (app.applications.
+        # resume_integrity.verify_resume_freshness) without re-diffing text.
+        resume_jd_fingerprint=job.jd_sponsorship_fingerprint,
     )
     return get_job(job_id)
 

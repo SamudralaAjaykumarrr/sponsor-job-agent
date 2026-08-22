@@ -259,6 +259,36 @@ def _cmd_browser_list(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_provider_health(_: argparse.Namespace) -> int:
+    from app.applications import provider_health
+
+    print(provider_health.render_health_report())
+    return 0
+
+
+def _cmd_canary(args: argparse.Namespace) -> int:
+    from app.applications import canary
+
+    try:
+        result = canary.run_and_record_canary(args.url, provider=args.provider or "")
+    except canary.CanaryUnavailable as exc:
+        print(f"canary unavailable: {exc}")
+        return 1
+    for k, v in result.items():
+        print(f"  {k}: {v}")
+    return 0 if result.get("ok") else 1
+
+
+def _cmd_job_identity(args: argparse.Namespace) -> int:
+    from app.applications import job_identity
+
+    for row in job_identity.list_verifications(job_id=args.job_id, limit=args.limit):
+        print(f"  job={row['job_id']} stage={row['stage']} result={row['result']} "
+              f"matched={row['signals_matched']} mismatched={row['signals_mismatched']} "
+              f"verified_at={row['verified_at']}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m app.applications.cli")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -364,6 +394,22 @@ def build_parser() -> argparse.ArgumentParser:
     p_evidence = sub.add_parser("capability-evidence", help="print dated capability evidence, flagging stale rows")
     p_evidence.add_argument("--provider", default="")
     p_evidence.set_defaults(func=_cmd_capability_evidence)
+
+    p_provider_health = sub.add_parser("provider-health",
+                                        help="print application/browser-assist provider health per (provider, "
+                                             "tenant, site)")
+    p_provider_health.set_defaults(func=_cmd_provider_health)
+
+    p_canary = sub.add_parser("canary", help="run one safe, read-only application-flow canary against a public URL "
+                                              "(never fills PII, never uploads, never submits)")
+    p_canary.add_argument("url")
+    p_canary.add_argument("--provider", default="")
+    p_canary.set_defaults(func=_cmd_canary)
+
+    p_job_identity = sub.add_parser("job-identity", help="print job-identity verification evidence")
+    p_job_identity.add_argument("--job-id", type=int, default=None, dest="job_id")
+    p_job_identity.add_argument("--limit", type=int, default=50)
+    p_job_identity.set_defaults(func=_cmd_job_identity)
 
     return parser
 

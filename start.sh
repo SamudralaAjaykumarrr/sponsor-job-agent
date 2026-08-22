@@ -31,6 +31,8 @@ if [ "${BROWSER_HEADLESS:-${BROWSER_ASSIST_HEADLESS:-false}}" = "true" ]; then
   BROWSER_MODE_DISPLAY="HEADLESS"
 fi
 AUTO_SUBMIT_DISPLAY="${AUTO_SUBMIT_ENABLED:-false}"
+ATS_CANARY_DISPLAY="${REAL_ATS_CANARY_ENABLED:-false}"
+JOB_IDENTITY_GATE_DISPLAY="${APPLICATION_IDENTITY_REQUIRED:-true}"
 
 echo "============================================================"
 echo " Sponsor Job Agent"
@@ -42,6 +44,8 @@ echo "   Auto prepare:       ${AUTO_PREPARE_DISPLAY}"
 echo "   Browser assist:     ${BROWSER_ASSIST_DISPLAY}"
 echo "   Browser mode:       ${BROWSER_MODE_DISPLAY}"
 echo "   Auto submit:        ${AUTO_SUBMIT_DISPLAY}"
+echo "   ATS canary:         ${ATS_CANARY_DISPLAY}"
+echo "   Job identity gate:  ${JOB_IDENTITY_GATE_DISPLAY}"
 echo "   Worker mode:         run distributed workers separately via"
 echo "                        'python -m app.workers.cli run' (see docs/fleet-operations.md)"
 echo "   Dashboard URL:       http://127.0.0.1:8000"

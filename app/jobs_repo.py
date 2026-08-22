@@ -20,7 +20,7 @@ _COLUMNS = [
     "technical_match_score", "matched_skills", "gap_skills", "score_breakdown",
     "priority_tier", "priority_score",
     "application_state", "mode",
-    "resume_docx_path", "resume_pdf_path", "resume_txt_path",
+    "resume_docx_path", "resume_pdf_path", "resume_txt_path", "resume_jd_fingerprint",
     "job_analysis_path", "application_answers_path", "cover_letter_path",
     "notes", "correlation_id", "created_at", "updated_at",
 ]

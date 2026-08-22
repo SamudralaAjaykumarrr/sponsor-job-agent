@@ -205,6 +205,7 @@ import hashlib
 import os
 
 from app.applications import browser_runtime
+from app.applications import checkpoints
 from app.applications import repo as _executions_repo
 from app.applications import spa_events
 from app.applications.apply_entry import EntryDetectionResult, EntryStage, StepConfidence, is_valid_stage_transition
@@ -219,6 +220,7 @@ from app.applications.browser_session import (
 )
 from app.applications import browser_session
 from app.applications.eligibility import evaluate_executor_eligibility
+from app.applications import resume_integrity
 from app.applications.models import ExecutionStatus
 from app.applications.schema import build_application_fields, find_field
 from app.candidate.profile import load_profile
@@ -269,6 +271,9 @@ def _verify_resume(job: Job) -> tuple[bool, str, str]:
         return False, f"resume artifact missing on disk: {path}", ""
     if path.parent.name != str(job.id):
         return False, f"resume artifact path '{path}' does not correspond to this job", ""
+    freshness = resume_integrity.verify_resume_freshness(job)
+    if not freshness.fresh:
+        return False, f"resume is stale: {freshness.reason}", ""
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
     return True, "", digest
 
@@ -364,9 +369,53 @@ def _resolve_step_fields(outcome: "browser_runtime.DiscoveryOutcome", session: d
     return fields
 
 
+def _record_checkpoint_for_session(session: dict) -> None:
+    """CLAUDE.md Phase 13 sections 37-39: best-effort checkpoint logging
+    derived from the resulting session row -- never blocks, never itself
+    performs recovery (see app.applications.checkpoints module docstring).
+    Approximate by design: this is an audit trail of meaningful reversible
+    stages reached, not a strict one-checkpoint-per-status-transition
+    machine."""
+    status = session.get("status", "")
+    kwargs = {"job_id": session.get("job_id"), "execution_id": session.get("execution_id", "")}
+    if status.startswith("PAUSED_") or status in (
+        "AWAITING_USER_SUBMIT", "SUBMISSION_STATUS_UNKNOWN", "DUPLICATE_APPLICATION_DETECTED",
+    ):
+        checkpoints.record_checkpoint(session["session_id"], checkpoints.CheckpointStage.USER_ACTION_REQUIRED,
+                                       detail=status, **kwargs)
+        return
+    if status == BrowserSessionStatus.READY_FOR_FINAL_SUBMIT.value:
+        checkpoints.record_checkpoint(session["session_id"], checkpoints.CheckpointStage.READY_FOR_FINAL_SUBMIT,
+                                       **kwargs)
+        return
+    mapped = session.get("mapped_field_count") or 0
+    unresolved = session.get("unresolved_field_count") or 0
+    if mapped or unresolved:
+        checkpoints.record_checkpoint(session["session_id"], checkpoints.CheckpointStage.FORM_DISCOVERED, **kwargs)
+        if mapped and not unresolved:
+            checkpoints.record_checkpoint(session["session_id"], checkpoints.CheckpointStage.FIELDS_PREPARED,
+                                           **kwargs)
+        return
+    if session.get("apply_entry_clicked") or session.get("stage") in (
+        EntryStage.LANDING_PAGE.value, EntryStage.APPLICATION_ENTRY.value,
+    ):
+        checkpoints.record_checkpoint(session["session_id"], checkpoints.CheckpointStage.ENTRY_REACHED, **kwargs)
+
+
 def _apply_discovery_outcome(session: dict, outcome: "browser_runtime.DiscoveryOutcome",
                               application_fields: list[ApplicationField], *, check_drift: bool = True,
                               after_reconstruction: bool = False) -> dict:
+    updated = _apply_discovery_outcome_raw(
+        session, outcome, application_fields, check_drift=check_drift, after_reconstruction=after_reconstruction,
+    )
+    if updated:
+        _record_checkpoint_for_session(updated)
+    return updated
+
+
+def _apply_discovery_outcome_raw(session: dict, outcome: "browser_runtime.DiscoveryOutcome",
+                                  application_fields: list[ApplicationField], *, check_drift: bool = True,
+                                  after_reconstruction: bool = False) -> dict:
     """The single place that turns one real-browser discovery pass into a
     session status update -- used by start/resume/mark-user-action-complete/
     advance-step so all four go through identical, never-diverging logic.
@@ -548,7 +597,11 @@ def start_session(execution_id: str) -> dict:
                 "reason": "session created but is already owned by another worker/process"}
     try:
         try:
-            outcome = browser_runtime.open_session(session_id, provider=job.provider or "", url=application_url)
+            outcome = browser_runtime.open_session(
+                session_id, provider=job.provider or "", url=application_url, job_id=job.id,
+                expected_title=job.title or "", expected_company=job.company or "",
+                expected_location=job.location or "",
+            )
         except (browser_runtime.BrowserRuntimeUnavailable, browser_runtime.BrowserRuntimeBusy) as exc:
             updated = browser_session.update_session(
                 session_id, status=BrowserSessionStatus.CLOSED.value, user_action_reason=str(exc),
@@ -611,7 +664,9 @@ def resume_session(session_id: str) -> dict:
 
         try:
             outcome = browser_runtime.open_session(
-                session_id, provider=session["provider"], url=session["application_url"],
+                session_id, provider=session["provider"], url=session["application_url"], job_id=job.id,
+                expected_title=job.title or "", expected_company=job.company or "",
+                expected_location=job.location or "",
             )
         except (browser_runtime.BrowserRuntimeUnavailable, browser_runtime.BrowserRuntimeBusy) as exc:
             return {"ok": False, "detail": str(exc), "session": session}
@@ -673,6 +728,10 @@ def advance_step(session_id: str) -> dict:
         job = get_job(session["job_id"])
         application_fields = _build_fields_for_job(job) if job else []
         session = browser_session.update_session(session_id, current_step=result["current_step"])
+        checkpoints.record_checkpoint(
+            session_id, checkpoints.CheckpointStage.STEP_COMPLETED, job_id=session.get("job_id"),
+            execution_id=session.get("execution_id", ""), detail=f"step {result['current_step']}",
+        )
         outcome = browser_runtime.rediscover(session_id)
         updated = _apply_discovery_outcome(session, outcome, application_fields, check_drift=False)
         return {"ok": True, "detail": "advanced to the next step", "session": updated}
@@ -772,6 +831,7 @@ def attempt_user_submit_reconciliation(session_id: str) -> dict:
             session_id, status=BrowserSessionStatus.CONFIRMED.value, confirmation_observed=1,
             confirmation_id=outcome.confirmation_id, confirmation_url=outcome.current_url,
             confirmation_text_fingerprint=outcome.confirmation_text_fingerprint, needs_user_action=0,
+            confirmation_evidence_strength=outcome.evidence_strength,
         )
         browser_runtime.close_session(session_id)
         return {"ok": True, "detail": "confirmed", "session": updated}

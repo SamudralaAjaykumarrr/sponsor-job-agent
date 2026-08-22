@@ -96,6 +96,10 @@ async def lifespan(_: FastAPI):
     print(f"Browser assist:       {'ON' if config.BROWSER_ASSIST_ENABLED else 'OFF'}")
     print(f"Browser mode:         {'HEADLESS' if config.BROWSER_HEADLESS else 'VISIBLE'}")
     print(f"Auto submit:          {'ON' if config.AUTO_SUBMIT_ENABLED else 'OFF'}")
+    # CLAUDE.md Phase 13 section 83: same "never silently enable" principle
+    # extended to the canary and the job-identity gate.
+    print(f"ATS canary:           {'ON' if config.REAL_ATS_CANARY_ENABLED else 'OFF'}")
+    print(f"Job identity gate:    {'ON' if config.APPLICATION_IDENTITY_REQUIRED else 'OFF'}")
     scheduler.start()
     applications_background_scheduler.start()
     yield
@@ -819,6 +823,7 @@ def api_browser_assist_metrics():
     metrics = applications_metrics.collect_browser_assist()
     metrics.update(applications_metrics.collect_phase11())
     metrics.update(applications_metrics.collect_phase12())
+    metrics.update(applications_metrics.collect_phase13())
     return JSONResponse(metrics)
 
 
@@ -856,6 +861,36 @@ def capability_evidence_page(request: Request):
         request, "capability_evidence.html",
         {"rows": rows, "max_age_days": config.CAPABILITY_EVIDENCE_MAX_AGE_DAYS},
     )
+
+
+@app.get("/applications/provider-health", response_class=HTMLResponse)
+def provider_health_page(request: Request):
+    """CLAUDE.md Phase 13 sections 11-12, 57: real-browser ASSIST flow health
+    per (provider, tenant, site) -- read-only, never per-provider collapsed."""
+    from app.applications import provider_health
+
+    return templates.TemplateResponse(request, "provider_health.html", {"rows": provider_health.list_health()})
+
+
+@app.get("/api/applications/provider-health")
+def api_provider_health():
+    from app.applications import provider_health
+
+    return JSONResponse(provider_health.list_health())
+
+
+@app.get("/api/applications/job-identity")
+def api_job_identity(job_id: int | None = None):
+    from app.applications import job_identity
+
+    return JSONResponse(job_identity.list_verifications(job_id=job_id))
+
+
+@app.get("/api/applications/canary-runs")
+def api_canary_runs(provider: str = ""):
+    from app.applications import canary
+
+    return JSONResponse(canary.list_canary_runs(provider=provider))
 
 
 @app.get("/jobs/{job_id}/download/{file_key}")

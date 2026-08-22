@@ -256,7 +256,7 @@ def test_resume_not_live_restarts_fresh_browser_when_safe(tmp_env, sample_profil
     monkeypatch.setattr(browser_runtime, "is_live", lambda sid: False)
     reopen_calls = []
 
-    def _reopen(sid, *, provider, url):
+    def _reopen(sid, *, provider, url, **_kwargs):
         reopen_calls.append((sid, provider, url))
         return _simple_form_outcome()
 

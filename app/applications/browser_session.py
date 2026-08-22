@@ -44,6 +44,12 @@ class BrowserSessionStatus(str, Enum):
     PAUSED_IFRAME_UNEXPECTED_HOST = "PAUSED_IFRAME_UNEXPECTED_HOST"
     PAUSED_AMBIGUOUS_APPLY_CONTROL = "PAUSED_AMBIGUOUS_APPLY_CONTROL"
     PAUSED_JOB_IDENTITY_MISMATCH = "PAUSED_JOB_IDENTITY_MISMATCH"
+    # CLAUDE.md Phase 13 acceptance correction: distinct from a CONFIRMED
+    # contradiction (PAUSED_JOB_IDENTITY_MISMATCH above) -- this is "we could
+    # not establish enough confidence to proceed unattended" (a
+    # JobIdentityVerdict of PROBABLE/AMBIGUOUS/INSUFFICIENT at the pre-
+    # upload/pre-final-submit gate). Only a VERIFIED verdict skips this pause.
+    PAUSED_JOB_IDENTITY_UNVERIFIED = "PAUSED_JOB_IDENTITY_UNVERIFIED"
     READY_FOR_FINAL_SUBMIT = "READY_FOR_FINAL_SUBMIT"
     AWAITING_USER_SUBMIT = "AWAITING_USER_SUBMIT"
     SUBMISSION_STATUS_UNKNOWN = "SUBMISSION_STATUS_UNKNOWN"
@@ -73,6 +79,7 @@ PAUSED_STATUSES = frozenset({
     BrowserSessionStatus.PAUSED_PLATFORM_RESTRICTED, BrowserSessionStatus.PAUSED_UNSUPPORTED_SUBMISSION,
     BrowserSessionStatus.PAUSED_APPLY_ENTRY_UNRECOGNIZED, BrowserSessionStatus.PAUSED_IFRAME_UNEXPECTED_HOST,
     BrowserSessionStatus.PAUSED_AMBIGUOUS_APPLY_CONTROL, BrowserSessionStatus.PAUSED_JOB_IDENTITY_MISMATCH,
+    BrowserSessionStatus.PAUSED_JOB_IDENTITY_UNVERIFIED,
 })
 
 
@@ -91,6 +98,10 @@ class BrowserPauseReason(str, Enum):
     IFRAME_UNEXPECTED_HOST = "IFRAME_UNEXPECTED_HOST"
     AMBIGUOUS_APPLY_CONTROL = "AMBIGUOUS_APPLY_CONTROL"
     JOB_IDENTITY_MISMATCH = "JOB_IDENTITY_MISMATCH"
+    # CLAUDE.md Phase 13 acceptance correction (sections 4, 9-10): a
+    # PROBABLE/AMBIGUOUS/INSUFFICIENT JobIdentityVerdict at the pre-upload/
+    # pre-final-submit gate -- distinct from a confirmed JOB_IDENTITY_MISMATCH.
+    JOB_IDENTITY_UNVERIFIED = "JOB_IDENTITY_UNVERIFIED"
 
 
 # Maps a pause reason to the session status it produces -- kept as one
@@ -108,6 +119,7 @@ REASON_TO_STATUS: dict[BrowserPauseReason, BrowserSessionStatus] = {
     BrowserPauseReason.IFRAME_UNEXPECTED_HOST: BrowserSessionStatus.PAUSED_IFRAME_UNEXPECTED_HOST,
     BrowserPauseReason.AMBIGUOUS_APPLY_CONTROL: BrowserSessionStatus.PAUSED_AMBIGUOUS_APPLY_CONTROL,
     BrowserPauseReason.JOB_IDENTITY_MISMATCH: BrowserSessionStatus.PAUSED_JOB_IDENTITY_MISMATCH,
+    BrowserPauseReason.JOB_IDENTITY_UNVERIFIED: BrowserSessionStatus.PAUSED_JOB_IDENTITY_UNVERIFIED,
 }
 
 

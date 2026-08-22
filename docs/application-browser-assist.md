@@ -115,3 +115,16 @@ or an open shadow root; and verifies the page still corresponds to the intended 
 a real form. None of this changes the safety boundaries above -- see
 `docs/spa-application-navigation.md` and `docs/trusted-ats-redirects.md` for the full mechanism,
 and `docs/phase12-spa-ats-hardening.md` for real, live-caught bugs this hardening surfaced.
+
+## Phase 13: identity gate, provider health, checkpoints, confirmation strength
+
+Before a resume-upload field is filled, or before `READY_FOR_FINAL_SUBMIT`, the session now runs
+a formal, multi-signal job-identity recheck (`docs/application-job-identity.md`) -- only a
+confirmed `MISMATCH` stops the flow, matching this module's existing conservative philosophy.
+Every discovery pass also records real-browser-flow health per provider
+(`docs/provider-assist-health.md`) and an append-only checkpoint of meaningful reversible stages
+reached (`docs/application-checkpoints.md`). Confirmation capture now grades the STRENGTH of its
+evidence (`docs/confirmation-evidence.md`) -- functionally unchanged (a phrase match still
+confirms), now explicitly recorded. `_verify_resume` also rejects a stale resume before ever
+opening the browser when the job's JD has materially changed since the resume was generated
+(`app.applications.resume_integrity`). None of this changes the safety boundaries above.

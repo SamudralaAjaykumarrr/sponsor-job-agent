@@ -692,3 +692,45 @@ state) is still undetermined; job-identity verification is limited to a confiden
 requisition/posting-id token and reports `UNVERIFIABLE` (not a guess) when no such token exists on
 either URL; cross-process browser reattachment remains unimplemented and unclaimed (unchanged from
 Phase 10/11).
+
+## Phase 13: Provider Resilience and Real-World ATS Reliability
+
+- Formal, multi-signal job-identity gate (`verify_job_identity_full()`), checked immediately
+  before a resume upload and immediately before `READY_FOR_FINAL_SUBMIT`. Only `VERIFIED` may
+  continue unattended by default; `PROBABLE`/`AMBIGUOUS`/`INSUFFICIENT` all pause
+  `PAUSED_JOB_IDENTITY_UNVERIFIED`, and a confirmed `MISMATCH` always pauses
+  `PAUSED_JOB_IDENTITY_MISMATCH` unconditionally. Live-verified end-to-end against a real Chromium
+  session for all five `JobIdentityVerdict` values: a matching JSON-LD `JobPosting` (VERIFIED,
+  continues to `READY_FOR_FINAL_SUBMIT`), a differing company (MISMATCH, pauses), exactly one
+  matching signal (PROBABLE, pauses), only the weak `location` signal matching (AMBIGUOUS, pauses),
+  and no comparable signal at all (INSUFFICIENT, pauses).
+- Real-browser assist provider health, separate from discovery/submission circuit breakers,
+  live-verified: a successful discovery marks a provider `HEALTHY`; a genuine CAPTCHA/login
+  observation marks it `CAPTCHA_BLOCKED`/`AUTH_GATED`.
+- Session checkpoint log recorded through a normal multi-step flow and through a paused flow,
+  live-verified.
+- Confirmation-evidence strength graded `STRONG` when a trusted phrase and a confirmation id are
+  both observed, live-verified via a real manual-submit-reconciliation flow.
+- Safe, read-only canary validated against the local fixture sandbox (form/CAPTCHA/login/upload
+  detection, one bounded apply-entry hop) AND against 6 real public postings (bounded, no
+  submission, no PII, no upload) -- see `docs/phase13-provider-resilience.md`.
+
+### A real bug this phase's own live validation caught
+
+A bare whole-page-text `"captcha"` substring check was matching a defensively-loaded reCAPTCHA v3
+script tag on Greenhouse/Lever/Ashby/Workable's CURRENT real pages, pausing every ordinary visit
+as `CAPTCHA_PRESENT` even when no challenge was ever shown. Fixed by narrowing to DOM-element-
+based checks alone; re-verified against both the existing real E2E CAPTCHA fixture (still
+triggers) and a second live run (Greenhouse/Workable now correctly reach their real forms; Lever's
+genuinely visible hCaptcha widget still correctly pauses). See `docs/ats-canary-validation.md`.
+
+### Known Phase 13 limitations
+
+Distinguishing an invisible reCAPTCHA v3 telemetry element from a genuinely blocking challenge
+reliably (Ashby's ambiguous case) would need deeper visibility/size heuristics than a simple
+DOM-element check offers -- currently still conservatively pauses, which is the correct fail-safe
+direction but acknowledged as possibly over-cautious. No provider-specific POST-submission
+confirmation pattern was added (no real provider's genuine confirmation text has actually been
+observed yet, since this project never clicks the final-submit control that would reach one).
+`FILE_READY` is not currently recorded as a checkpoint distinct from `FIELDS_PREPARED`. See
+`docs/phase13-provider-resilience.md`'s "Honest limitations" for the full list.

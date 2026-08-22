@@ -15,8 +15,49 @@ def _write(tmp_path: Path, name: str, html: str) -> str:
     return path.as_uri()
 
 
+# CLAUDE.md Phase 13 acceptance correction (sections 4, 9-10): every
+# `tests/test_browser_assist_*_e2e.py` file's `_prepared()` fixture opens its
+# job with this exact title/company -- these are the "genuine" identity
+# signals for a fixture-driven session. Real FORM pages below embed this as
+# a schema.org JobPosting JSON-LD block (the same standard mechanism
+# app.applications.browser_runtime._extract_observed_job_meta reads) so a
+# fixture whose entire point is testing something ELSE (multi-step, iframe,
+# shadow-DOM, legal questions, duplicate detection, ...) reaches a VERIFIED
+# identity and is not incidentally blocked by the job-identity gate. Tests
+# that ARE about the identity gate (see tests/test_browser_assist_phase13_e2e.py)
+# use `jsonld_job_posting_page()` directly with an explicit, possibly
+# DIFFERENT company/title instead of this default.
+DEFAULT_JOB_TITLE = "Backend Software Engineer"
+DEFAULT_JOB_COMPANY = "Acme Corp"
+
+
+def _jsonld_block(title: str = DEFAULT_JOB_TITLE, company: str = DEFAULT_JOB_COMPANY) -> str:
+    return textwrap.dedent(f"""
+        <script type="application/ld+json">
+        {{"@context": "https://schema.org/", "@type": "JobPosting", "title": "{title}",
+          "hiringOrganization": {{"@type": "Organization", "name": "{company}"}}}}
+        </script>
+    """)
+
+
 def simple_form_page(tmp_path: Path) -> str:
-    return _write(tmp_path, "simple.html", textwrap.dedent("""
+    return _write(tmp_path, "simple.html", _jsonld_block() + textwrap.dedent("""
+        <form>
+          <label for="fname">Full Name</label><input id="fname" name="full_name" type="text" required>
+          <label for="mail">Email</label><input id="mail" name="email" type="text" required>
+          <button type="submit">Submit Application</button>
+        </form>
+    """))
+
+
+def simple_form_page_no_identity(tmp_path: Path) -> str:
+    """Same shape as simple_form_page but deliberately carries NO JSON-LD
+    (or any other identity signal) -- used to test the genuinely
+    INSUFFICIENT verdict path (CLAUDE.md Phase 13 acceptance correction),
+    distinct from every other fixture in this module, which embeds the
+    default JobPosting block so tests about OTHER mechanisms aren't
+    incidentally blocked by the identity gate."""
+    return _write(tmp_path, "simple_no_identity.html", textwrap.dedent("""
         <form>
           <label for="fname">Full Name</label><input id="fname" name="full_name" type="text" required>
           <label for="mail">Email</label><input id="mail" name="email" type="text" required>
@@ -46,7 +87,7 @@ def captcha_page(tmp_path: Path) -> str:
 
 
 def legal_question_page(tmp_path: Path) -> str:
-    return _write(tmp_path, "legal.html", textwrap.dedent("""
+    return _write(tmp_path, "legal.html", _jsonld_block() + textwrap.dedent("""
         <form>
           <label for="fname">Full Name</label><input id="fname" name="full_name" type="text" required>
           <label for="felony">Have you ever been convicted of a felony?</label>
@@ -57,7 +98,7 @@ def legal_question_page(tmp_path: Path) -> str:
 
 
 def unknown_field_page(tmp_path: Path) -> str:
-    return _write(tmp_path, "unknown_field.html", textwrap.dedent("""
+    return _write(tmp_path, "unknown_field.html", _jsonld_block() + textwrap.dedent("""
         <form>
           <label for="fname">Full Name</label><input id="fname" name="full_name" type="text" required>
           <label for="referral">How did you originally hear about this very specific referral program?</label>
@@ -70,7 +111,7 @@ def unknown_field_page(tmp_path: Path) -> str:
 def conditional_sponsorship_page(tmp_path: Path) -> str:
     """A visa-type text field that only becomes required/visible once "Yes"
     is chosen -- CLAUDE.md Phase 10 section 11."""
-    return _write(tmp_path, "conditional.html", textwrap.dedent("""
+    return _write(tmp_path, "conditional.html", _jsonld_block() + textwrap.dedent("""
         <form>
           <label for="fname">Full Name</label><input id="fname" name="full_name" type="text" required>
           <fieldset>
@@ -98,7 +139,7 @@ def multi_step_pages(tmp_path: Path) -> tuple[str, str]:
     """Two real, separately-loaded pages linked by a "Next" control -- closer
     to how real multi-page ATS forms (e.g. Workday) behave than a single
     page with JS show/hide panels."""
-    page2 = _write(tmp_path, "step2.html", textwrap.dedent("""
+    page2 = _write(tmp_path, "step2.html", _jsonld_block() + textwrap.dedent("""
         <form>
           <label for="school">School</label><input id="school" name="education_school" type="text">
           <label for="degree">Degree</label><input id="degree" name="education_degree" type="text">
@@ -131,7 +172,7 @@ def duplicate_page(tmp_path: Path) -> str:
 
 
 def form_with_file_upload_page(tmp_path: Path) -> str:
-    return _write(tmp_path, "upload.html", textwrap.dedent("""
+    return _write(tmp_path, "upload.html", _jsonld_block() + textwrap.dedent("""
         <form>
           <label for="fname">Full Name</label><input id="fname" name="full_name" type="text" required>
           <label for="resume">Resume/CV</label><input id="resume" name="resume" type="file" required>
@@ -152,7 +193,7 @@ def landing_page_with_apply_click(tmp_path: Path) -> tuple[str, str]:
     an 'Apply Now' link to the real form -- the exact SmartRecruiters shape
     Phase 10 observed live but could not follow (docs/real-ats-validation.md).
     Returns (landing_url, form_url)."""
-    form_url = _write(tmp_path, "sr_form.html", textwrap.dedent("""
+    form_url = _write(tmp_path, "sr_form.html", _jsonld_block() + textwrap.dedent("""
         <form>
           <label for="fname">Full Name</label><input id="fname" name="full_name" type="text" required>
           <label for="mail">Email</label><input id="mail" name="email" type="text" required>
@@ -206,7 +247,7 @@ def workday_like_login_gate_page(tmp_path: Path) -> tuple[str, str]:
 def step_progress_form_page(tmp_path: Path) -> str:
     """A multi-step form page that genuinely displays 'Step 2 of 4' --
     CLAUDE.md Phase 11 sections 18-19."""
-    return _write(tmp_path, "step_progress.html", textwrap.dedent("""
+    return _write(tmp_path, "step_progress.html", _jsonld_block() + textwrap.dedent("""
         <div class="progress-indicator">Step 2 of 4</div>
         <form>
           <label for="school">School</label><input id="school" name="education_school" type="text">
@@ -218,7 +259,7 @@ def step_progress_form_page(tmp_path: Path) -> str:
 
 def review_page(tmp_path: Path) -> str:
     """A final review/summary page -- CLAUDE.md Phase 11 section 33."""
-    return _write(tmp_path, "review.html", textwrap.dedent("""
+    return _write(tmp_path, "review.html", _jsonld_block() + textwrap.dedent("""
         <div>
           <h1>Review Your Application</h1>
           <p>Please review your answers before submitting.</p>
@@ -233,7 +274,7 @@ def conditional_new_field_page(tmp_path: Path) -> str:
     DOM at all until JS actually INSERTS it (as opposed to
     conditional_sponsorship_page's already-present-but-hidden node) --
     CLAUDE.md Phase 11 section 22's rediscovery requirement."""
-    return _write(tmp_path, "conditional_new.html", textwrap.dedent("""
+    return _write(tmp_path, "conditional_new.html", _jsonld_block() + textwrap.dedent("""
         <form>
           <label for="fname">Full Name</label><input id="fname" name="full_name" type="text" required>
           <fieldset>
@@ -310,7 +351,7 @@ def smartrecruiters_like_spa_page(tmp_path: Path, *, apply_delay_ms: int = 150) 
     discovery, SPA route detection, dynamic form mounting, resume upload,
     multi-step, final-submit boundary -- all in one page, matching CLAUDE.md
     section 58."""
-    return _write(tmp_path, "sr_spa.html", textwrap.dedent(f"""
+    return _write(tmp_path, "sr_spa.html", _jsonld_block() + textwrap.dedent(f"""
         <div id="app">
           <h1>Backend Software Engineer</h1>
           <p>We are hiring. This is the job description landing page.</p>
@@ -366,7 +407,7 @@ def workday_like_progress_wizard_page(tmp_path: Path) -> tuple[str, str]:
     hydration landing page, an Apply control, and a genuine 'Step 2 of 3'
     progress wizard on the form page it leads to. Returns (landing_url,
     form_url)."""
-    form_url = _write(tmp_path, "wd_wizard_form.html", textwrap.dedent("""
+    form_url = _write(tmp_path, "wd_wizard_form.html", _jsonld_block() + textwrap.dedent("""
         <div class="progress-indicator" role="progressbar">Step 2 of 3</div>
         <form>
           <label for="school">School</label><input id="school" name="education_school" type="text">
@@ -451,7 +492,7 @@ def iframe_form_page(tmp_path: Path) -> str:
           <button type="submit">Submit Application</button>
         </form>
     """))
-    outer_url = _write(tmp_path, "iframe_outer.html", textwrap.dedent(f"""
+    outer_url = _write(tmp_path, "iframe_outer.html", _jsonld_block() + textwrap.dedent(f"""
         <div>
           <h1>Backend Software Engineer</h1>
           <iframe id="app-frame" src="{inner_url}" style="width:600px;height:400px;"></iframe>
@@ -464,7 +505,7 @@ def no_iframe_form_page(tmp_path: Path) -> str:
     """A plain top-level form (no iframe at all) -- the control case for
     iframe-scan tests, confirming the iframe scan never breaks ordinary
     top-level discovery."""
-    return _write(tmp_path, "no_iframe.html", textwrap.dedent("""
+    return _write(tmp_path, "no_iframe.html", _jsonld_block() + textwrap.dedent("""
         <form>
           <label for="fname">Full Name</label><input id="fname" name="full_name" type="text" required>
           <button type="submit">Submit Application</button>
@@ -478,7 +519,7 @@ def shadow_dom_form_page(tmp_path: Path) -> str:
     widgets) -- must be discovered via the deep-query shadow-piercing scan,
     never bypassing a CLOSED root (not exercised here, since that would
     require attempting a genuine bypass this project never performs)."""
-    return _write(tmp_path, "shadow_form.html", textwrap.dedent("""
+    return _write(tmp_path, "shadow_form.html", _jsonld_block() + textwrap.dedent("""
         <div id="host"></div>
         <script>
           var host = document.getElementById('host');
@@ -508,6 +549,40 @@ def closed_shadow_dom_form_page(tmp_path: Path) -> str:
             '</form>'
           );
         </script>
+    """))
+
+
+def jsonld_job_posting_page(tmp_path: Path, *, title: str = "Backend Software Engineer",
+                             company: str = "Acme Corp", identifier: str = "", location: str = "") -> str:
+    """CLAUDE.md Phase 13 sections 4, 8, 72: a real application FORM page
+    that also carries a schema.org JobPosting JSON-LD block -- the same
+    standard mechanism search engines use, and the source
+    app.applications.browser_runtime._extract_observed_job_meta reads for
+    the formal multi-signal job-identity check. `identifier` lets a test
+    supply a requisition-id-shaped value distinct from the URL itself;
+    `location` (jobLocation.address.addressLocality) lets a test exercise
+    the weak, corroborating-only location signal."""
+    ident_json = f'"identifier": {{"@type": "PropertyValue", "value": "{identifier}"}},' if identifier else ""
+    location_json = (
+        f'"jobLocation": {{"@type": "Place", "address": {{"addressLocality": "{location}"}}}},'
+        if location else ""
+    )
+    return _write(tmp_path, "jsonld_form.html", textwrap.dedent(f"""
+        <script type="application/ld+json">
+        {{
+          "@context": "https://schema.org/",
+          "@type": "JobPosting",
+          "title": "{title}",
+          {ident_json}
+          {location_json}
+          "hiringOrganization": {{"@type": "Organization", "name": "{company}"}}
+        }}
+        </script>
+        <form>
+          <label for="fname">Full Name</label><input id="fname" name="full_name" type="text" required>
+          <label for="resume">Resume/CV</label><input id="resume" name="resume" type="file">
+          <button type="submit">Submit Application</button>
+        </form>
     """))
 
 

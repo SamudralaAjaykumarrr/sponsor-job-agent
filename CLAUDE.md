@@ -857,3 +857,59 @@ and must remain first; no downstream executor code path may bypass it.
   requires the same real discovery, never fabrication, and an encountered CAPTCHA/anti-bot
   challenge is always reported as the honest result (a conclusive characterization, CLAUDE.md
   Phase 12 section 76 criterion B), never worked around to force a fake "form reached" result.
+
+## Provider Resilience Rules (recorded after Phase 13, apply to all future phases)
+
+- `app.applications.job_identity.verify_job_identity()` (the Phase 12 single-signal URL-
+  requisition-token comparison) stays wired unchanged into `browser_runtime._do_discover()`'s
+  per-navigation `MISMATCH` gate. `verify_job_identity_full()` (the Phase 13 multi-signal
+  `JobIdentityVerification`: company/title/requisition-id/tenant-site/location) is a SEPARATE,
+  additional check run only at the two highest-stakes moments — immediately before a resume-upload
+  field is filled, and immediately before `READY_FOR_FINAL_SUBMIT`. Provider name is never a
+  compared signal in `verify_job_identity_full()` — both "stored" and "observed" would trivially
+  be the same in-process value, never independent evidence from the page. `location` is a WEAK,
+  corroborating-only signal (two different requisitions commonly share a location string) — it
+  may only ever produce AMBIGUOUS on its own, never PROBABLE/VERIFIED, and a location mismatch is
+  never counted toward MISMATCH. **Only a `VERIFIED` verdict may continue unattended past this
+  gate, by default** (`app.applications.job_identity.meets_min_confidence`,
+  `config.APPLICATION_IDENTITY_MIN_CONFIDENCE` default `"VERIFIED"`) — `PROBABLE`/`AMBIGUOUS`/
+  `INSUFFICIENT` all pause `PAUSED_JOB_IDENTITY_UNVERIFIED`, distinct from a confirmed `MISMATCH`'s
+  `PAUSED_JOB_IDENTITY_MISMATCH`. `MISMATCH` is NEVER affected by
+  `APPLICATION_IDENTITY_MIN_CONFIDENCE` — a confirmed contradiction always pauses unconditionally,
+  regardless of configuration. `browser_assist.start_session()`/`resume_session()` are the ONLY
+  two call sites of `browser_runtime.open_session()` in the codebase, so this gate is centralized;
+  no worker/scheduler/dashboard path may bypass it by calling `browser_runtime` directly.
+- `app.applications.title_normalization.titles_equivalent()` is order/punctuation/seniority-
+  marker-set equivalence ONLY — it must never be loosened into fuzzy/similarity-based matching,
+  and title equivalence alone must never be treated as identity proof.
+- `app.applications.provider_health` (real-browser ASSIST flow health) is permanently separate
+  from `app.workers.circuit` (discovery poll) and `app.applications.circuit` (submission) — none
+  of the three may gate the others. Recording evidence here must never auto-disable a provider;
+  a `DEGRADED`/`STALE`/`SCHEMA_DRIFT`/`CAPTCHA_BLOCKED`/`AUTH_GATED` health only ever surfaces for
+  review. `compute_health()` must remain a pure, live-recomputed function over the stored row —
+  never cached — so a "healthy" label can never silently outlive the evidence behind it.
+- `app.applications.confirmation_evidence.ConfirmationGrade.confirms()` (STRONG/MODERATE only)
+  is the only gate that may set a browser-assist session's execution `APPLIED` from captured
+  confirmation text. WEAK/NONE must never confirm, even if a future provider-specific pattern
+  supplies a confirmation id or confirmation-shaped URL without a trusted phrase match.
+- `app.applications.checkpoints` is an append-only, best-effort (never-raising) OBSERVABILITY
+  log layered on top of the existing reconstruct-and-resume mechanism — it must never itself
+  perform recovery, and `find_ordering_anomalies()` stays advisory/logged-only, never blocking,
+  mirroring `apply_entry.is_valid_stage_transition`'s own design.
+- `app.applications.canary` must never import `app.applications.mapping` or receive an
+  `ApplicationField` list, must never call an upload function, and must never click a control
+  classified anything other than `NAVIGATION_SAFE` for its single bounded apply-entry hop —
+  these are structural invariants (no upload/submit code path exists in the module at all), not
+  merely runtime checks. `REAL_ATS_CANARY_ENABLED` stays `false` by default and
+  `run_scheduled_canaries()` is the only function that may run canaries on a schedule.
+- `app.applications.resume_integrity.verify_resume_freshness()` only ever reports `fresh=False`
+  on a CONFIRMED divergence: both `resume_jd_fingerprint` and the job's current
+  `jd_sponsorship_fingerprint` non-empty AND different. Missing/unset data on either side is
+  always reported fresh — never a guessed staleness from absent evidence.
+- CAPTCHA detection (`browser_runtime._do_discover`, `canary._observe`) is DOM-element-based only
+  (`iframe[src*='captcha']`, `[class*='captcha']`, `[id*='captcha']`) — never a raw whole-page-
+  text substring scan, which a real Phase 13 live-validation run proved matches a merely-
+  referenced (never rendered) reCAPTCHA script tag on multiple real providers' current pages. Any
+  future refinement of this heuristic must be verified against both the real end-to-end fixture
+  (`tests/browser_fixtures.py`'s `captcha_page`) and, where possible, a real live provider page
+  before landing — never loosened in a way that could miss a genuinely rendered challenge.

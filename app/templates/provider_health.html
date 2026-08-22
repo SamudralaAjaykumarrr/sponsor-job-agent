@@ -1,0 +1,54 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Application Provider Health — Sponsor Job Agent</title>
+  <style>
+    body { font-family: -apple-system, Arial, sans-serif; margin: 2rem; background: #f7f7f9; color: #1a1a1a; }
+    table { width: 100%; border-collapse: collapse; background: white; }
+    th, td { padding: 8px 10px; border-bottom: 1px solid #eee; text-align: left; font-size: 0.8rem; vertical-align: top; }
+    th { background: #fafafa; }
+    .h-HEALTHY { background: #d4edda; color: #155724; padding: 2px 8px; border-radius: 10px; font-weight: 600; }
+    .h-DEGRADED, .h-SCHEMA_DRIFT { background: #fff3cd; color: #856404; padding: 2px 8px; border-radius: 10px; font-weight: 600; }
+    .h-CAPTCHA_BLOCKED, .h-AUTH_GATED { background: #f8d7da; color: #721c24; padding: 2px 8px; border-radius: 10px; font-weight: 600; }
+    .h-STALE, .h-VARIABLE, .h-UNVERIFIED, .h-UNSUPPORTED { background: #e2e3e5; color: #383d41; padding: 2px 8px; border-radius: 10px; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <p><a href="/">&larr; back to dashboard</a> · <a href="/applications/browser-capability-matrix">Browser-Assist Capability Matrix</a>
+     · <a href="/applications/capability-evidence">ATS Capability Evidence</a></p>
+  <h1>Application Provider Assist Health</h1>
+  <p>CLAUDE.md Phase 13 sections 11-12, 57: real-browser ASSIST flow health per (provider, tenant, site) --
+     separate from discovery health and submission-circuit health. A DEGRADED/STALE/SCHEMA_DRIFT/CAPTCHA_BLOCKED/
+     AUTH_GATED row never auto-disables anything; it only surfaces for review.</p>
+  {% if not rows %}
+  <p><em>No provider has been observed yet.</em></p>
+  {% else %}
+  <table>
+    <thead>
+      <tr>
+        <th>Provider</th><th>Tenant</th><th>Site</th><th>Health</th><th>Last success</th><th>Last failure</th>
+        <th>Consecutive failures</th><th>Schema drift count</th><th>CAPTCHA observed</th><th>Auth gate observed</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for entry in rows %}
+      {% set r = entry.row %}
+      <tr>
+        <td>{{ r.provider }}</td>
+        <td>{{ r.tenant }}</td>
+        <td>{{ r.site }}</td>
+        <td><span class="h-{{ entry.health }}">{{ entry.health }}</span></td>
+        <td>{{ r.last_success or 'never' }}</td>
+        <td>{{ r.last_failure or 'never' }}</td>
+        <td>{{ r.consecutive_failures }}</td>
+        <td>{{ r.schema_drift_count }}</td>
+        <td>{{ 'yes' if r.captcha_observed else 'no' }}</td>
+        <td>{{ 'yes' if r.auth_gate_observed else 'no' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</body>
+</html>

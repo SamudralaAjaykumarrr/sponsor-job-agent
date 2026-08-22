@@ -185,3 +185,20 @@ timestamps/bounded safe-error-text only, never field values.
   the session's own recorded `application_url` — e.g. a "similar jobs" link was accidentally
   followed. Never a guess: an unextractable token on either side is `UNVERIFIABLE`, not treated as
   a match or a mismatch.
+- **Phase 13: a formal, multi-signal identity recheck before the two highest-stakes moments.**
+  Immediately before a resume-upload field is filled, and immediately before
+  `READY_FOR_FINAL_SUBMIT`, `app.applications.job_identity.verify_job_identity_full()` compares
+  company/title/requisition-id/tenant-site/location signals available on both the session's own
+  stored job and the live page (via a schema.org JSON-LD `JobPosting` block, when present). Only
+  a `VERIFIED` verdict (2+ independent corroborating signals, or a matching requisition id) may
+  continue unattended by default -- `PROBABLE`/`AMBIGUOUS`/`INSUFFICIENT` all pause
+  (`PAUSED_JOB_IDENTITY_UNVERIFIED`), and a confirmed `MISMATCH` always pauses
+  (`PAUSED_JOB_IDENTITY_MISMATCH`) unconditionally, never configurable -- see
+  `docs/application-job-identity.md`.
+- **Phase 13: the canary never fills PII, uploads, or submits.** `app.applications.canary` reuses
+  the same detection primitives as a real session but never imports the field-mapping engine and
+  contains no upload/submit code path at all -- verified both by test (field remains empty after a
+  canary run) and by the module's own structure. See `docs/ats-canary-validation.md`.
+- **Phase 13: a stale resume never gets uploaded.** `app.applications.resume_integrity.
+  verify_resume_freshness()` refuses to start a browser session at all when the job's resume was
+  generated against a JD fingerprint that has since diverged from the job's current one.

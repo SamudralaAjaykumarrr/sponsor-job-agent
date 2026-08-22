@@ -419,3 +419,56 @@ BROWSER_DOM_STABILIZATION_POLL_MS = _env_int("BROWSER_DOM_STABILIZATION_POLL_MS"
 # Consecutive identical-signature polls before the DOM is considered
 # "settled" even when no recognizable form content ever appeared.
 BROWSER_DOM_STABILIZATION_SETTLE_POLLS = _env_int("BROWSER_DOM_STABILIZATION_SETTLE_POLLS", 3)
+
+# --- Phase 13: provider resilience and real-world ATS reliability -----------
+# See docs/phase13-provider-resilience.md.
+#
+# CLAUDE.md Phase 13 sections 13-14, 56: safe, read-only application-flow
+# canary validation. Off by default, same "never enabled automatically"
+# principle as every other real-network/browser flag in this project --
+# app.applications.canary.run_scheduled_canaries() refuses to do anything
+# while this is false. Does not affect pytest, which never requires
+# network/browser by default.
+REAL_ATS_CANARY_ENABLED = _env_bool("REAL_ATS_CANARY_ENABLED", False)
+# Conservative floor on how often a scheduled canary may revisit the SAME
+# target -- read by the (not-yet-wired-to-any-cron) scheduling helper, never
+# bypassed even when REAL_ATS_CANARY_ENABLED is true, so an operator can't
+# accidentally configure a hammering loop.
+REAL_ATS_CANARY_INTERVAL_HOURS = _env_int("REAL_ATS_CANARY_INTERVAL_HOURS", 24)
+
+# CLAUDE.md Phase 13 section 82: same underlying staleness window as
+# CAPABILITY_EVIDENCE_MAX_AGE_DAYS (Phase 11) -- kept as an explicit alias
+# name too since this phase's build brief names it separately, but both read
+# the identical env var so there is exactly one number an operator has to
+# set, never two that could silently drift apart.
+PROVIDER_CAPABILITY_MAX_AGE_DAYS = CAPABILITY_EVIDENCE_MAX_AGE_DAYS
+
+# CLAUDE.md Phase 13 section 4: whether the formal job-identity gate
+# (app.applications.job_identity.verify_job_identity_full) is consulted at
+# all before a real ATS resume upload / READY_FOR_FINAL_SUBMIT transition.
+# True by default -- an operator can only ever turn this OFF explicitly, it
+# is never off by silent default the way a brand-new optional feature would
+# be, since job-identity safety is a core Phase 13 objective, not an add-on.
+APPLICATION_IDENTITY_REQUIRED = _env_bool("APPLICATION_IDENTITY_REQUIRED", True)
+# CLAUDE.md Phase 13 acceptance correction: the minimum JobIdentityVerdict
+# (by the VERIFIED > PROBABLE > AMBIGUOUS > INSUFFICIENT ordering,
+# app.applications.job_identity._VERDICT_RANK) that may pass the pre-
+# upload/pre-final-submit gate WITHOUT pausing for review. Defaults to
+# "VERIFIED" -- only a verdict backed by 2+ independent corroborating
+# signals (or a matching requisition id) may continue unattended;
+# PROBABLE/AMBIGUOUS/INSUFFICIENT all pause (PAUSED_JOB_IDENTITY_UNVERIFIED)
+# by default. An operator may explicitly loosen this (e.g. to "PROBABLE")
+# to accept single-signal corroboration as sufficient -- a deliberate,
+# documented risk acceptance, never the silent default. MISMATCH (a
+# CONFIRMED contradiction) is never affected by this setting -- it always
+# pauses (PAUSED_JOB_IDENTITY_MISMATCH) unconditionally.
+APPLICATION_IDENTITY_MIN_CONFIDENCE = (
+    os.getenv("APPLICATION_IDENTITY_MIN_CONFIDENCE", "VERIFIED").strip().upper() or "VERIFIED"
+)
+
+# CLAUDE.md Phase 13 section 35: bounded retry for ordinary SPA/form
+# discovery -- never an infinite loop. Distinct from
+# APPLICATION_CIRCUIT_CONSECUTIVE_TRIP_THRESHOLD (submission circuit) and
+# app.workers.circuit's discovery threshold -- this one bounds a single
+# assist provider's DOM-discovery retry attempts within one pass.
+ASSIST_PROVIDER_MAX_RETRIES = _env_int("ASSIST_PROVIDER_MAX_RETRIES", 2)
