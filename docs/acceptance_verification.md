@@ -529,3 +529,71 @@ browser in this sandbox (missing root-only system libraries); the
 multi-service Docker Compose demo (now including an `application-worker-1`
 service) remains written and YAML-validated but unrun, for the same
 Docker-unavailable reason recorded in Phase 6/`docs/deployment-postgres.md`.
+
+## Phase 10 acceptance verification (verified 2026-08-22)
+
+See `docs/phase10-real-ats-assist.md`, `docs/browser-assist-sessions.md`, `docs/real-ats-validation.md`.
+
+| Item | Evidence |
+|---|---|
+| App starts / dashboard loads | `python -m pytest tests/test_browser_sessions_dashboard.py` (`TestClient`) + manual `uvicorn` startup with the new "Browser assist: ON/OFF" / "Browser mode: VISIBLE/HEADLESS" lines printed |
+| Session model + lifecycle | `tests/test_browser_session_model.py` (14 tests): create/get/update, terminal-vs-non-terminal `active` flag, duplicate-active-session rejection, lease claim/release/expiry reclaim, stale-session reaping, summarize() bucket counts |
+| Distributed session ownership | `tests/test_browser_session_postgres.py` (2 tests, real PostgreSQL via `pgserver`): migration + partial unique index enforced live, 8 concurrent threads racing `claim_session()` — exactly 1 ever wins |
+| Browser-runtime unit tests (no real browser) | `tests/test_browser_runtime_unit.py` (10 tests): disabled-flag/not-installed guards, the `BrowserRuntimeBusy` concurrency bound, registry lifecycle, selector/fingerprint/decline-option helpers |
+| Domain allowlist | `tests/test_domain_allowlist.py` (8 tests): known-provider match, unrelated-domain rejection, no wildcard for an unknown provider, same-original-host always allowed, redirect-to-known-domain allowed, redirect-to-unrelated-host rejected |
+| Orchestration state machine (mocked runtime) | `tests/test_browser_assist_orchestration.py` (26 tests): FULL_TIME/sponsorship gates (acceptance B/C/H), CAPTCHA/login/legal/unknown-field/platform-restricted pauses, form-changed drift pause, resume live-vs-not-live-vs-crash-recovery (acceptance I/J), multi-step advance, post-manual-submit reconciliation confirming/failing/browser-lost (acceptance K), idempotent duplicate-session start, missing-resume-artifact block |
+| **Real Chromium end-to-end** (acceptance A/D/E/F/G/H/K/L) | `tests/test_browser_assist_e2e.py` (11 tests) against the local mock-ATS sandbox (`tests/browser_fixtures.py`) — genuinely launched Chromium in this sandbox via a user-local `apt-get download` + `dpkg-deb -x` + `LD_LIBRARY_PATH` workaround (no root available); skips cleanly with a precise reason in any environment without a launchable Chromium |
+| Doctor (Phase 10 checks) | `tests/test_applications_doctor_phase10.py` (8 tests): session-without-execution, non-FULL_TIME/non-eligible-sponsorship session, stale-active-session warning, LIKELY_SPONSOR correctly NOT flagged, confirmation-without-APPLIED, static no-auto-submit-capability scan, forbidden-secret-field text scan, clean-baseline zero-false-positive |
+| Metrics | `tests/test_applications_metrics_phase10.py` (3 tests): all-zero on empty DB, correct per-status counts (confirmed sessions correctly excluded from "active"), live-in-process registry count |
+| CLI | `tests/test_applications_cli_phase10.py` (3 tests): `browser-start`/`browser-status`/`browser-list`, honest failure for an ineligible job, `browser-reconcile`/`browser-close` |
+| Dashboard | `tests/test_browser_sessions_dashboard.py` (6 tests): list/detail pages, start action (success + ineligible-job rejection + missing-execution rejection), close action, 404 for an unknown session |
+| Browser-assist capability matrix | `tests/test_browser_capability_matrix.py` (6 tests): valid verification values, greenhouse/lever/ashby correctly `LIVE_FORM_VERIFIED`, no provider ever claims final-submit automation, CLI + dashboard render |
+| Scheduled background maintenance | `tests/test_application_background_scheduler.py` (5 tests): clean start/stop, reconciliation pass runs only when enabled, stale-session reap runs only when enabled, neither runs when both disabled, one task failing never stops the other |
+| **Real public ATS validation** (bounded, read-only, never submits) | `scripts/phase10_live_validation.py`, run 2026-08-22: Greenhouse (GitLab board, 24 fields, real CAPTCHA observed), Lever (`leverdemo`, 22 fields, real CAPTCHA observed), Ashby (`ashby`, 28 fields, real CAPTCHA observed) all `LIVE_FORM_VERIFIED`; SmartRecruiters honestly `NOT_TESTED` (landing page reached, not the form itself); Workday `NOT RUN` (Phase 3's dogfood tenant now redirects to a maintenance page); Workable `NOT RUN` (no known real tenant) — see `docs/real-ats-validation.md` |
+| Full test suite, all three markers | 780 passed (default) + 15 passed (`-m browser`, real Chromium) + 35 passed (`-m postgres`, real PostgreSQL) = **830 total, 0 failures** |
+| No secrets/private data committed | `git status`/`git diff` reviewed — no `.env`, `data/app.db`, `candidate_data/profile.json`, `data/browser_assist_runtime/`, or generated resume/session artifact staged; `.gitignore` extended (`runtime/`) |
+
+### Real bugs this phase's own live testing caught and fixed
+
+1. **Domain allowlist rejected every local `file://` fixture and, by the same logic, would have
+   rejected any two same-host pages with no netloc.** `is_allowed_host_for_session()` treated an
+   *empty current hostname* as automatically unsafe before ever comparing it to the original
+   URL's hostname — but `file://` URLs legitimately have an empty hostname on both sides. Every
+   one of the first 11 real-Chromium E2E tests failed with `PAUSED_PLATFORM_RESTRICTED` until
+   this was fixed to check for an empty **current URL string**, not an empty hostname.
+2. **A radio/checkbox group was labeled with its first option's own text, not the question.**
+   `Will you now or in the future require sponsorship?` (a real `<fieldset><legend>` structure)
+   was detected as label `"Yes"` because the DOM scan preferred a per-element label over the
+   fieldset legend uniformly for every field type. Fixed so a **group** prefers its fieldset
+   legend over any single option's own choice text (single-value fields keep the opposite,
+   already-correct priority). Caught by the conditional-sponsorship-question E2E test against
+   real Chromium — the field was silently never filled at all before the fix.
+3. **`advance_step()` false-positived a form-changed pause on every intentional step advance.**
+   The same fingerprint-drift check `resume_session()` correctly uses to catch an *unexpected*
+   form change was also applied after an *intentional* multi-step advance, where the fields are
+   supposed to be entirely different. Fixed with a `check_drift=False` path used only by
+   `advance_step()`. Would have made every real multi-step form unusable.
+4. **A latent bug in the Phase 8 "decline to self-identify" phrase list, inherited by the new
+   browser-runtime code.** `DECLINE_TO_SELF_IDENTIFY_PHRASES` listed `"i don t wish to answer"`
+   (space where the apostrophe was), but every caller normalizes a candidate's choice string via
+   `.replace("'", "")`, which *deletes* the apostrophe rather than replacing it with a space
+   (`"don't"` → `"dont"`, not `"don t"`) — so the safe-default match never actually fired for
+   the literal phrase `"I don't wish to answer"` anywhere in the codebase (`mock_ats.py`,
+   `providers_greenhouse.py`, and the new `browser_runtime.py`). This went unnoticed by existing
+   Phase 8 tests only because the specific field those tests exercised (`veteran_q`) happened to
+   be optional, so an unfilled field never blocked completion. Fixed by adding the actually-
+   produced phrase forms to the shared `app.applications.schema.DECLINE_TO_SELF_IDENTIFY_PHRASES`
+   list (both variants kept, defensively, in case a future caller normalizes differently).
+
+### Known Phase 10 limitations
+
+See `docs/phase10-real-ats-assist.md`'s "Honest limitations" section for the full list. In
+short: no real production application was submitted, ever; SmartRecruiters' real application
+form sits behind an extra "Apply" click this phase's bounded validation didn't follow; the
+Phase 3 Workday dogfood tenant is currently offline (not re-verified with a substitute — never
+guessed); Workable has no known real tenant to validate against; multi-step navigation was only
+live-verified on the local sandbox fixture (the real Greenhouse/Lever/Ashby postings checked
+were all single-page); cross-process browser reattachment (keeping a real browser window alive
+across a full worker-process restart) is not implemented or claimed — a restarted process
+either safely reopens a fresh window (pre-submission) or honestly reports
+`SUBMISSION_STATUS_UNKNOWN` (submission may have been in flight).

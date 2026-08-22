@@ -646,6 +646,67 @@ def _m024_jobs_application_worker_columns(conn, backend: str) -> None:
     ])
 
 
+def _m025_browser_assist_sessions_table(conn, backend: str) -> None:
+    """CLAUDE.md Phase 10 sections 4-5: persistent, resumable browser-assist
+    session record. One row per browser-assist attempt for one execution.
+    `active` (1 while non-terminal, 0 once CONFIRMED/CLOSED/EXPIRED) backs a
+    partial unique index -- the same "one active thing per job" pattern
+    Phase 8's application_executions already uses -- so two workers/dashboard
+    clicks can never both start a second live browser session for a job that
+    already has one (CLAUDE.md Phase 10 section 63). Never a column for a
+    password, MFA code, cookie, or raw auth token (section 5) -- only ids,
+    status, fingerprints, and bounded confirmation evidence."""
+    id_column = "id BIGSERIAL PRIMARY KEY" if backend == "postgres" else "id INTEGER PRIMARY KEY AUTOINCREMENT"
+    conn.execute(
+        f"""CREATE TABLE IF NOT EXISTS browser_assist_sessions (
+            {id_column},
+            session_id TEXT NOT NULL UNIQUE,
+            execution_id TEXT NOT NULL,
+            job_id INTEGER NOT NULL,
+            provider TEXT NOT NULL DEFAULT '',
+            application_url TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'STARTING',
+            active INTEGER NOT NULL DEFAULT 1,
+            current_step INTEGER NOT NULL DEFAULT 1,
+            total_steps_if_known INTEGER,
+            browser_profile_reference TEXT DEFAULT '',
+            form_fingerprint TEXT DEFAULT '',
+            resume_artifact_hash TEXT DEFAULT '',
+            answers_version INTEGER DEFAULT 0,
+            mapped_field_count INTEGER NOT NULL DEFAULT 0,
+            unresolved_field_count INTEGER NOT NULL DEFAULT 0,
+            needs_user_action INTEGER NOT NULL DEFAULT 0,
+            user_action_reason TEXT DEFAULT '',
+            confirmation_observed INTEGER NOT NULL DEFAULT 0,
+            confirmation_id TEXT DEFAULT '',
+            confirmation_url TEXT DEFAULT '',
+            confirmation_text_fingerprint TEXT DEFAULT '',
+            worker_id TEXT DEFAULT '',
+            lease_owner TEXT,
+            lease_attempt_id TEXT,
+            lease_acquired_at TEXT,
+            lease_expires_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            last_activity_at TEXT NOT NULL,
+            closed_at TEXT
+        )"""
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_browser_sessions_job_active "
+        "ON browser_assist_sessions (job_id) WHERE active = 1"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_browser_sessions_execution ON browser_assist_sessions (execution_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_browser_sessions_status ON browser_assist_sessions (status)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_browser_sessions_lease "
+        "ON browser_assist_sessions (lease_expires_at) WHERE active = 1"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_browser_sessions_last_activity ON browser_assist_sessions (last_activity_at)"
+    )
+
+
 MIGRATIONS: list[tuple[int, str, Callable]] = [
     (2, "phase6_worker_identity_columns", _m002_worker_identity_columns),
     (3, "phase6_schema_drift_table", _m003_schema_drift_table),
@@ -670,6 +731,7 @@ MIGRATIONS: list[tuple[int, str, Callable]] = [
     (22, "phase9_application_provider_circuit_state_table", _m022_application_provider_circuit_state_table),
     (23, "phase9_mock_ats_server_records_table", _m023_mock_ats_server_records_table),
     (24, "phase9_jobs_application_worker_columns", _m024_jobs_application_worker_columns),
+    (25, "phase10_browser_assist_sessions_table", _m025_browser_assist_sessions_table),
 ]
 
 # Version 1 is the implicit Phase 1-5 baseline schema, applied by

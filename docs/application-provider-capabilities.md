@@ -51,3 +51,18 @@ genuine way to re-check a *specific* application's status after the fact (used o
 `app.applications.reconcile_worker` — see `docs/application-reconciliation.md`). As of this
 phase, only `mock_ats` sets it `True`; every real adapter honestly reports `False` since none of
 these ATSes expose such an interface to candidates.
+
+## Phase 10: a SEPARATE browser-assist matrix
+
+This table describes the Phase 8 network-API-based `ApplicationProvider` adapters only. Phase 10
+added real-browser assist (`app.applications.browser_assist`/`browser_runtime`), which is
+**provider-agnostic by construction** — the same generic DOM-scan engine reaches Greenhouse,
+Lever, and Ashby's real, live application forms (live-verified this phase — see
+`docs/real-ats-validation.md`) with no per-provider code at all, including for `lever`, whose row
+above correctly shows `UNSUPPORTED` for the *network-API* path. Its own separate, dated,
+genuinely-observed capability table lives in `app.applications.browser_capability_matrix` /
+`GET /applications/browser-capability-matrix` / `python -m app.applications.cli
+browser-capability-matrix` — see `docs/browser-assist-sessions.md` and
+`docs/phase10-real-ats-assist.md`. Discovery support, this table's application-provider support,
+and the browser-assist table are three deliberately independent axes; none is ever inferred from
+another.

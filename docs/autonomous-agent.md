@@ -191,3 +191,13 @@ those queued applications, completely independently of the discovery fleet
 (separate worker capabilities, separate queue table, separate circuit
 breaker). See `docs/phase9-production-application-workers.md` and
 `docs/application-worker-architecture.md`.
+
+## Phase 10: real-browser assist is a further, separate, opt-in stage
+
+Same relationship again. Neither this document's scheduler/cycle nor the Phase 9 application
+scheduler/workers are gated by, or aware of, `BROWSER_ASSIST_ENABLED` — a job still reaches
+`READY_TO_APPLY`/an `application_executions` row exactly as before. Browser assist
+(`app.applications.browser_assist.start_session()`) is a further, explicitly-triggered
+(dashboard/CLI) stage layered on top of an already-existing execution, with its own
+independently re-derived eligibility gate. See `docs/phase10-real-ats-assist.md` and
+`docs/browser-assist-sessions.md`.

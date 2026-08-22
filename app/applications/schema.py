@@ -12,8 +12,16 @@ from app.config import NEEDS_USER_INPUT
 # to (CLAUDE.md Phase 8 section 11) -- never fabricated, only ever used to
 # recognize a matching offered choice.
 DECLINE_TO_SELF_IDENTIFY_PHRASES = [
-    "decline to self identify", "prefer not to say", "i don t wish to answer",
-    "i do not wish to answer", "i don t want to answer",
+    "decline to self identify", "prefer not to say",
+    # Every caller normalizes a candidate choice string via
+    # `c.lower().replace("'", "")` before matching against this list, which
+    # DELETES the apostrophe rather than replacing it with a space (so
+    # "don't" becomes "dont", not "don t") -- both forms are listed here
+    # defensively so this stays correct regardless of which normalization a
+    # given caller applies.
+    "i dont wish to answer", "i don t wish to answer",
+    "i do not wish to answer",
+    "i dont want to answer", "i don t want to answer",
 ]
 
 

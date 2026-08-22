@@ -394,3 +394,43 @@ See `docs/phase9-production-application-workers.md`,
 - Dashboard: `/application-workers` (fleet/circuits/attempts),
   `/applications/capability-matrix`, manual scheduler/reconcile-worker
   triggers, daily-budget/fleet summaries folded into `/applications`.
+
+## Phase 10: production-quality real-ATS browser assist
+
+See `docs/phase10-real-ats-assist.md`, `docs/browser-assist-sessions.md`,
+`docs/real-ats-validation.md`, `docs/greenhouse-application-assist.md`,
+`docs/workday-application-assist.md`.
+
+- `app/applications/browser_session.py` — persistent, resumable session model
+  (`browser_assist_sessions`, SQLite + Postgres) with the same atomic-claim
+  distributed-leasing pattern every other queue in this project uses.
+- `app/applications/browser_runtime.py` — the only module that touches
+  Playwright: real-browser launch, DOM-based field/button/CAPTCHA/login
+  detection, safe fill (reusing `app.applications.mapping` — never a second
+  matching heuristic), file upload, step advance, confirmation-text capture.
+  Provider-agnostic by construction — live-verified this phase against real
+  Greenhouse/Lever/Ashby application pages with zero per-provider code.
+- `app/applications/browser_assist.py` — session orchestration
+  (start/resume/mark-user-action-complete/advance-step/close/
+  attempt-user-submit-reconciliation) layered on top; the Phase 9
+  `prepare_application()` one-shot helper is unchanged and still works.
+- `app/applications/domain_allowlist.py` — navigation-safety host allowlist.
+- `app/applications/browser_capability_matrix.py` — a deliberately
+  DATA-only, dated, genuinely-observed verification matrix (not a
+  `RealATSAssistProvider` class hierarchy — see
+  `docs/phase10-real-ats-assist.md` for why).
+- `app/applications/background_scheduler.py` — actually runs the Phase 9
+  reconciliation pass and the new stale-browser-session reaper on a
+  schedule (both config flags existed since Phase 9; nothing read them
+  until now).
+- Two real bugs caught and fixed by this phase's own live-Chromium/E2E
+  testing: the domain allowlist rejected every `file://`/empty-hostname
+  page outright before ever comparing hosts, and a radio/checkbox group's
+  label was taken from its first option's own text instead of its
+  fieldset legend (so "Will you require sponsorship?" was mislabeled
+  "Yes"). See `docs/phase10-real-ats-assist.md` for the third
+  (`advance_step` false-positive form-drift pause).
+- Dashboard: `/applications/browser-sessions` (list + per-session detail
+  with resume/continue/advance/reconcile/close actions),
+  `/applications/browser-capability-matrix`, a "Start Browser Assist"
+  action on the job detail page.

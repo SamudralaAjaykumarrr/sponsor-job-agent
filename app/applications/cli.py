@@ -142,6 +142,85 @@ def _cmd_capability_matrix(_: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_browser_capability_matrix(_: argparse.Namespace) -> int:
+    from app.applications.browser_capability_matrix import render_text
+
+    print(render_text())
+    return 0
+
+
+def _print_session(session: dict) -> None:
+    if not session:
+        print("  (no session)")
+        return
+    print(f"  session_id={session.get('session_id')} status={session.get('status')} "
+          f"job_id={session.get('job_id')} provider={session.get('provider')}")
+    if session.get("user_action_reason"):
+        print(f"    user_action_reason: {session['user_action_reason']}")
+
+
+def _cmd_browser_start(args: argparse.Namespace) -> int:
+    from app.applications.browser_assist import start_session
+
+    result = start_session(args.execution_id)
+    print(f"created={result.get('created')} reason={result.get('reason', '')}")
+    _print_session(result.get("session") or {})
+    return 0 if result.get("created") else 1
+
+
+def _cmd_browser_resume(args: argparse.Namespace) -> int:
+    from app.applications.browser_assist import resume_session
+
+    result = resume_session(args.session_id)
+    print(f"ok={result.get('ok')} detail={result.get('detail', '')}")
+    _print_session(result.get("session") or {})
+    return 0 if result.get("ok") else 1
+
+
+def _cmd_browser_continue(args: argparse.Namespace) -> int:
+    from app.applications.browser_assist import mark_user_action_complete
+
+    result = mark_user_action_complete(args.session_id)
+    print(f"ok={result.get('ok')} detail={result.get('detail', '')}")
+    _print_session(result.get("session") or {})
+    return 0 if result.get("ok") else 1
+
+
+def _cmd_browser_close(args: argparse.Namespace) -> int:
+    from app.applications.browser_assist import close_session
+
+    session = close_session(args.session_id, reason=args.reason or "closed via CLI")
+    _print_session(session or {})
+    return 0
+
+
+def _cmd_browser_reconcile(args: argparse.Namespace) -> int:
+    from app.applications.browser_assist import attempt_user_submit_reconciliation
+
+    result = attempt_user_submit_reconciliation(args.session_id)
+    print(f"ok={result.get('ok')} detail={result.get('detail', '')}")
+    _print_session(result.get("session") or {})
+    return 0 if result.get("ok") else 1
+
+
+def _cmd_browser_status(_: argparse.Namespace) -> int:
+    from app.applications import browser_session
+
+    summary = browser_session.summarize()
+    for k, v in summary.as_dict().items():
+        print(f"  {k}: {v}")
+    return 0
+
+
+def _cmd_browser_list(args: argparse.Namespace) -> int:
+    from app.applications import browser_session
+
+    for row in browser_session.list_sessions(status=args.status, limit=args.limit):
+        print(f"  {row['session_id']}  job={row['job_id']}  status={row['status']}  "
+              f"provider={row['provider']}  updated_at={row['updated_at']}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m app.applications.cli")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -199,6 +278,41 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_matrix = sub.add_parser("capability-matrix", help="print the truthful provider capability matrix")
     p_matrix.set_defaults(func=_cmd_capability_matrix)
+
+    p_bstart = sub.add_parser("browser-start", help="open a visible browser-assist session for an execution")
+    p_bstart.add_argument("execution_id")
+    p_bstart.set_defaults(func=_cmd_browser_start)
+
+    p_bresume = sub.add_parser("browser-resume", help="resume a browser-assist session")
+    p_bresume.add_argument("session_id")
+    p_bresume.set_defaults(func=_cmd_browser_resume)
+
+    p_bcontinue = sub.add_parser("browser-continue",
+                                  help="mark a PAUSED_* browser-assist session's user action complete and continue")
+    p_bcontinue.add_argument("session_id")
+    p_bcontinue.set_defaults(func=_cmd_browser_continue)
+
+    p_bclose = sub.add_parser("browser-close", help="close a browser-assist session")
+    p_bclose.add_argument("session_id")
+    p_bclose.add_argument("--reason", default="")
+    p_bclose.set_defaults(func=_cmd_browser_close)
+
+    p_breconcile = sub.add_parser("browser-reconcile",
+                                   help="check the current page for confirmation evidence after a manual submit")
+    p_breconcile.add_argument("session_id")
+    p_breconcile.set_defaults(func=_cmd_browser_reconcile)
+
+    p_bstatus = sub.add_parser("browser-status", help="print browser-assist session bucket counts")
+    p_bstatus.set_defaults(func=_cmd_browser_status)
+
+    p_blist = sub.add_parser("browser-list", help="list browser-assist sessions")
+    p_blist.add_argument("--status", default=None)
+    p_blist.add_argument("--limit", type=int, default=50)
+    p_blist.set_defaults(func=_cmd_browser_list)
+
+    p_bmatrix = sub.add_parser("browser-capability-matrix",
+                                help="print the truthful browser-assist capability matrix")
+    p_bmatrix.set_defaults(func=_cmd_browser_capability_matrix)
 
     return parser
 

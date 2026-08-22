@@ -148,3 +148,15 @@ Phase 6 rule.
 spawns `python -m app.applications.worker run` with no shard flags — the application queue is
 a single shared claim pool (intentionally low volume; see CLAUDE.md section 36), so sharding
 it would add complexity with no benefit.
+
+## Phase 10: browser-assist sessions are a separate, bounded resource
+
+`browser_assist_sessions` (see `docs/browser-assist-sessions.md`) is claimed/leased the same
+atomic way as `application_executions`, but is NOT part of the `ApplicationWorker` fleet's
+claim loop — a browser session is opened synchronously by whatever process handles the
+dashboard/CLI action that starts it (`BROWSER_ASSIST_CONCURRENCY`, default 1, bounds how many
+can be live in one process at once). This is deliberate: a real, interactive, potentially
+visible browser window is fundamentally different from a bounded batch of background HTTP
+submission attempts, and forcing it through the same worker-pool claim loop would either block
+worker throughput on an interactive step or require headless-only operation, defeating the
+point of a visible assist window for login/CAPTCHA/final review.

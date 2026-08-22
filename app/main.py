@@ -27,6 +27,9 @@ from app.applications import circuit as applications_circuit
 from app.applications import attempts as applications_attempts
 from app.applications import scheduler as applications_scheduler
 from app.applications import reconcile_worker as applications_reconcile_worker
+from app.applications import browser_assist as applications_browser_assist
+from app.applications import browser_session
+from app.applications.background_scheduler import background_scheduler as applications_background_scheduler
 from app.applications.worker_admin import request_drain as application_request_drain
 from app.applications.worker_admin import resume_from_drain as application_resume_from_drain
 from app.applications.worker_capabilities import WorkerCapability, has_capability as application_worker_has_capability
@@ -87,10 +90,17 @@ async def lifespan(_: FastAPI):
     # CLAUDE.md Phase 8 section 66: never silently enable the executor --
     # print its actual on/off state on every startup.
     print(f"Application executor: {'ON' if config.APPLICATION_EXECUTOR_ENABLED else 'OFF'}")
+    print(f"Auto prepare:         {'ON' if config.APPLICATION_AUTO_PREPARE_ENABLED else 'OFF'}")
+    # CLAUDE.md Phase 10 section 66: never silently enable real-browser
+    # application automation -- print its actual on/off state and mode too.
+    print(f"Browser assist:       {'ON' if config.BROWSER_ASSIST_ENABLED else 'OFF'}")
+    print(f"Browser mode:         {'HEADLESS' if config.BROWSER_HEADLESS else 'VISIBLE'}")
     print(f"Auto submit:          {'ON' if config.AUTO_SUBMIT_ENABLED else 'OFF'}")
     scheduler.start()
+    applications_background_scheduler.start()
     yield
     await scheduler.stop()
+    await applications_background_scheduler.stop()
 
 
 app = FastAPI(title="Sponsor Job Agent", lifespan=lifespan)
@@ -164,6 +174,7 @@ def job_detail(request: Request, job_id: int):
     executions = applications_repo.list_executions_for_job(job_id)
     active_execution = applications_repo.get_active_execution_for_job(job_id)
     eligibility = evaluate_executor_eligibility(job)
+    active_browser_session = browser_session.get_active_session_for_job(job_id)
     return templates.TemplateResponse(
         request, "job_detail.html",
         {
@@ -172,6 +183,8 @@ def job_detail(request: Request, job_id: int):
             "executions": executions, "active_execution": active_execution, "eligibility": eligibility,
             "executor_enabled": config.APPLICATION_EXECUTOR_ENABLED,
             "auto_submit_enabled": config.AUTO_SUBMIT_ENABLED,
+            "active_browser_session": active_browser_session,
+            "browser_assist_enabled": config.BROWSER_ASSIST_ENABLED,
         },
     )
 
@@ -537,6 +550,8 @@ def applications_page(
             "metrics": applications_metrics.collect(),
             "fleet": applications_metrics.collect_worker_fleet(),
             "budget": applications_budget.collect().as_dict(),
+            "browser_assist_enabled": config.BROWSER_ASSIST_ENABLED,
+            "browser_headless": config.BROWSER_HEADLESS,
         },
     )
 
@@ -707,6 +722,109 @@ def execution_reconcile(
     if not result.ok:
         raise HTTPException(400, result.detail)
     return RedirectResponse(url=f"/jobs/{execution['job_id']}", status_code=303)
+
+
+@app.get("/applications/browser-sessions", response_class=HTMLResponse)
+def browser_sessions_page(request: Request, status: str = ""):
+    from app.applications.browser_session import BrowserSessionStatus
+
+    rows = browser_session.list_sessions(status=status or None, limit=200)
+    return templates.TemplateResponse(
+        request, "browser_sessions.html",
+        {
+            "rows": rows, "status_filter": status,
+            "statuses": [s.value for s in BrowserSessionStatus],
+            "summary": browser_session.summarize().as_dict(),
+            "metrics": applications_metrics.collect_browser_assist(),
+            "browser_assist_enabled": config.BROWSER_ASSIST_ENABLED,
+            "browser_headless": config.BROWSER_HEADLESS,
+            "browser_concurrency": config.BROWSER_ASSIST_CONCURRENCY,
+        },
+    )
+
+
+@app.get("/applications/browser-sessions/{session_id}", response_class=HTMLResponse)
+def browser_session_detail_page(request: Request, session_id: str):
+    session = browser_session.get_session(session_id)
+    if session is None:
+        raise HTTPException(404, "browser-assist session not found")
+    job = get_job(session["job_id"])
+    return templates.TemplateResponse(
+        request, "browser_session_detail.html",
+        {
+            "session": session, "job": job, "is_live": applications_browser_assist.browser_runtime.is_live(session_id),
+            "browser_assist_enabled": config.BROWSER_ASSIST_ENABLED,
+        },
+    )
+
+
+@app.post("/jobs/{job_id}/browser-assist/start")
+def browser_assist_start(job_id: int):
+    active = applications_repo.get_active_execution_for_job(job_id)
+    if active is None:
+        raise HTTPException(400, "no active execution for this job -- use Prepare Application or Queue Application first")
+    result = applications_browser_assist.start_session(active["execution_id"])
+    if not result.get("created"):
+        raise HTTPException(400, f"browser-assist session not created: {result.get('reason')}")
+    session = result.get("session") or {}
+    return RedirectResponse(url=f"/applications/browser-sessions/{session.get('session_id')}", status_code=303)
+
+
+@app.post("/browser-sessions/{session_id}/resume")
+def browser_session_resume(session_id: str):
+    result = applications_browser_assist.resume_session(session_id)
+    if not result.get("ok"):
+        raise HTTPException(400, result.get("detail", "could not resume session"))
+    return RedirectResponse(url=f"/applications/browser-sessions/{session_id}", status_code=303)
+
+
+@app.post("/browser-sessions/{session_id}/continue")
+def browser_session_continue(session_id: str):
+    result = applications_browser_assist.mark_user_action_complete(session_id)
+    if not result.get("ok"):
+        raise HTTPException(400, result.get("detail", "could not continue session"))
+    return RedirectResponse(url=f"/applications/browser-sessions/{session_id}", status_code=303)
+
+
+@app.post("/browser-sessions/{session_id}/advance-step")
+def browser_session_advance_step(session_id: str):
+    result = applications_browser_assist.advance_step(session_id)
+    if not result.get("ok"):
+        raise HTTPException(400, result.get("detail", "could not advance to the next step"))
+    return RedirectResponse(url=f"/applications/browser-sessions/{session_id}", status_code=303)
+
+
+@app.post("/browser-sessions/{session_id}/close")
+def browser_session_close(session_id: str, reason: str = Form("closed by user")):
+    applications_browser_assist.close_session(session_id, reason=reason)
+    return RedirectResponse(url="/applications/browser-sessions", status_code=303)
+
+
+@app.post("/browser-sessions/{session_id}/reconcile")
+def browser_session_reconcile(session_id: str):
+    result = applications_browser_assist.attempt_user_submit_reconciliation(session_id)
+    if not result.get("ok"):
+        raise HTTPException(400, result.get("detail", "no confirmation evidence found"))
+    return RedirectResponse(url=f"/applications/browser-sessions/{session_id}", status_code=303)
+
+
+@app.post("/applications/browser-sessions/expire-stale")
+def browser_sessions_expire_stale():
+    expired = applications_browser_assist.expire_stale_sessions()
+    return JSONResponse({"expired": len(expired)})
+
+
+@app.get("/api/applications/browser-assist/metrics")
+def api_browser_assist_metrics():
+    return JSONResponse(applications_metrics.collect_browser_assist())
+
+
+@app.get("/applications/browser-capability-matrix", response_class=HTMLResponse)
+def browser_capability_matrix_page(request: Request):
+    from app.applications import browser_capability_matrix
+
+    matrix = browser_capability_matrix.build_matrix()
+    return templates.TemplateResponse(request, "browser_capability_matrix.html", {"matrix": matrix})
 
 
 @app.get("/jobs/{job_id}/download/{file_key}")

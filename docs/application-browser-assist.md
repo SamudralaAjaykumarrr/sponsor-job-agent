@@ -1,5 +1,12 @@
 # Application Browser Assist
 
+> **Phase 10 update:** this document describes the original Phase 9
+> `prepare_application()` one-shot helper, which still exists unchanged and still works exactly
+> as documented below. For the production-quality, resumable, session-based system built on top
+> of it in Phase 10 (persistent visible window, multi-step forms, pause/resume, crash recovery,
+> post-manual-submit confirmation capture), see **`docs/browser-assist-sessions.md`** and
+> **`docs/phase10-real-ats-assist.md`**.
+
 ## What it is
 
 `app/applications/browser_assist.py::prepare_application()` is an OPTIONAL, off-by-default

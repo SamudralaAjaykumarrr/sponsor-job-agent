@@ -14,9 +14,14 @@ candidate_data/
 !candidate_data/.gitkeep
 .pytest_cache/
 
-# Phase 9: browser-assist runtime scratch space (app.applications.browser_assist)
-# -- never persists cookies/sessions itself (every browser context is
-# ephemeral, closed at the end of every call), but this directory must still
-# never be committed in case any temp/download artifact ever lands here.
+# Phase 9/10: browser-assist runtime scratch space
+# (app.applications.browser_assist/browser_runtime) -- never persists
+# cookies/sessions itself (every browser context is ephemeral, closed at the
+# end of every session), but this directory must still never be committed in
+# case any temp/download artifact, screenshot, or page snapshot ever lands
+# here. Covers both the legacy Phase 9 path and the Phase 10
+# BROWSER_RUNTIME_DIR default (same directory), plus the general
+# runtime/browser/ path CLAUDE.md's Phase 10 build brief names as an example.
 data/browser_assist_runtime/
+runtime/
 

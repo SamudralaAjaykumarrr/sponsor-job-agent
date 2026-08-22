@@ -140,6 +140,17 @@ timestamps/bounded safe-error-text only, never field values.
   sensitive-category field, and never persists a password/MFA
   code/cookie/token — every browser context is fresh and ephemeral. See
   `docs/application-browser-assist.md`.
+- **Phase 10: the same rule, now backed by a static doctor check.**
+  `app.applications.doctor._check_no_browser_auto_submit_capability` scans
+  `app.applications.browser_runtime`'s own public API for a forbidden
+  name pattern (`click_submit`/`submit_application`/`click_apply`/
+  `auto_submit`) on every doctor run — a regression here is caught by the
+  doctor itself, not only by a test file someone might forget to run. Every
+  browser navigation is also checked against
+  `app.applications.domain_allowlist` after each page load; an unexpected
+  host pauses the session (`PAUSED_PLATFORM_RESTRICTED`) instead of
+  continuing to interact with an unverified page. See
+  `docs/browser-assist-sessions.md`.
 - **Drain mode never starts a new submission.** A draining worker finishes
   any in-progress preparation it already claimed, but
   `process_execution(execution_id, allow_submission=False)` stops at

@@ -26,7 +26,9 @@
 <body>
   <p><a href="/">&larr; back to dashboard</a> · <a href="/applications/doctor">Application Doctor</a> ·
      <a href="/application-workers">Application Workers</a> ·
-     <a href="/applications/capability-matrix">Provider Capability Matrix</a></p>
+     <a href="/applications/capability-matrix">Provider Capability Matrix</a> ·
+     <a href="/applications/browser-sessions">Browser-Assist Sessions</a> ·
+     <a href="/applications/browser-capability-matrix">Browser-Assist Capability Matrix</a></p>
   <h1>Applications</h1>
 
   <div class="banner {{ 'banner-on' if executor_enabled else 'banner-off' }}">
@@ -34,6 +36,12 @@
     Auto-prepare: <strong>{{ 'ON' if auto_prepare_enabled else 'OFF' }}</strong> ·
     Auto submit: <strong>{{ 'ON' if auto_submit_enabled else 'OFF' }}</strong>
     {% if not executor_enabled %}— set APPLICATION_EXECUTOR_ENABLED=true to allow queuing applications.{% endif %}
+  </div>
+
+  <div class="banner {{ 'banner-on' if browser_assist_enabled else 'banner-off' }}">
+    Browser assist: <strong>{{ 'ON' if browser_assist_enabled else 'OFF' }}</strong>
+    {% if browser_assist_enabled %}· Mode: <strong>{{ 'HEADLESS' if browser_headless else 'VISIBLE' }}</strong>{% endif %}
+    — <a href="/applications/browser-sessions">view sessions</a>
   </div>
 
   <div class="metrics">

@@ -355,3 +355,28 @@ BROWSER_ASSIST_ENABLED = _env_bool("BROWSER_ASSIST_ENABLED", False)
 BROWSER_ASSIST_HEADLESS = _env_bool("BROWSER_ASSIST_HEADLESS", False)
 BROWSER_ASSIST_TIMEOUT_SECONDS = _env_int("BROWSER_ASSIST_TIMEOUT_SECONDS", 30)
 BROWSER_ASSIST_PROFILE_DIR = DATA_DIR / "browser_assist_runtime"
+
+# --- Phase 10: production-quality real-ATS browser assist -------------------
+# See docs/phase10-real-ats-assist.md, docs/browser-assist-sessions.md.
+# BROWSER_HEADLESS is the Phase 10 name for the same concept as
+# BROWSER_ASSIST_HEADLESS above (CLAUDE.md Phase 10 section 65) -- both are
+# read; BROWSER_HEADLESS wins if both are set, so existing .env files using
+# the Phase 9 name keep working unchanged.
+BROWSER_HEADLESS = _env_bool("BROWSER_HEADLESS", BROWSER_ASSIST_HEADLESS)
+# Browser sessions are expensive and interactive -- bounded, conservative
+# concurrency (CLAUDE.md Phase 10 section 45), never treated like discovery's
+# multi-worker-per-provider concurrency.
+BROWSER_ASSIST_CONCURRENCY = _env_int("BROWSER_ASSIST_CONCURRENCY", 1)
+# A session with no activity for this long is reaped as EXPIRED (CLAUDE.md
+# Phase 10 section 50) -- never auto-submits or deletes evidence, only marks
+# the session/lease so a fresh attempt can start cleanly.
+BROWSER_SESSION_TIMEOUT_MINUTES = _env_int("BROWSER_SESSION_TIMEOUT_MINUTES", 30)
+# Same directory as BROWSER_ASSIST_PROFILE_DIR (Phase 9 section 5's "runtime
+# paths, never persisted longer than needed") -- Phase 10 name kept alongside
+# for the config section CLAUDE.md's Phase 10 build brief explicitly names.
+BROWSER_RUNTIME_DIR = Path(os.getenv("BROWSER_RUNTIME_DIR", "") or str(BROWSER_ASSIST_PROFILE_DIR))
+# How long a claimed browser-session lease is held before another
+# assist-capable worker/dashboard action may reclaim it (CLAUDE.md Phase 10
+# section 63) -- same lease-expiry-only recovery model as every other queue
+# in this project, no heartbeat/crash-detection logic.
+BROWSER_SESSION_LEASE_SECONDS = _env_int("BROWSER_SESSION_LEASE_SECONDS", 600)

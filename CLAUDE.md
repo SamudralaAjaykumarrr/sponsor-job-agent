@@ -636,3 +636,78 @@ and must remain first; no downstream executor code path may bypass it.
   application-worker load-test script) follows the same isolated-temp-DB-only,
   never-collide-with-a-real-name convention as every prior phase's benchmarks — never write
   synthetic rows into a real registry or a developer's real `data/app.db`.
+
+## Real ATS Browser Assist Rules (recorded after Phase 10, apply to all future phases)
+
+- `app.applications.browser_runtime` is the ONLY module that ever imports `playwright` —
+  `app.applications.browser_assist` (session orchestration) never does. This module must never
+  grow a function that clicks a final submit/apply action for ANY real provider, under any
+  condition — enforced not just by review but by a static doctor check
+  (`app.applications.doctor._check_no_browser_auto_submit_capability`) that scans the module's
+  own public API for a forbidden name pattern on every doctor run. Every browser context is a
+  fresh, ephemeral `browser.new_context()` — never `launch_persistent_context()`, never a saved
+  `storage_state` — and no password/MFA-code/cookie/token is ever a column in
+  `browser_assist_sessions` or written to disk.
+- `app.applications.browser_assist.start_session()` re-derives
+  `app.applications.eligibility.evaluate_executor_eligibility()` independently every time, never
+  trusting a stale `application_state` or a previously-passing check — a hard-skip employment
+  type or non-eligible sponsorship status must NEVER get a browser session, full stop, matching
+  the same defense-in-depth principle Phase 8's executor already established.
+- Every browser navigation is checked with `app.applications.domain_allowlist
+  .is_allowed_host_for_session()` immediately after each page load; an unexpected host pauses the
+  session (`PAUSED_PLATFORM_RESTRICTED`) rather than continuing to interact with an unverified
+  page. An EMPTY current-URL string is the correct rejection condition — an empty HOSTNAME is
+  not (a `file://` URL, and any two same-host pages with no netloc, legitimately have one); a
+  real live-Chromium test caught this distinction being conflated.
+- `browser_assist_sessions` follows the exact same "one active thing per job" pattern
+  `application_executions` already uses: `active=1` while non-terminal, a partial unique index
+  on `(job_id) WHERE active=1` is the actual atomic distributed-ownership guard (verified live
+  under real PostgreSQL with 8 concurrent claimers — exactly one ever wins), and
+  `SUBMISSION_STATUS_UNKNOWN` deliberately stays `active=1` so a second concurrent attempt is
+  blocked until a human reconciles it, exactly like Phase 8's execution model.
+- A session's form-fingerprint drift check (`PAUSED_FORM_CHANGED`) applies on
+  `resume_session()`/`mark_user_action_complete()` — an unexpected change while paused must
+  never be silently remapped — but NEVER on `advance_step()`, where a completely different
+  field set on the next page of a genuinely multi-step form is expected, not drift. Do not merge
+  these two checks back into one; a real E2E test caught exactly this conflation making every
+  multi-step form unusable.
+- `resume_session()`'s crash-recovery split is deliberate and must not be collapsed: if the
+  browser/process is gone and the session's last known status was pre-submission (any
+  `PAUSED_*`, `ACTIVE`, `READY_FOR_FINAL_SUBMIT`, `STARTING`), a fresh browser safely reopens at
+  the same `application_url` and rediscovers from scratch; if the last known status was
+  `AWAITING_USER_SUBMIT`, the outcome is NEVER guessed — the session becomes
+  `SUBMISSION_STATUS_UNKNOWN` for explicit human reconciliation. This module makes no claim of,
+  and must not attempt, cross-process browser reattachment as a tested guarantee.
+- `app.applications.browser_assist.attempt_user_submit_reconciliation()` is the ONLY code path
+  that may mark a browser-assist-linked execution `APPLIED` from browser-observed evidence, and
+  only when the browser is genuinely still live AND the current page's text contains a real
+  success-phrase match — never merely because the user claims they submitted. It funnels
+  through the same `app.applications.repo.update_execution()` mirror path every other APPLIED
+  transition uses; it must never write `jobs.application_state` directly.
+- `app.applications.browser_capability_matrix` is deliberately DATA, not a `RealATSAssistProvider`
+  class hierarchy — `browser_runtime`'s DOM engine is genuinely provider-agnostic by
+  construction (live-proven this phase against real, unrelated Greenhouse/Lever/Ashby forms with
+  zero per-provider code), so per-provider variation is only ever "has this been genuinely opened
+  and inspected live" (`LIVE_FORM_VERIFIED`/`FIXTURE_ONLY`/`NOT_TESTED`), tracked as a dated,
+  update-from-a-genuine-observation-only table — never inflate a row without a fresh check, and
+  never build a parallel class hierarchy that would reintroduce the per-provider branching the
+  generic engine exists to avoid.
+- `app.applications.background_scheduler` is the only code path that runs
+  `app.applications.reconcile_worker.run_pass()` or
+  `app.applications.browser_assist.expire_stale_sessions()` on a schedule; both remain
+  independently gated by their own existing flags (`RECONCILE_WORKER_ENABLED`,
+  `BROWSER_ASSIST_ENABLED`) and a failure in one must never stop the other or the loop itself —
+  matching every other background loop's "one thing failing never takes down the rest"
+  principle in this project.
+- A radio/checkbox GROUP's detected label must come from its fieldset legend (the actual
+  question) in preference to any single option's own per-choice label text — the opposite
+  priority from a normal single-value field, where the field's own label IS the question. A real
+  E2E test caught the old uniform-priority code silently mislabeling every sponsorship-style
+  radio question as its first choice's text ("Yes"), which meant the field was never recognized
+  or filled at all.
+- `app.applications.schema.DECLINE_TO_SELF_IDENTIFY_PHRASES` must keep BOTH the
+  apostrophe-deleted and apostrophe-replaced-with-space forms of every contraction (`"i dont"`
+  and `"i don t"`) — every caller normalizes via `.replace("'", "")`, which deletes the
+  apostrophe rather than inserting a space, so only the deleted form actually matches; a real
+  bug (present since Phase 8, only surfaced by Phase 10's live/E2E testing) had this list only
+  containing the never-actually-produced space form.

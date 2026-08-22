@@ -144,6 +144,22 @@
   </div>
 
   <div class="card">
+    <h3>Browser assist</h3>
+    <p>Browser assist: <strong>{{ 'ON' if browser_assist_enabled else 'OFF' }}</strong>
+       {% if not browser_assist_enabled %}— set BROWSER_ASSIST_ENABLED=true and install Playwright + Chromium.{% endif %}</p>
+    {% if active_browser_session %}
+    <p>Active browser-assist session: <a href="/applications/browser-sessions/{{ active_browser_session.session_id }}">
+       {{ active_browser_session.session_id }}</a> — status <strong>{{ active_browser_session.status }}</strong></p>
+    {% elif active_execution and browser_assist_enabled %}
+    <form method="post" action="/jobs/{{ job.id }}/browser-assist/start">
+      <button class="btn" type="submit">Start Browser Assist (real ATS, visible browser)</button>
+    </form>
+    {% elif not active_execution %}
+    <p style="font-size:0.85rem;color:#666;">Prepare or Queue Application first, then start browser assist.</p>
+    {% endif %}
+  </div>
+
+  <div class="card">
     <h3>Update state</h3>
     <form class="state" method="post" action="/jobs/{{ job.id }}/state">
       <select name="target_state">

@@ -1,0 +1,70 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Browser-Assist Session — Sponsor Job Agent</title>
+  <style>
+    body { font-family: -apple-system, Arial, sans-serif; margin: 2rem; background: #f7f7f9; color: #1a1a1a; max-width: 800px; }
+    .card { background: white; border: 1px solid #ddd; border-radius: 8px; padding: 1rem 1.25rem; margin-bottom: 1rem; }
+    .btn { padding: 6px 12px; border-radius: 6px; border: 1px solid #888; background: #fafafa; cursor: pointer; margin-right: 0.5rem; }
+    dl { display: grid; grid-template-columns: 12rem 1fr; row-gap: 0.35rem; font-size: 0.9rem; }
+    dt { font-weight: 600; color: #555; }
+    .warn { color: #a94442; }
+    .ok { color: #155724; }
+  </style>
+</head>
+<body>
+  <p><a href="/applications/browser-sessions">&larr; back to Browser-Assist Sessions</a>
+     · <a href="/jobs/{{ job.id if job else session.job_id }}">view job</a></p>
+  <h1>Browser-Assist Session</h1>
+
+  <div class="card">
+    <dl>
+      <dt>Session ID</dt><dd><code>{{ session.session_id }}</code></dd>
+      <dt>Execution ID</dt><dd><code>{{ session.execution_id }}</code></dd>
+      <dt>Job</dt><dd>{{ job.title if job else '' }} — {{ job.company if job else '' }}</dd>
+      <dt>Provider</dt><dd>{{ session.provider }}</dd>
+      <dt>Application URL</dt><dd><a href="{{ session.application_url }}" target="_blank" rel="noopener">{{ session.application_url }}</a></dd>
+      <dt>Status</dt><dd><strong>{{ session.status }}</strong></dd>
+      <dt>Browser window</dt>
+      <dd>{% if is_live %}<span class="ok">open in this process</span>{% else %}<span class="warn">not open in this process</span> — Resume to reopen{% endif %}</dd>
+      <dt>Step</dt><dd>{{ session.current_step }}{% if session.total_steps_if_known %} of {{ session.total_steps_if_known }}{% endif %}</dd>
+      <dt>Mapped fields</dt><dd>{{ session.mapped_field_count }}</dd>
+      <dt>Unresolved fields</dt><dd>{{ session.unresolved_field_count }}</dd>
+      <dt>Form fingerprint</dt><dd><code>{{ session.form_fingerprint }}</code></dd>
+      {% if session.needs_user_action %}
+      <dt>Needs user action</dt><dd class="warn">{{ session.user_action_reason }}</dd>
+      {% endif %}
+      {% if session.confirmation_id %}
+      <dt>Confirmation</dt><dd class="ok">{{ session.confirmation_id }}
+        {% if session.confirmation_url %}(<a href="{{ session.confirmation_url }}" target="_blank" rel="noopener">receipt</a>){% endif %}</dd>
+      {% endif %}
+      <dt>Created</dt><dd>{{ session.created_at }}</dd>
+      <dt>Last activity</dt><dd>{{ session.last_activity_at }}</dd>
+    </dl>
+  </div>
+
+  <div class="card">
+    <h3>Actions</h3>
+    <form method="post" action="/browser-sessions/{{ session.session_id }}/resume" style="display:inline;">
+      <button class="btn" type="submit">Resume / Continue</button>
+    </form>
+    <form method="post" action="/browser-sessions/{{ session.session_id }}/continue" style="display:inline;">
+      <button class="btn" type="submit">Mark User Action Complete</button>
+    </form>
+    <form method="post" action="/browser-sessions/{{ session.session_id }}/advance-step" style="display:inline;">
+      <button class="btn" type="submit">Advance to Next Step</button>
+    </form>
+    {% if session.status in ('READY_FOR_FINAL_SUBMIT', 'AWAITING_USER_SUBMIT') %}
+    <p style="margin-top:0.75rem;">This application is ready for final review/submission. Complete it yourself in the
+       visible browser window, then click below so the system can check the resulting page for confirmation.</p>
+    <form method="post" action="/browser-sessions/{{ session.session_id }}/reconcile" style="display:inline;">
+      <button class="btn" type="submit">I Submitted It — Check for Confirmation</button>
+    </form>
+    {% endif %}
+    <form method="post" action="/browser-sessions/{{ session.session_id }}/close" style="display:inline;">
+      <button class="btn" type="submit">Close Session</button>
+    </form>
+  </div>
+</body>
+</html>

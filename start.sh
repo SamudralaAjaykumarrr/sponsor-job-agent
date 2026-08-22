@@ -23,12 +23,25 @@ if [ "$DB_BACKEND" = "PostgreSQL (shared)" ]; then
   QUEUE_BACKEND="PostgreSQL (SELECT ... FOR UPDATE SKIP LOCKED)"
 fi
 AGENT_ENABLED_DISPLAY="${AGENT_ENABLED:-false}"
+APPLICATION_EXECUTOR_DISPLAY="${APPLICATION_EXECUTOR_ENABLED:-false}"
+AUTO_PREPARE_DISPLAY="${APPLICATION_AUTO_PREPARE_ENABLED:-false}"
+BROWSER_ASSIST_DISPLAY="${BROWSER_ASSIST_ENABLED:-false}"
+BROWSER_MODE_DISPLAY="VISIBLE"
+if [ "${BROWSER_HEADLESS:-${BROWSER_ASSIST_HEADLESS:-false}}" = "true" ]; then
+  BROWSER_MODE_DISPLAY="HEADLESS"
+fi
+AUTO_SUBMIT_DISPLAY="${AUTO_SUBMIT_ENABLED:-false}"
 
 echo "============================================================"
 echo " Sponsor Job Agent"
-echo "   Database backend:  ${DB_BACKEND}"
+echo "   Database backend:   ${DB_BACKEND}"
 echo "   Queue backend:      ${QUEUE_BACKEND}"
-echo "   Agent enabled:       ${AGENT_ENABLED_DISPLAY}"
+echo "   Agent enabled:      ${AGENT_ENABLED_DISPLAY}"
+echo "   Application exec:   ${APPLICATION_EXECUTOR_DISPLAY}"
+echo "   Auto prepare:       ${AUTO_PREPARE_DISPLAY}"
+echo "   Browser assist:     ${BROWSER_ASSIST_DISPLAY}"
+echo "   Browser mode:       ${BROWSER_MODE_DISPLAY}"
+echo "   Auto submit:        ${AUTO_SUBMIT_DISPLAY}"
 echo "   Worker mode:         run distributed workers separately via"
 echo "                        'python -m app.workers.cli run' (see docs/fleet-operations.md)"
 echo "   Dashboard URL:       http://127.0.0.1:8000"

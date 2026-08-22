@@ -32,7 +32,7 @@ from typing import Optional
 
 from app import config
 from app.applications.mapping import match_field
-from app.applications.models import ApplicationField, FieldConfidence, SENSITIVE_CATEGORIES
+from app.applications.models import ApplicationField, FieldCategory, FieldConfidence, SENSITIVE_CATEGORIES
 from app.models import Job
 
 
@@ -188,3 +188,366 @@ def prepare_application(
         prepared_field_ids=prepared, unresolved_field_ids=unresolved,
         resume_path=resume_path, cover_letter_path=cover_letter_path,
     )
+
+
+# =============================================================================
+# CLAUDE.md Phase 10: production-quality, resumable, session-based browser
+# assist. This is the API the executor/worker/dashboard/CLI use going
+# forward -- `prepare_application()` above is kept unchanged for backward
+# compatibility (it still works exactly as before) but is a one-shot,
+# single-page, close-immediately helper; everything below supports a
+# persistent visible window across multiple separate calls, multi-step forms,
+# pause/resume for login/CAPTCHA/legal questions, crash recovery, and
+# post-manual-submit confirmation capture. See docs/browser-assist-sessions.md.
+# =============================================================================
+
+import hashlib
+
+from app.applications import browser_runtime
+from app.applications import repo as _executions_repo
+from app.applications.browser_session import (
+    BrowserPauseReason,
+    BrowserSessionStatus,
+    DuplicateSessionError,
+    PAUSED_STATUSES,
+    REASON_TO_STATUS,
+    TERMINAL_SESSION_STATUSES,
+)
+from app.applications import browser_session
+from app.applications.eligibility import evaluate_executor_eligibility
+from app.applications.models import ExecutionStatus
+from app.applications.schema import build_application_fields, find_field
+from app.candidate.profile import load_profile
+from app.jobs_repo import get_job
+
+_TERMINAL_SESSION_VALUES = {s.value for s in TERMINAL_SESSION_STATUSES}
+_PAUSED_VALUES = {s.value for s in PAUSED_STATUSES}
+
+
+def _verify_resume(job: Job) -> tuple[bool, str, str]:
+    """CLAUDE.md Phase 10 section 15: before ANY upload preparation, verify
+    the job's own generated resume artifact actually exists and belongs to
+    this job -- mirrors app.applications.executor._verify_resume_artifact's
+    "job_id / artifact hash / file existence" checks (that function is
+    execution-hash-comparison specific; this one is the simpler pre-session
+    existence+ownership check browser_assist needs before ever opening a
+    real ATS page)."""
+    path_str = job.resume_pdf_path
+    if not path_str:
+        return False, "resume artifact not generated for this job yet -- run Prepare Application first", ""
+    path = Path(path_str)
+    if not path.exists():
+        return False, f"resume artifact missing on disk: {path}", ""
+    if path.parent.name != str(job.id):
+        return False, f"resume artifact path '{path}' does not correspond to this job", ""
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    return True, "", digest
+
+
+def _build_fields_for_job(job: Job) -> list[ApplicationField]:
+    profile = load_profile()
+    return build_application_fields(
+        profile, resume_path=job.resume_pdf_path or "", cover_letter_path=job.cover_letter_path or "",
+    )
+
+
+def _classify_unresolved(raw_fields: list[dict], application_fields: list[ApplicationField],
+                          unresolved_labels: list[str]) -> BrowserPauseReason:
+    """CLAUDE.md Phase 10 section 13: a real legal/attestation question that
+    couldn't be safely auto-filled pauses with LEGAL_ATTESTATION specifically
+    (never lumped in with an ordinary unknown field) so the dashboard/user
+    knows exactly what kind of review is needed."""
+    labels = set(unresolved_labels)
+    for rf in raw_fields:
+        label = rf.get("label") or rf.get("name") or f"field#{rf.get('index')}"
+        if label not in labels:
+            continue
+        field_id, _confidence = match_field(rf.get("label", ""), rf.get("name", ""))
+        app_field = find_field(application_fields, field_id) if field_id else None
+        if app_field is not None and app_field.category == FieldCategory.LEGAL_ATTESTATION:
+            return BrowserPauseReason.LEGAL_ATTESTATION
+    return BrowserPauseReason.UNKNOWN_REQUIRED_FIELD
+
+
+def _apply_discovery_outcome(session: dict, outcome: "browser_runtime.DiscoveryOutcome",
+                              application_fields: list[ApplicationField], *, check_drift: bool = True) -> dict:
+    """The single place that turns one real-browser discovery pass into a
+    session status update -- used by start/resume/mark-user-action-complete/
+    advance-step so all four go through identical, never-diverging logic.
+
+    `check_drift=False` is used ONLY by advance_step(): moving to a new page
+    of a genuinely multi-step form is EXPECTED to have a different field
+    fingerprint (different fields entirely) -- that is normal progression,
+    not the "form changed out from under us" drift PAUSED_FORM_CHANGED
+    exists to catch (a real E2E test against live Chromium caught this: an
+    earlier version paused after every single intentional step advance,
+    which would have made multi-step forms unusable)."""
+    session_id = session["session_id"]
+
+    if outcome.pause_reason:
+        reason = BrowserPauseReason(outcome.pause_reason)
+        status = REASON_TO_STATUS[reason]
+        return browser_session.update_session(
+            session_id, status=status.value, needs_user_action=1, user_action_reason=reason.value,
+            total_steps_if_known=outcome.total_steps_hint or session.get("total_steps_if_known"),
+        )
+
+    fill_result = browser_runtime.fill_fields(session_id, outcome.fields, application_fields)
+
+    prior_fingerprint = session.get("form_fingerprint") or ""
+    form_changed = check_drift and bool(prior_fingerprint) and prior_fingerprint != outcome.fingerprint
+    if form_changed:
+        # CLAUDE.md Phase 10 section 33: never reuse a stale mapping blindly
+        # -- surface the drift for explicit remap rather than silently
+        # continuing to fill against a form that has since changed shape.
+        return browser_session.update_session(
+            session_id, status=BrowserSessionStatus.PAUSED_FORM_CHANGED.value, needs_user_action=1,
+            user_action_reason=BrowserPauseReason.FORM_CHANGED.value, form_fingerprint=outcome.fingerprint,
+            mapped_field_count=len(fill_result.filled), unresolved_field_count=len(fill_result.unresolved),
+        )
+
+    if fill_result.unresolved:
+        reason = _classify_unresolved(outcome.fields, application_fields, fill_result.unresolved)
+        status = REASON_TO_STATUS[reason]
+        return browser_session.update_session(
+            session_id, status=status.value, needs_user_action=1, user_action_reason=reason.value,
+            form_fingerprint=outcome.fingerprint, mapped_field_count=len(fill_result.filled),
+            unresolved_field_count=len(fill_result.unresolved),
+            total_steps_if_known=outcome.total_steps_hint or session.get("total_steps_if_known"),
+        )
+
+    # CLAUDE.md Phase 10 section 29: the runtime may LOCATE a submit button,
+    # never click it -- READY_FOR_FINAL_SUBMIT just means "report it, and
+    # stop here" for every provider in this project (none have
+    # AutomationPolicy.PERMITTED_AUTO for a real browser session today).
+    new_status = BrowserSessionStatus.READY_FOR_FINAL_SUBMIT if outcome.submit_button else BrowserSessionStatus.ACTIVE
+    return browser_session.update_session(
+        session_id, status=new_status.value, needs_user_action=0, user_action_reason="",
+        form_fingerprint=outcome.fingerprint, mapped_field_count=len(fill_result.filled),
+        unresolved_field_count=len(fill_result.unresolved),
+        total_steps_if_known=outcome.total_steps_hint or session.get("total_steps_if_known"),
+    )
+
+
+def start_session(execution_id: str) -> dict:
+    """Opens a real, visible browser against the execution's job's actual
+    application URL. Re-derives eligibility independently (CLAUDE.md Phase 10
+    sections 1-2, acceptance scenarios B/C) -- a hard-skip or not-yet-eligible
+    job NEVER gets a browser session, full stop, regardless of what called
+    this. Idempotent: an existing active session for the same job is reused
+    rather than creating a duplicate (section 49)."""
+    execution = _executions_repo.get_execution(execution_id)
+    if execution is None:
+        return {"created": False, "reason": f"execution {execution_id} not found"}
+    job = get_job(execution["job_id"])
+    if job is None:
+        return {"created": False, "reason": f"job {execution['job_id']} not found"}
+
+    eligibility = evaluate_executor_eligibility(job)
+    if not eligibility.enters_queue:
+        return {
+            "created": False,
+            "reason": "; ".join(eligibility.reasons) or "job is not eligible for application preparation",
+            "hard_skip": eligibility.hard_skip,
+        }
+
+    existing = browser_session.get_active_session_for_job(job.id)
+    if existing is not None:
+        return {"created": True, "session": existing, "reason": "existing active session reused"}
+
+    application_url = job.canonical_url or job.url
+    if not application_url:
+        return {"created": False, "reason": "no application URL available for this job"}
+
+    resume_ok, resume_reason, resume_hash = _verify_resume(job)
+    if not resume_ok:
+        return {"created": False, "reason": resume_reason}
+
+    application_fields = _build_fields_for_job(job)
+    answers_version = sum(1 for f in application_fields if f.verified_value is not None)
+
+    try:
+        session = browser_session.create_session(
+            execution_id=execution_id, job_id=job.id, provider=job.provider or "", application_url=application_url,
+        )
+    except DuplicateSessionError:
+        existing = browser_session.get_active_session_for_job(job.id)
+        return {"created": True, "session": existing, "reason": "race: session already existed"}
+
+    session_id = session["session_id"]
+    session = browser_session.update_session(
+        session_id, resume_artifact_hash=resume_hash, answers_version=answers_version,
+    )
+
+    try:
+        outcome = browser_runtime.open_session(session_id, provider=job.provider or "", url=application_url)
+    except (browser_runtime.BrowserRuntimeUnavailable, browser_runtime.BrowserRuntimeBusy) as exc:
+        updated = browser_session.update_session(
+            session_id, status=BrowserSessionStatus.CLOSED.value, user_action_reason=str(exc),
+        )
+        return {"created": False, "reason": str(exc), "session": updated}
+
+    updated = _apply_discovery_outcome(session, outcome, application_fields)
+    return {"created": True, "session": updated}
+
+
+def resume_session(session_id: str) -> dict:
+    """CLAUDE.md Phase 10 section 6/51: resumes an existing session. If the
+    browser is still live in THIS process, re-scans the CURRENT page state
+    (never assumes it stayed unchanged) and continues. If the browser/process
+    is gone, restarts a fresh browser at the SAME URL when that's still safe
+    (pre-submission) -- or, if the session was last known to be awaiting a
+    manual submit, honestly marks SUBMISSION_STATUS_UNKNOWN rather than
+    guessing whether the submission went through."""
+    session = browser_session.get_session(session_id)
+    if session is None:
+        return {"ok": False, "detail": f"session {session_id} not found"}
+    if session["status"] in _TERMINAL_SESSION_VALUES:
+        return {"ok": True, "detail": f"session already {session['status']}", "session": session}
+
+    job = get_job(session["job_id"])
+    if job is None:
+        return {"ok": False, "detail": f"job {session['job_id']} not found"}
+    application_fields = _build_fields_for_job(job)
+
+    if browser_runtime.is_live(session_id):
+        browser_session.touch_activity(session_id)
+        outcome = browser_runtime.rediscover(session_id)
+        updated = _apply_discovery_outcome(session, outcome, application_fields)
+        return {"ok": True, "detail": "resumed live browser session", "session": updated}
+
+    if session["status"] == BrowserSessionStatus.AWAITING_USER_SUBMIT.value:
+        updated = browser_session.update_session(
+            session_id, status=BrowserSessionStatus.SUBMISSION_STATUS_UNKNOWN.value, needs_user_action=1,
+            user_action_reason="the browser process was lost while awaiting a manual submit -- outcome unknown, "
+                                "reconciliation required",
+        )
+        return {
+            "ok": False,
+            "detail": "browser was lost while awaiting a manual submit -- marked SUBMISSION_STATUS_UNKNOWN",
+            "session": updated,
+        }
+
+    try:
+        outcome = browser_runtime.open_session(
+            session_id, provider=session["provider"], url=session["application_url"],
+        )
+    except (browser_runtime.BrowserRuntimeUnavailable, browser_runtime.BrowserRuntimeBusy) as exc:
+        return {"ok": False, "detail": str(exc), "session": session}
+
+    updated = _apply_discovery_outcome(session, outcome, application_fields)
+    return {"ok": True, "detail": "reopened a fresh browser window (previous window/process was gone)",
+            "session": updated}
+
+
+def mark_user_action_complete(session_id: str) -> dict:
+    """CLAUDE.md Phase 10 section 8: the candidate says they finished the
+    required action (logged in, solved the CAPTCHA, decided the legal
+    question in their own head, etc) in the visible window -- rediscovers the
+    CURRENT form state and continues, exactly like resume_session, but only
+    valid from a PAUSED_* status."""
+    session = browser_session.get_session(session_id)
+    if session is None:
+        return {"ok": False, "detail": f"session {session_id} not found"}
+    if session["status"] not in _PAUSED_VALUES:
+        return {"ok": False, "detail": f"session is {session['status']}, not waiting on a user action",
+                "session": session}
+    return resume_session(session_id)
+
+
+def advance_step(session_id: str) -> dict:
+    """CLAUDE.md Phase 10 section 10: clicks a safe "Next"/"Continue" control
+    on a multi-step form (never a final submit action) and rediscovers the
+    resulting page. Requires a live browser -- this is not something a
+    restarted process can safely replay, since intermediate steps may depend
+    on a previous page's now-cleared in-memory state."""
+    session = browser_session.get_session(session_id)
+    if session is None:
+        return {"ok": False, "detail": f"session {session_id} not found"}
+    if not browser_runtime.is_live(session_id):
+        return {"ok": False, "detail": "browser session is not open in this process -- resume it first",
+                "session": session}
+
+    result = browser_runtime.advance_step(session_id)
+    if not result.get("advanced"):
+        return {"ok": False, "detail": result.get("reason", "could not advance to the next step"),
+                "session": session}
+
+    job = get_job(session["job_id"])
+    application_fields = _build_fields_for_job(job) if job else []
+    session = browser_session.update_session(session_id, current_step=result["current_step"])
+    outcome = browser_runtime.rediscover(session_id)
+    updated = _apply_discovery_outcome(session, outcome, application_fields, check_drift=False)
+    return {"ok": True, "detail": "advanced to the next step", "session": updated}
+
+
+def pause_session(session_id: str, reason: BrowserPauseReason) -> dict:
+    status = REASON_TO_STATUS.get(reason, BrowserSessionStatus.PAUSED_UNKNOWN_FIELD)
+    return browser_session.update_session(
+        session_id, status=status.value, needs_user_action=1, user_action_reason=reason.value,
+    )
+
+
+def close_session(session_id: str, *, reason: str = "closed by user") -> dict:
+    """CLAUDE.md Phase 10 section 6: always safe to call, even if the browser
+    was already gone -- never raises, never corrupts execution state."""
+    browser_runtime.close_session(session_id)
+    return browser_session.close_session(session_id, reason=reason)
+
+
+def expire_stale_sessions() -> list[dict]:
+    """CLAUDE.md Phase 10 section 50: reaps abandoned sessions -- never
+    auto-submits or deletes evidence, only flips status/frees the (bounded)
+    browser concurrency slot."""
+    expired = browser_session.expire_stale_sessions(timeout_minutes=config.BROWSER_SESSION_TIMEOUT_MINUTES)
+    for row in expired:
+        browser_runtime.close_session(row["session_id"])
+    return expired
+
+
+def attempt_user_submit_reconciliation(session_id: str) -> dict:
+    """CLAUDE.md Phase 10 sections 40-42: the candidate says they clicked the
+    real submit button themselves in the visible window. Inspects the
+    CURRENT page for genuine confirmation evidence (never fabricated) -- only
+    a positively observed success indicator marks the linked execution
+    APPLIED; anything else leaves the session/execution exactly as they
+    were, or (if the browser is no longer reachable at all) honestly
+    SUBMISSION_STATUS_UNKNOWN."""
+    session = browser_session.get_session(session_id)
+    if session is None:
+        return {"ok": False, "detail": f"session {session_id} not found"}
+    if session["status"] == BrowserSessionStatus.CONFIRMED.value:
+        return {"ok": True, "detail": "already confirmed", "session": session}
+
+    if not browser_runtime.is_live(session_id):
+        updated = browser_session.update_session(
+            session_id, status=BrowserSessionStatus.SUBMISSION_STATUS_UNKNOWN.value, needs_user_action=1,
+            user_action_reason="browser window is not reachable in this process -- cannot verify whether the "
+                                "manual submit succeeded",
+        )
+        return {"ok": False, "detail": "browser not reachable -- outcome unknown", "session": updated}
+
+    outcome = browser_runtime.capture_confirmation(session_id)
+    if not outcome.confirmed:
+        browser_session.touch_activity(session_id)
+        return {"ok": False, "detail": "no confirmation evidence found on the current page yet", "session": session}
+
+    execution = _executions_repo.get_execution(session["execution_id"])
+    if execution is not None and execution["active"] == 1:
+        _executions_repo.update_execution(
+            execution["execution_id"], execution["job_id"], ExecutionStatus.APPLIED,
+            confirmation_id=outcome.confirmation_id, confirmation_url=outcome.current_url,
+            confirmation_text_fingerprint=outcome.confirmation_text_fingerprint,
+            user_action_reason="confirmed via browser-assist manual submission", requires_user_action=0,
+        )
+        _executions_repo.log_event(
+            execution["execution_id"], execution["job_id"], "confirmed", detail="browser_assist_manual_submit",
+        )
+
+    updated = browser_session.update_session(
+        session_id, status=BrowserSessionStatus.CONFIRMED.value, confirmation_observed=1,
+        confirmation_id=outcome.confirmation_id, confirmation_url=outcome.current_url,
+        confirmation_text_fingerprint=outcome.confirmation_text_fingerprint, needs_user_action=0,
+    )
+    browser_runtime.close_session(session_id)
+    return {"ok": True, "detail": "confirmed", "session": updated}

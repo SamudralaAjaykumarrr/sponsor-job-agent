@@ -1,0 +1,58 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Browser-Assist Capability Matrix — Sponsor Job Agent</title>
+  <style>
+    body { font-family: -apple-system, Arial, sans-serif; margin: 2rem; background: #f7f7f9; color: #1a1a1a; }
+    table { width: 100%; border-collapse: collapse; background: white; }
+    th, td { padding: 8px 10px; border-bottom: 1px solid #eee; text-align: left; font-size: 0.8rem; vertical-align: top; }
+    th { background: #fafafa; }
+    .yes { color: #155724; font-weight: 600; }
+    .no { color: #721c24; }
+    .verified { background: #d4edda; color: #155724; padding: 2px 8px; border-radius: 10px; font-weight: 600; }
+    .fixture { background: #d1ecf1; color: #0c5460; padding: 2px 8px; border-radius: 10px; font-weight: 600; }
+    .nottested { background: #eee; color: #555; padding: 2px 8px; border-radius: 10px; font-weight: 600; }
+    .notes { max-width: 340px; color: #555; }
+  </style>
+</head>
+<body>
+  <p><a href="/">&larr; back to dashboard</a> · <a href="/applications">Applications</a> ·
+     <a href="/applications/capability-matrix">Application Provider Capability Matrix</a></p>
+  <h1>Browser-Assist Capability Matrix</h1>
+  <p>Each row reflects a genuine, dated observation -- a real browser opened against that provider's own real
+     candidate-facing posting, or an honest "not tested" when that has not happened. Separate from the
+     application-provider matrix above, which describes network-API-based discovery/submission support.
+     See <code>docs/real-ats-validation.md</code>.</p>
+  <table>
+    <thead>
+      <tr>
+        <th>Provider</th><th>Verification</th><th>Field discovery</th><th>Autofill</th><th>Resume upload</th>
+        <th>Multi-step</th><th>Login handoff</th><th>CAPTCHA handoff</th><th>Final-submit automation</th>
+        <th>Confirmation capture</th><th>Notes</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in matrix.rows %}
+      <tr>
+        <td>{{ r.provider }}</td>
+        <td>
+          <span class="{% if r.verification == 'LIVE_FORM_VERIFIED' %}verified{% elif r.verification == 'FIXTURE_ONLY' %}fixture{% else %}nottested{% endif %}">
+            {{ r.verification }}
+          </span>
+        </td>
+        <td class="{{ 'yes' if r.field_discovery else 'no' }}">{{ r.field_discovery }}</td>
+        <td class="{{ 'yes' if r.safe_autofill else 'no' }}">{{ r.safe_autofill }}</td>
+        <td class="{{ 'yes' if r.resume_upload else 'no' }}">{{ r.resume_upload }}</td>
+        <td>{{ r.multi_step }}</td>
+        <td>{{ r.login_handoff }}</td>
+        <td>{{ r.captcha_handoff }}</td>
+        <td class="{{ 'yes' if r.final_submit_automation else 'no' }}">{{ r.final_submit_automation }}</td>
+        <td>{{ r.confirmation_capture }}</td>
+        <td class="notes">{{ r.notes }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</body>
+</html>

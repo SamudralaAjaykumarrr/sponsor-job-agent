@@ -118,6 +118,26 @@ read-only and exits nonzero on any serious issue. Phase 8 checks:
 `auto_submit_enabled_for_unvalidated_provider`,
 `unknown_submission_retried`, `non_full_time_queued`,
 `non_confirmed_sponsorship_queued`, `rate_limit_accounting_inconsistency`.
+Phase 10 additions (browser-assist sessions, see `docs/browser-assist-sessions.md`):
+`browser_session_without_execution`, `browser_session_non_full_time`,
+`browser_session_non_eligible_sponsorship`, `stale_browser_session_still_active`,
+`browser_confirmation_without_applied_execution`, `browser_applied_without_confirmation`,
+`unexpected_browser_auto_submit_capability`, `browser_session_forbidden_field`,
+`browser_capability_matrix_claims_final_submit`.
+
+## Scheduled background maintenance (Phase 10)
+
+`app.applications.background_scheduler.background_scheduler` runs inside the FastAPI app's
+lifespan (started/stopped alongside the existing discovery `scheduler`) and actually executes
+two tasks that Phase 9 only ever defined config flags for:
+
+- The reconciliation evidence pass (`app.applications.reconcile_worker.run_pass()`) every
+  `RECONCILE_WORKER_INTERVAL_SECONDS`, when `RECONCILE_WORKER_ENABLED=true`.
+- The browser-assist stale-session reaper (`app.applications.browser_assist.expire_stale_sessions()`)
+  at roughly half of `BROWSER_SESSION_TIMEOUT_MINUTES`, when `BROWSER_ASSIST_ENABLED=true`.
+
+Both are independently gated and a failure in one is logged and never stops the other or the
+loop itself (`tests/test_application_background_scheduler.py`).
 
 ## Rate limits
 

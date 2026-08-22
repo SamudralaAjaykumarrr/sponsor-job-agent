@@ -46,6 +46,65 @@ def collect() -> dict:
         }
 
 
+def collect_browser_assist() -> dict:
+    """CLAUDE.md Phase 10 section 61. Every value is a live DB query -- never
+    cached, never PII. `browser_assist_sessions_active` counts every
+    non-terminal session (ACTIVE + every PAUSED_* + READY_FOR_FINAL_SUBMIT +
+    AWAITING_USER_SUBMIT + SUBMISSION_STATUS_UNKNOWN), matching
+    browser_assist_sessions.active=1 exactly."""
+    from app.applications import browser_runtime
+    from app.applications.browser_session import BrowserSessionStatus
+
+    with db_session() as conn:
+        active_total = conn.execute(
+            "SELECT COUNT(*) AS c FROM browser_assist_sessions WHERE active = 1"
+        ).fetchone()["c"]
+        paused_total = conn.execute(
+            "SELECT COUNT(*) AS c FROM browser_assist_sessions WHERE active = 1 AND status LIKE 'PAUSED_%'"
+        ).fetchone()["c"]
+        login_required = conn.execute(
+            "SELECT COUNT(*) AS c FROM browser_assist_sessions WHERE status = ?",
+            (BrowserSessionStatus.PAUSED_LOGIN_REQUIRED.value,),
+        ).fetchone()["c"]
+        captcha_required = conn.execute(
+            "SELECT COUNT(*) AS c FROM browser_assist_sessions WHERE status = ?",
+            (BrowserSessionStatus.PAUSED_CAPTCHA.value,),
+        ).fetchone()["c"]
+        ready_for_submit = conn.execute(
+            "SELECT COUNT(*) AS c FROM browser_assist_sessions WHERE status = ?",
+            (BrowserSessionStatus.READY_FOR_FINAL_SUBMIT.value,),
+        ).fetchone()["c"]
+        confirmation_unknown = conn.execute(
+            "SELECT COUNT(*) AS c FROM browser_assist_sessions WHERE status = ?",
+            (BrowserSessionStatus.SUBMISSION_STATUS_UNKNOWN.value,),
+        ).fetchone()["c"]
+        confirmed_total = conn.execute(
+            "SELECT COUNT(*) AS c FROM browser_assist_sessions WHERE status = ?",
+            (BrowserSessionStatus.CONFIRMED.value,),
+        ).fetchone()["c"]
+        form_drift_total = conn.execute(
+            "SELECT COUNT(*) AS c FROM browser_assist_sessions WHERE status = ?",
+            (BrowserSessionStatus.PAUSED_FORM_CHANGED.value,),
+        ).fetchone()["c"]
+        failures_total = conn.execute(
+            "SELECT COUNT(*) AS c FROM browser_assist_sessions WHERE status = ?",
+            (BrowserSessionStatus.PAUSED_PLATFORM_RESTRICTED.value,),
+        ).fetchone()["c"]
+
+    return {
+        "browser_assist_sessions_active": active_total,
+        "browser_assist_sessions_paused": paused_total,
+        "browser_assist_login_required": login_required,
+        "browser_assist_captcha_required": captcha_required,
+        "browser_assist_ready_for_submit": ready_for_submit,
+        "browser_assist_confirmation_unknown": confirmation_unknown,
+        "browser_assist_confirmed": confirmed_total,
+        "browser_assist_form_drift": form_drift_total,
+        "browser_assist_failures": failures_total,
+        "browser_assist_live_in_process": browser_runtime.active_count(),
+    }
+
+
 def collect_worker_fleet() -> dict:
     """CLAUDE.md Phase 9 section 49: application-worker-fleet-shaped
     observability, kept separate from collect() above (which is purely
