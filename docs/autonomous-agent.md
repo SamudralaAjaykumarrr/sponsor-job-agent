@@ -201,3 +201,13 @@ scheduler/workers are gated by, or aware of, `BROWSER_ASSIST_ENABLED` — a job 
 (dashboard/CLI) stage layered on top of an already-existing execution, with its own
 independently re-derived eligibility gate. See `docs/phase10-real-ats-assist.md` and
 `docs/browser-assist-sessions.md`.
+
+## Phase 14: resume optimization is a further, separate, opt-in stage
+
+Same relationship as Phase 9/10 in this document: the discovery cycle and `app.pipeline`'s
+existing resume generation (`generate_assist_outputs`) are completely unchanged and unaware of
+`app.resume_optimizer`. Resume OPTIMIZATION (the JD-specific, coverage-diagnosed variant) is a
+separate artifact set under `output/<job_id>/optimized/<variant_id>/`, triggered by the
+dashboard "Generate/Regenerate Resume" action, the CLI, or (only if `RESUME_OPTIMIZATION_ENABLED`
+is explicitly turned on) `app.resume_optimizer.scheduler`'s independent background loop. See
+`docs/phase14-resume-optimization-dashboard.md`.

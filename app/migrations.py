@@ -1044,6 +1044,158 @@ def _m038_confirmation_evidence_column(conn, backend: str) -> None:
     ])
 
 
+def _m039_jd_analyses_table(conn, backend: str) -> None:
+    """CLAUDE.md Phase 14 sections 3, 36, 70: cached, per-(job, JD-fingerprint)
+    JD analysis result -- never recomputed on every dashboard load (section
+    55). A JD-text change produces a different jd_fingerprint and a new row
+    rather than overwriting the old one, so history stays inspectable."""
+    id_column = "id BIGSERIAL PRIMARY KEY" if backend == "postgres" else "id INTEGER PRIMARY KEY AUTOINCREMENT"
+    conn.execute(
+        f"""CREATE TABLE IF NOT EXISTS jd_analyses (
+            {id_column},
+            job_id INTEGER NOT NULL,
+            jd_fingerprint TEXT NOT NULL,
+            analyzer_version TEXT NOT NULL DEFAULT '',
+            job_title TEXT DEFAULT '',
+            seniority TEXT DEFAULT '',
+            required_years REAL,
+            domain_signals TEXT DEFAULT '[]',
+            responsibilities TEXT DEFAULT '[]',
+            education_requirements TEXT DEFAULT '[]',
+            certification_requirements TEXT DEFAULT '[]',
+            sponsorship_language_present INTEGER NOT NULL DEFAULT 0,
+            salary_mentioned INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_jd_analyses_job_fingerprint "
+        "ON jd_analyses (job_id, jd_fingerprint)"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_jd_analyses_job ON jd_analyses (job_id)")
+
+
+def _m040_jd_requirements_table(conn, backend: str) -> None:
+    """CLAUDE.md Phase 14 sections 3-4, 9-11, 61: one row per extracted JD
+    requirement item, linked to its parent jd_analyses row. Never mutated in
+    place after creation -- a re-analysis creates a new jd_analyses row (and
+    a fresh set of these) rather than editing an existing requirement."""
+    id_column = "id BIGSERIAL PRIMARY KEY" if backend == "postgres" else "id INTEGER PRIMARY KEY AUTOINCREMENT"
+    conn.execute(
+        f"""CREATE TABLE IF NOT EXISTS jd_requirements (
+            {id_column},
+            jd_analysis_id INTEGER NOT NULL,
+            text TEXT NOT NULL,
+            normalized_value TEXT NOT NULL DEFAULT '',
+            category TEXT NOT NULL,
+            priority TEXT NOT NULL,
+            evidence_span TEXT DEFAULT '',
+            confidence REAL DEFAULT 1.0,
+            negated INTEGER NOT NULL DEFAULT 0,
+            conditional INTEGER NOT NULL DEFAULT 0
+        )"""
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_jd_requirements_analysis ON jd_requirements (jd_analysis_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_jd_requirements_category ON jd_requirements (category)")
+
+
+def _m041_resume_variants_table(conn, backend: str) -> None:
+    """CLAUDE.md Phase 14 sections 33, 37-39, 58-59, 72: one row per
+    generated, job-specific resume artifact. `current` (1 while this is the
+    job's live/latest variant, 0 once superseded) backs a partial unique
+    index -- the same "one active thing per job" pattern
+    application_executions/browser_assist_sessions already use (CLAUDE.md
+    Phase 8/10) -- so two workers racing to generate for the same job can
+    never both leave a variant marked current. A SECOND unique index on
+    (job_id, jd_fingerprint, profile_version, optimizer_version) is the
+    actual idempotency guard (section 58): the identical input never
+    produces two rows, and a concurrent duplicate INSERT is rejected by the
+    database itself rather than by an application-level check-then-insert."""
+    id_column = "id BIGSERIAL PRIMARY KEY" if backend == "postgres" else "id INTEGER PRIMARY KEY AUTOINCREMENT"
+    conn.execute(
+        f"""CREATE TABLE IF NOT EXISTS resume_variants (
+            {id_column},
+            variant_id TEXT NOT NULL UNIQUE,
+            job_id INTEGER NOT NULL,
+            jd_fingerprint TEXT NOT NULL,
+            profile_version TEXT NOT NULL,
+            optimizer_version TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'GENERATING',
+            current INTEGER NOT NULL DEFAULT 1,
+            resume_docx_path TEXT DEFAULT '',
+            resume_pdf_path TEXT DEFAULT '',
+            resume_txt_path TEXT DEFAULT '',
+            resume_artifact_hash TEXT DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_resume_variants_identity "
+        "ON resume_variants (job_id, jd_fingerprint, profile_version, optimizer_version)"
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_resume_variants_job_current "
+        "ON resume_variants (job_id) WHERE current = 1"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_resume_variants_job ON resume_variants (job_id)")
+
+
+def _m042_resume_quality_reports_table(conn, backend: str) -> None:
+    """CLAUDE.md Phase 14 sections 2-3, 10-14, 33, 46: one row per resume
+    variant. Summary columns (alignment_label, internal_alignment_score,
+    required coverage counts, ats_parseability) are indexed/queryable
+    without JSON-parsing for dashboard performance (section 55); the full
+    itemized diagnostic (never a fake universal score) lives in report_json."""
+    id_column = "id BIGSERIAL PRIMARY KEY" if backend == "postgres" else "id INTEGER PRIMARY KEY AUTOINCREMENT"
+    conn.execute(
+        f"""CREATE TABLE IF NOT EXISTS resume_quality_reports (
+            {id_column},
+            variant_id TEXT NOT NULL UNIQUE,
+            job_id INTEGER NOT NULL,
+            jd_fingerprint TEXT NOT NULL,
+            resume_artifact_hash TEXT DEFAULT '',
+            required_total INTEGER DEFAULT 0,
+            required_matched INTEGER DEFAULT 0,
+            required_transferable INTEGER DEFAULT 0,
+            preferred_total INTEGER DEFAULT 0,
+            preferred_matched INTEGER DEFAULT 0,
+            ats_parseability TEXT DEFAULT '',
+            alignment_label TEXT DEFAULT '',
+            internal_alignment_score REAL DEFAULT 0.0,
+            claim_check_passed INTEGER NOT NULL DEFAULT 0,
+            optimizer_version TEXT NOT NULL DEFAULT '',
+            quality_version TEXT NOT NULL DEFAULT '',
+            report_json TEXT NOT NULL DEFAULT '{{}}',
+            generated_at TEXT NOT NULL
+        )"""
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_resume_quality_job ON resume_quality_reports (job_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_resume_quality_alignment ON resume_quality_reports (alignment_label)")
+
+
+def _m043_resume_evidence_links_table(conn, backend: str) -> None:
+    """CLAUDE.md Phase 14 sections 6, 9, 60-61: per-requirement match
+    evidence, the backing for the "claim provenance" / "unsupported
+    requirements" UI -- one row per JD requirement, showing exactly which
+    verified evidence (if any) backed the match decision, or that nothing
+    did (MISSING/UNSUPPORTED, never hidden)."""
+    id_column = "id BIGSERIAL PRIMARY KEY" if backend == "postgres" else "id INTEGER PRIMARY KEY AUTOINCREMENT"
+    conn.execute(
+        f"""CREATE TABLE IF NOT EXISTS resume_evidence_links (
+            {id_column},
+            variant_id TEXT NOT NULL,
+            requirement_text TEXT NOT NULL,
+            requirement_category TEXT NOT NULL,
+            requirement_priority TEXT NOT NULL,
+            status TEXT NOT NULL,
+            evidence_ids TEXT DEFAULT '[]',
+            explanation TEXT DEFAULT ''
+        )"""
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_resume_evidence_links_variant ON resume_evidence_links (variant_id)")
+
+
 MIGRATIONS: list[tuple[int, str, Callable]] = [
     (2, "phase6_worker_identity_columns", _m002_worker_identity_columns),
     (3, "phase6_schema_drift_table", _m003_schema_drift_table),
@@ -1082,6 +1234,11 @@ MIGRATIONS: list[tuple[int, str, Callable]] = [
     (36, "phase13_provider_canary_runs_table", _m036_provider_canary_runs_table),
     (37, "phase13_jobs_resume_jd_fingerprint_column", _m037_jobs_resume_jd_fingerprint_column),
     (38, "phase13_confirmation_evidence_column", _m038_confirmation_evidence_column),
+    (39, "phase14_jd_analyses_table", _m039_jd_analyses_table),
+    (40, "phase14_jd_requirements_table", _m040_jd_requirements_table),
+    (41, "phase14_resume_variants_table", _m041_resume_variants_table),
+    (42, "phase14_resume_quality_reports_table", _m042_resume_quality_reports_table),
+    (43, "phase14_resume_evidence_links_table", _m043_resume_evidence_links_table),
 ]
 
 # Version 1 is the implicit Phase 1-5 baseline schema, applied by

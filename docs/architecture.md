@@ -542,3 +542,18 @@ See `docs/phase12-spa-ats-hardening.md`, `docs/spa-application-navigation.md`,
   Ashby carries ambiguous reCAPTCHA v3 telemetry (conservatively still pauses); Workday's Walmart
   tenant showed `VARIABLE` stability across two more bounded observations.
 - Dashboard: new `/applications/provider-health` page; 3 new JSON API endpoints.
+
+## Phase 14: JD/resume optimization + unified dashboard is a further, separate, additive layer
+
+`app/resume_optimizer/` is a new top-level package with no import-time dependency from any
+Phase 1-13 module except read-only calls into `app.candidate.profile`/`app.candidate.schema`
+(verified profile), `app.resume.generator`/`docx_writer`/`pdf_writer`/`txt_writer` (artifact
+writers, unchanged), and `app.resume.claim_checker` (the truthfulness firewall, unchanged and
+never bypassed). The only writes back INTO pre-Phase-14 state are: one `mark_stale()` call added
+to `app.pipeline.reanalyze_job` (best-effort, wrapped in `except Exception: pass`), and new
+routes/imports in `app/main.py`. `app/pipeline_dashboard.py` is a separate, thin cross-cutting
+read layer for the unified dashboard -- it queries `jobs`, `resume_variants`,
+`resume_quality_reports`, `application_executions`, and `browser_assist_sessions` directly but
+writes to none of them.
+
+See `docs/phase14-resume-optimization-dashboard.md` for the full writeup.

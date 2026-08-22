@@ -162,6 +162,17 @@ def reanalyze_job(
 
     update_job(job_id, **changes)
 
+    if "description" in changes or "title" in changes:
+        # CLAUDE.md Phase 14 section 36: a materially changed JD invalidates
+        # any current resume variant -- best-effort, never lets a resume-
+        # optimizer issue block the sponsorship/state pipeline itself.
+        try:
+            from app.resume_optimizer.repo import mark_stale
+
+            mark_stale(job_id)
+        except Exception:  # noqa: BLE001
+            pass
+
     if job.application_state in _TERMINAL_STATES:
         refreshed = get_job(job_id)
         persist_decision(job_id, refreshed.title, refreshed.company, refreshed.description, refreshed.state)

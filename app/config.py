@@ -472,3 +472,16 @@ APPLICATION_IDENTITY_MIN_CONFIDENCE = (
 # app.workers.circuit's discovery threshold -- this one bounds a single
 # assist provider's DOM-discovery retry attempts within one pass.
 ASSIST_PROVIDER_MAX_RETRIES = _env_int("ASSIST_PROVIDER_MAX_RETRIES", 2)
+
+# =============================================================================
+# CLAUDE.md Phase 14: resume optimizer / unified dashboard.
+# =============================================================================
+
+# Whether jobs are queued for background resume optimization automatically
+# (CLAUDE.md section 56). False by default -- generation always remains
+# available synchronously via the dashboard "Generate/Regenerate Resume"
+# action and the CLI regardless of this flag, mirroring
+# APPLICATION_AUTO_PREPARE_ENABLED's "never gate manual generation" contract.
+RESUME_OPTIMIZATION_ENABLED = _env_bool("RESUME_OPTIMIZATION_ENABLED", False)
+RESUME_OPTIMIZATION_INTERVAL_SECONDS = _env_int("RESUME_OPTIMIZATION_INTERVAL_SECONDS", 300)
+RESUME_OPTIMIZATION_BATCH_SIZE = _env_int("RESUME_OPTIMIZATION_BATCH_SIZE", 5)

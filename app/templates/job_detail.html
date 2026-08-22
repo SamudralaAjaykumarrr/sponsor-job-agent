@@ -82,6 +82,88 @@
   {% endif %}
 
   <div class="card">
+    <h3>JD coverage &amp; resume diagnostics</h3>
+    <p style="font-size:0.8rem;color:#666;">Not a universal ATS score -- itemized, transparent coverage against your verified profile only.</p>
+    <form method="post" action="/jobs/{{ job.id }}/resume/analyze" style="display:inline;">
+      <button class="btn" type="submit">Analyze JD</button>
+    </form>
+    <form method="post" action="/jobs/{{ job.id }}/resume/optimize" style="display:inline;">
+      <button class="btn" type="submit">{{ 'Regenerate Resume' if current_variant else 'Generate Resume' }}</button>
+    </form>
+    {% if current_variant %}
+    <form method="post" action="/jobs/{{ job.id }}/resume/optimize" style="display:inline;">
+      <input type="hidden" name="force" value="true">
+      <button class="btn" type="submit">Force Regenerate</button>
+    </form>
+    {% endif %}
+
+    {% if jd_analysis %}
+    <p style="margin-top:0.75rem;"><strong>JD analysis:</strong>
+      required years {{ jd_analysis.required_years if jd_analysis.required_years is not none else 'not stated' }} ·
+      domain signals: {{ jd_analysis.domain_signals | join(', ') or 'none detected' }} ·
+      education asked: {{ jd_analysis.education_requirements | join(', ') or 'none' }} ·
+      certifications asked: {{ jd_analysis.certification_requirements | join(', ') or 'none' }}</p>
+    {% endif %}
+
+    {% if current_variant %}
+    <p>Resume status: <strong>{{ current_variant.status }}</strong> (variant {{ current_variant.variant_id[:12] }}…)</p>
+    {% if current_variant.status == 'READY' %}
+    <a class="btn" href="/jobs/{{ job.id }}/resume/download/docx">optimized resume.docx</a>
+    <a class="btn" href="/jobs/{{ job.id }}/resume/download/pdf">optimized resume.pdf</a>
+    <a class="btn" href="/jobs/{{ job.id }}/resume/download/txt">optimized resume.txt</a>
+    {% endif %}
+    {% endif %}
+
+    {% if quality_report %}
+    <table class="breakdown" style="margin-top:0.75rem;">
+      <tbody>
+        <tr><td>Required skills</td><td>{{ quality_report.required_skill_coverage.directly_verified }} direct + {{ quality_report.required_skill_coverage.transferable }} transferable / {{ quality_report.required_skill_coverage.total }}</td></tr>
+        <tr><td>Preferred skills</td><td>{{ quality_report.preferred_skill_coverage.directly_verified }} direct + {{ quality_report.preferred_skill_coverage.transferable }} transferable / {{ quality_report.preferred_skill_coverage.total }}</td></tr>
+        <tr><td>Responsibility alignment</td><td>{{ quality_report.responsibility_alignment.label }} ({{ quality_report.responsibility_alignment.matched }}/{{ quality_report.responsibility_alignment.total }})</td></tr>
+        <tr><td>Domain alignment</td><td>{{ quality_report.domain_alignment.label }}</td></tr>
+        <tr><td>Title alignment</td><td>{{ quality_report.title_alignment.label }} — {{ quality_report.title_alignment.detail }}</td></tr>
+        <tr><td>Keyword coverage</td><td>{{ quality_report.keyword_coverage.supported }}/{{ quality_report.keyword_coverage.total_keywords }} ({{ (quality_report.keyword_coverage.ratio * 100) | round(1) }}%)</td></tr>
+        <tr><td>ATS parseability</td><td>{{ quality_report.ats_parseability.overall }}</td></tr>
+        <tr><td>Internal alignment (not an ATS score)</td><td>{{ quality_report.alignment_label }} ({{ quality_report.internal_alignment_score }}/100)</td></tr>
+        <tr><td>Claim check</td><td>{{ 'PASS' if quality_report.claim_check.passed else 'FAILED: ' + (quality_report.claim_check.violations | join('; ')) }}</td></tr>
+      </tbody>
+    </table>
+    <p><strong>Missing required:</strong> {{ quality_report.missing_required | join(', ') or 'none' }}</p>
+    <p><strong>Missing preferred:</strong> {{ quality_report.missing_preferred | join(', ') or 'none' }}</p>
+    <p><strong>Unsupported JD items (never fabricated onto resume):</strong> {{ quality_report.unsupported_jd_items | join(', ') or 'none' }}</p>
+    {% if quality_report.warnings %}<p style="color:#a94442;"><strong>Warnings:</strong> {{ quality_report.warnings | join('; ') }}</p>{% endif %}
+    {% endif %}
+
+    {% if evidence_links %}
+    <details style="margin-top:0.5rem;">
+      <summary>Claim provenance — per-requirement evidence ({{ evidence_links | length }})</summary>
+      <table class="breakdown">
+        <thead><tr><th>Requirement</th><th>Priority</th><th>Status</th><th>Explanation</th></tr></thead>
+        <tbody>
+          {% for link in evidence_links %}
+          <tr><td>{{ link.requirement_text }}</td><td>{{ link.requirement_priority }}</td><td>{{ link.status }}</td><td>{{ link.explanation }}</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </details>
+    {% endif %}
+
+    {% if alignment_priority %}
+    <details style="margin-top:0.5rem;">
+      <summary>Match priority components ({{ alignment_priority.score }}/100 — internal ranking, not a hire probability)</summary>
+      <table class="breakdown">
+        <thead><tr><th>Component</th><th>Weight</th><th>Ratio</th><th>Contribution</th></tr></thead>
+        <tbody>
+          {% for c in alignment_priority.components %}
+          <tr><td>{{ c.name }}</td><td>{{ c.weight }}</td><td>{{ c.ratio }}</td><td>{{ c.contribution }}</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </details>
+    {% endif %}
+  </div>
+
+  <div class="card">
     <h3>Files &amp; actions</h3>
     {% if job.resume_docx_path %}<a class="btn" href="/jobs/{{ job.id }}/download/docx">resume.docx</a>{% endif %}
     {% if job.resume_pdf_path %}<a class="btn" href="/jobs/{{ job.id }}/download/pdf">resume.pdf</a>{% endif %}

@@ -913,3 +913,64 @@ and must remain first; no downstream executor code path may bypass it.
   future refinement of this heuristic must be verified against both the real end-to-end fixture
   (`tests/browser_fixtures.py`'s `captcha_page`) and, where possible, a real live provider page
   before landing — never loosened in a way that could miss a genuinely rendered challenge.
+
+## Resume Optimizer / Dashboard Architecture Rules (recorded after Phase 14, apply to all future phases)
+
+- `app.resume.claim_checker.check_resume_claims()` remains the single, unmodified truthfulness
+  firewall for every generated resume, including every optimizer-produced variant. No new code
+  path may bypass it or check a looser/parallel notion of "supported claim" — `app.resume_
+  optimizer.optimizer.optimize_resume()` calls it exactly once, unconditionally, on every
+  generated `ResumeContent`, and a violation always yields `CLAIM_CHECK_FAILED`, never a partial
+  or best-effort `READY`.
+- No universal ATS-match score is ever computed or displayed. `app.resume_optimizer.quality
+  .QualityReport.internal_alignment_score` is the only composite number produced anywhere in
+  this layer, and every surface that renders it (dashboard, job-detail page, JSON API) must pair
+  it with an explicit "not an ATS score / not an interview-hire probability" label — never a
+  bare percentage.
+- `app.resume_optimizer.models.TRANSFERABLE_ELIGIBLE_CATEGORIES` deliberately excludes
+  `LANGUAGE`, `ARCHITECTURE`, and `SECURITY` — a missing skill in one of those categories is
+  always `MISSING`, never `TRANSFERABLE`, regardless of what else the candidate has verified in
+  the same category. Widening this set requires the same bar as any other truthfulness change:
+  the analogy must be honestly defensible on a resume, not merely thematically related.
+- `resume_variants` is the only table a resume artifact's "current" status may live on. Its two
+  unique indexes — `(job_id, jd_fingerprint, profile_version, optimizer_version)` for
+  idempotency and a partial `(job_id) WHERE current = 1` for the single-current-variant guarantee
+  — are the actual concurrency mechanism (`app.resume_optimizer.repo.claim_variant()`'s atomic
+  INSERT, never a read-then-write check). Any future write path against `jd_analyses`,
+  `resume_variants`, or a table keyed off either must follow the same catch-the-unique-violation-
+  and-refetch pattern `save_jd_analysis()` uses — a real UniqueViolation race under 8 concurrent
+  Postgres callers was caught live by this phase's own concurrency test before this pattern was
+  applied consistently.
+- A JD or candidate-profile change never silently leaves a stale resume looking current.
+  `app.pipeline.reanalyze_job()` calls `app.resume_optimizer.repo.mark_stale()` on any title/
+  description change; a profile-content hash change (`fingerprint.compute_profile_version()`)
+  changes the identity itself, so the next `optimize_resume()` call naturally creates a new
+  variant rather than reusing a stale one. Neither path may be removed or made silent.
+- `app.pipeline_dashboard.is_actionable()` hides a job from the default dashboard view only on a
+  POSITIVE `CONTRACT`/`C2C`/`PART_TIME`/`INTERNSHIP`/`TEMPORARY`/`SEASONAL`/`FREELANCE`
+  classification (`app.matching.employment_type.classify_employment_type()`) — `UNKNOWN` always
+  stays visible by default, matching this project's existing "UNKNOWN is not itself a hard-skip"
+  pattern for sponsorship. Never require a POSITIVE `FULL_TIME` classification to show a job —
+  an earlier version of this exact check did that and silently hid every job with no explicit
+  employment-type signal (the common case) from the unified dashboard; a doctor-style regression
+  test now guards this.
+- `app.resume_optimizer.scheduler` is a lightweight single-process asyncio background loop
+  (mirroring `app.applications.background_scheduler`'s structure), NOT a leased distributed
+  worker capability — this was a deliberate Phase 14 scope decision given the workload's low
+  volume and `optimize_resume()`'s own database-level idempotency/concurrency guarantees. A
+  future `RESUME_OPTIMIZATION` `WorkerCapability` remains a reasonable addition if true
+  multi-machine parallelism for this specific workload is ever needed, but must not be added
+  merely to mirror the discovery/application worker fleets' shape.
+- `RESUME_OPTIMIZATION_ENABLED` (background scheduling) and the dashboard's manual Generate/
+  Regenerate action are independent — the manual action and the CLI must never be gated by this
+  flag, matching `APPLICATION_AUTO_PREPARE_ENABLED`'s existing "never gate manual work" contract.
+- `app.resume_optimizer` must never import from `app.applications.browser_*`, `app.applications
+  .circuit`, or `app.workers.circuit`, and none of those modules may import from
+  `app.resume_optimizer` — resume optimization, browser-assist execution, and the discovery/
+  submission circuit breakers remain three independent concerns, matching this project's
+  existing separation-of-concerns rules for adjacent subsystems.
+- Synthetic benchmark data (`scripts/resume_optimizer_benchmark.py`) follows the same isolated-
+  temp-DB-only, never-collide-with-a-real-name convention as every prior phase's benchmark
+  (`benchmark-fixture` provider name) — never write synthetic rows into a real registry or a
+  developer's real `data/app.db`, and never claim the benchmark predicts interview/hiring
+  outcomes.

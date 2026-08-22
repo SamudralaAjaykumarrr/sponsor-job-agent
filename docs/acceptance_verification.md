@@ -734,3 +734,107 @@ confirmation pattern was added (no real provider's genuine confirmation text has
 observed yet, since this project never clicks the final-submit control that would reach one).
 `FILE_READY` is not currently recorded as a checkpoint distinct from `FIELDS_PREPARED`. See
 `docs/phase13-provider-resilience.md`'s "Honest limitations" for the full list.
+
+## Phase 14: JD/Resume Optimization + Unified One-Page Dashboard (verified 2026-08-22)
+
+### Default test suite
+
+`pytest` (no marker filter): **1075 passed** (1018 Phase 1-13 baseline + 57 new Phase 14 tests
+across `tests/test_resume_optimizer_jd_analysis.py`, `_matching.py`, `_generation.py`,
+`_ats_parse.py`, `_doctor.py`, `_dashboard.py`), 101 deselected (postgres/browser-marked). No
+Phase 1-13 test was modified except `tests/conftest.py`'s `tmp_env` fixture, which gained one
+additive monkeypatch line (`app.resume_optimizer.optimizer.OUTPUT_DIR`) mirroring the existing
+`app.pipeline.OUTPUT_DIR` redirect.
+
+### PostgreSQL
+
+`pytest -m postgres`: **44 passed** (40 baseline + 4 new
+`tests/test_resume_optimizer_postgres.py` tests: persistence, idempotency, stale invalidation,
+and an 8-thread concurrent-optimization race that must never produce more than one current/READY
+variant). A real `UniqueViolation` race was caught live on the first run of the concurrency test
+(`app.resume_optimizer.repo.save_jd_analysis()`'s initial existence check was not itself a
+sufficient guard) and fixed with a catch-and-refetch pattern before the suite went green — see
+`docs/phase14-resume-optimization-dashboard.md`.
+
+### Browser regression
+
+`pytest -m browser`: **57 skipped** (0 run) -- this sandbox has Playwright's Python package
+installed but not its Chromium system shared libraries (`libnspr4.so` missing), and
+`playwright install-deps chromium` requires `sudo` with an interactive password prompt that is
+not available here. This is a pre-existing sandbox limitation, not a Phase 14 regression: no file
+under `app/applications/browser_*.py`, `apply_entry.py`, `capability_evidence.py`,
+`workday_tenant.py`, `provider_health.py`, `confirmation_evidence.py`, or `checkpoints.py` was
+modified by this phase. The 57-test count matches the documented Phase 13 baseline exactly.
+
+### Truthfulness acceptance (CLAUDE.md section 75, A-E)
+
+All five verified against `tests/sample_profile`/synthetic fixtures:
+
+- A. Python/PostgreSQL/AWS with verified evidence -> `MATCHED`, included and prioritized.
+- B. Unsupported Go -> `MISSING`; never appears in generated resume text.
+- C. Unsupported certification (`AWS Certified Solutions Architect`, `PMP`) -> `MISSING`; never
+  fabricated (`CandidateProfile` has no certifications field at all).
+- D. 7+ years required vs 3 verified -> `PARTIAL` with the gap shown;
+  `standard_answers.years_of_experience` never altered.
+- E. Java required, candidate has verified backend/REST-API experience -> Java itself stays
+  `MISSING` (LANGUAGE excluded from `TRANSFERABLE_ELIGIBLE_CATEGORIES`); the RESPONSIBILITY
+  match (`"build REST APIs"`) independently shows `MATCHED`, the honest representation of
+  "transferable backend experience" without a fabricated skill-level claim.
+
+A concrete regression this phase's own low-fit test caught: an early summary-sentence template
+embedded the raw JD title verbatim ("...experience targeting Java Backend Engineer..."), which
+put the literal word "Java" into a Python-only candidate's resume even though no Java skill claim
+was made. Fixed by removing all raw-JD-title echo from the summary -- it now only ever contains
+verified skill names.
+
+### JD extraction acceptance (section 76)
+
+20 tests in `tests/test_resume_optimizer_jd_analysis.py` cover required-vs-preferred (including
+a local-phrase-overrides-stale-section-header case), negation (including a real bug this phase
+caught: an unbounded character-window negation check let "Java is not required. Python is
+required." incorrectly negate "Python" too -- fixed by bounding to clause/sentence boundaries),
+conditional language, years (including range and negated-years), education, certification
+(including bounded-span extraction and broader-match dedup), tools, responsibilities, domain
+signals, sponsorship language, and salary detection.
+
+### ATS parse validation (sections 30-32)
+
+7 tests validate DOCX (python-docx)/PDF (pypdf)/TXT extraction against a deterministic fixture:
+full PASS, per-field presence, missing-file FAIL, empty-file FAIL, partial-content WARN/FAIL.
+`tests/test_resume_optimizer_generation.py` additionally confirms `ats_parseability.overall ==
+"PASS"` for real optimizer-generated artifacts (strong-fit and low-fit JDs both).
+
+### Idempotency / concurrency (sections 58, 72)
+
+SQLite: `test_idempotent_same_input_no_duplicate_variant` (same input twice -> same variant_id,
+one row). PostgreSQL: the 8-thread concurrent test above, plus persistence-across-reads and
+stale-invalidation-then-regenerate tests.
+
+### Dashboard / gates (sections 79, 84-86)
+
+`tests/test_resume_optimizer_dashboard.py` verifies the unified `/` page renders summary cards
+and the JD-coverage pipeline column, the Analyze/Optimize actions and their JSON APIs, the
+job-detail diagnostics panel, resume downloads, the doctor page, and the resume-status filter --
+all against the real FastAPI app via `TestClient`, not mocks. `AUTO_SUBMIT_ENABLED` and
+`APPLICATION_EXECUTOR_ENABLED` remain untouched (still default `false`); no code in
+`app/resume_optimizer/` calls any submission/click-final-submit code path, and none exists in the
+module (structurally -- `app/resume_optimizer/` has zero imports from `app/applications/browser_*.py`).
+
+### Manual live verification against the real project database
+
+Ran `uvicorn app.main:app`, then against the REAL `data/app.db` (445 real jobs from prior
+phases' live/manual testing) and the real populated `candidate_data/profile.json`: `GET /`
+(200, summary cards render, real job count shown), `GET /api/pipeline/summary` and
+`/api/resume-optimizer/metrics` (200, correct live counts), `POST /jobs/9/resume/optimize`
+against a real CONFIRMED_SPONSOR job (303, generated a real quality report with 3/5 directly
+verified + 1 transferable required skills, STRONG responsibility alignment, RELATED title
+alignment), all three resume downloads (200), `GET /resume-optimizer/doctor` (0 serious/warning
+issues against the real, now-445-job database).
+
+### `git diff --stat` / privacy
+
+Working tree only -- no `git add`, no commit. `data/app.db`, `candidate_data/`, `output/*`,
+`data/browser_assist_runtime/`, `runtime/`, `.env` all verified still `git check-ignore`'d;
+`data/known_h1b_sponsors.json` and the registry seed CSVs are pre-existing tracked fixture files,
+not private data. No new private-data path was introduced by this phase (optimized resumes write
+under the already-ignored `output/<job_id>/optimized/<variant_id>/`).

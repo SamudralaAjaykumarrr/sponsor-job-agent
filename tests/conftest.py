@@ -37,6 +37,7 @@ def tmp_env(tmp_path, monkeypatch):
     import app.candidate.profile as profile_mod
     import app.sponsorship.classifier as sponsorship_classifier
     import app.pipeline as pipeline
+    import app.resume_optimizer.optimizer as resume_optimizer_module
 
     monkeypatch.setattr(db, "DB_PATH", data_dir / "app.db")
     monkeypatch.setattr(jobs_repo, "db_session", db.db_session)
@@ -44,6 +45,10 @@ def tmp_env(tmp_path, monkeypatch):
     monkeypatch.setattr(profile_mod, "PROFILE_PATH", candidate_dir / "profile.json")
     monkeypatch.setattr(sponsorship_classifier, "KNOWN_SPONSORS_PATH", data_dir / "known_h1b_sponsors.json")
     monkeypatch.setattr(pipeline, "OUTPUT_DIR", output_dir)
+    # CLAUDE.md Phase 14: resume optimizer writes its own artifacts under
+    # OUTPUT_DIR/<job_id>/optimized/ -- redirected into the tmp dir the same
+    # way app.pipeline's OUTPUT_DIR already is above.
+    monkeypatch.setattr(resume_optimizer_module, "OUTPUT_DIR", output_dir)
 
     db.init_db()
 

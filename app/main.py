@@ -48,6 +48,14 @@ from app.jobs_repo import (
 from app.models import ApplicationMode, ApplicationState, Job
 from app.pipeline import generate_assist_outputs, ingest_and_process
 from app.providers.registry import all_capabilities, all_provider_names
+from app.resume_optimizer import doctor as resume_optimizer_doctor
+from app.resume_optimizer import metrics as resume_optimizer_metrics
+from app.resume_optimizer import repo as resume_optimizer_repo
+from app.resume_optimizer.jd_analysis import analyze_jd as run_jd_analysis
+from app.resume_optimizer.fingerprint import compute_jd_fingerprint
+from app.resume_optimizer.optimizer import optimize_resume
+from app.resume_optimizer.priority import compute_alignment_priority
+from app.resume_optimizer.scheduler import resume_optimization_scheduler
 from app.registry.models import CompanyRegistryEntry
 from app.registry.repo import insert_entry, list_entries, provider_health_summary, seed_demo_entries
 from app.registry.scheduling import compute_health
@@ -100,11 +108,17 @@ async def lifespan(_: FastAPI):
     # extended to the canary and the job-identity gate.
     print(f"ATS canary:           {'ON' if config.REAL_ATS_CANARY_ENABLED else 'OFF'}")
     print(f"Job identity gate:    {'ON' if config.APPLICATION_IDENTITY_REQUIRED else 'OFF'}")
+    # CLAUDE.md Phase 14 section 56: never silently enable background resume
+    # optimization -- print its actual on/off state on every startup, same
+    # as every other optional background loop in this project.
+    print(f"Resume optimization:  {'ON' if config.RESUME_OPTIMIZATION_ENABLED else 'OFF'}")
     scheduler.start()
     applications_background_scheduler.start()
+    resume_optimization_scheduler.start()
     yield
     await scheduler.stop()
     await applications_background_scheduler.stop()
+    await resume_optimization_scheduler.stop()
 
 
 app = FastAPI(title="Sponsor Job Agent", lifespan=lifespan)
@@ -130,7 +144,17 @@ def dashboard(
     fresh_under_6hr: bool = False,
     high_priority: bool = False,
     historical_strength: str = "",
+    resume_status: str = "",
+    needs_action_only: bool = False,
+    full_time_only: bool = True,
 ):
+    """CLAUDE.md Phase 14 sections 44-55, 79: the unified one-page dashboard
+    -- summary cards, the pipeline table (with JD-coverage/resume/
+    application/user-action columns sourced from cached, indexed tables,
+    never recomputed live), and filters, all on one screen. Specialist pages
+    (/applications, /fleet, /registry, ...) remain for admin/debugging."""
+    import app.pipeline_dashboard as pipeline_dashboard
+
     filters = {
         "work_arrangement": work_arrangement or None,
         "sponsorship_status": sponsorship_status or None,
@@ -139,14 +163,48 @@ def dashboard(
         "fresh_under_6hr": fresh_under_6hr or None,
         "high_priority": high_priority or None,
         "historical_strength": historical_strength or None,
+        "resume_status": resume_status or None,
+        "needs_action_only": needs_action_only or None,
+        "full_time_only": full_time_only or None,
     }
+    all_jobs = list_jobs({})
+    summary = pipeline_dashboard.compute_pipeline_summary(all_jobs)
+
     jobs = list_jobs(filters)
+    if full_time_only:
+        jobs = [j for j in jobs if pipeline_dashboard.is_actionable(j)]
+
+    job_ids = [j.id for j in jobs if j.id is not None]
+    quality_by_job = resume_optimizer_repo.get_quality_reports_for_jobs(job_ids)
+    variant_by_job = resume_optimizer_repo.get_current_variants_for_jobs(job_ids)
+    active_execution_by_job = {jid: applications_repo.get_active_execution_for_job(jid) for jid in job_ids}
+
+    def resume_status_of(jid: int) -> str:
+        variant = variant_by_job.get(jid)
+        return variant["status"] if variant else "NOT_GENERATED"
+
+    if resume_status:
+        jobs = [j for j in jobs if resume_status_of(j.id) == resume_status]
+    if needs_action_only:
+        jobs = [j for j in jobs if (active_execution_by_job.get(j.id) or {}).get("requires_user_action")]
+
+    pipeline_rows = [
+        {
+            "job": j,
+            "quality_report": (quality_by_job.get(j.id) or {}).get("report"),
+            "resume_status": resume_status_of(j.id),
+            "execution": active_execution_by_job.get(j.id),
+        }
+        for j in jobs
+    ]
+
     missing = missing_fields(load_profile())
     return templates.TemplateResponse(
         request,
         "dashboard.html",
         {
-            "jobs": jobs, "filters": filters,
+            "jobs": jobs, "pipeline_rows": pipeline_rows, "filters": filters,
+            "summary": summary,
             "missing_profile_fields": missing[:10],
             "missing_profile_count": len(missing),
             "agent": agent_state.get_status(),
@@ -156,6 +214,7 @@ def dashboard(
                 "min_match_score": config.MIN_MATCH_SCORE,
                 "enabled_providers": config.ENABLED_PROVIDERS,
             },
+            "resume_optimization_enabled": config.RESUME_OPTIMIZATION_ENABLED,
         },
     )
 
@@ -179,6 +238,15 @@ def job_detail(request: Request, job_id: int):
     active_execution = applications_repo.get_active_execution_for_job(job_id)
     eligibility = evaluate_executor_eligibility(job)
     active_browser_session = browser_session.get_active_session_for_job(job_id)
+
+    # --- Phase 14: JD analysis / resume optimization diagnostics ------------
+    current_variant = resume_optimizer_repo.get_current_variant(job_id)
+    quality_row = resume_optimizer_repo.get_quality_report_for_job(job_id)
+    jd_fingerprint = compute_jd_fingerprint(job.title, job.company, job.description)
+    jd_analysis_row = resume_optimizer_repo.get_jd_analysis(job_id, jd_fingerprint)
+    evidence_links = resume_optimizer_repo.list_evidence_links(current_variant["variant_id"]) if current_variant else []
+    alignment_priority = compute_alignment_priority(job, quality_row["report"] if quality_row else None)
+
     return templates.TemplateResponse(
         request, "job_detail.html",
         {
@@ -189,6 +257,12 @@ def job_detail(request: Request, job_id: int):
             "auto_submit_enabled": config.AUTO_SUBMIT_ENABLED,
             "active_browser_session": active_browser_session,
             "browser_assist_enabled": config.BROWSER_ASSIST_ENABLED,
+            "current_variant": current_variant,
+            "quality_report": quality_row["report"] if quality_row else None,
+            "jd_analysis": jd_analysis_row,
+            "evidence_links": evidence_links,
+            "alignment_priority": alignment_priority,
+            "jd_current_fingerprint": jd_fingerprint,
         },
     )
 
@@ -527,6 +601,100 @@ def regenerate_resume(job_id: int):
     except ValueError as exc:
         raise HTTPException(400, str(exc))
     return RedirectResponse(url=f"/jobs/{job_id}", status_code=303)
+
+
+# --- Phase 14: JD analysis / resume optimization -----------------------------
+
+@app.post("/jobs/{job_id}/resume/analyze")
+def resume_analyze(job_id: int):
+    """CLAUDE.md section 50 'Analyze JD' -- extracts and caches the JD
+    requirements model without generating a resume artifact."""
+    job = get_job(job_id)
+    if job is None:
+        raise HTTPException(404, "job not found")
+    fingerprint = compute_jd_fingerprint(job.title, job.company, job.description)
+    analysis = run_jd_analysis(job.title, job.description)
+    resume_optimizer_repo.save_jd_analysis(job_id, fingerprint, analysis)
+    return RedirectResponse(url=f"/jobs/{job_id}", status_code=303)
+
+
+@app.post("/jobs/{job_id}/resume/optimize")
+def resume_optimize(job_id: int, force: bool = Form(False)):
+    """CLAUDE.md section 50 'Generate/Regenerate Resume'."""
+    try:
+        optimize_resume(job_id, force=force)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return RedirectResponse(url=f"/jobs/{job_id}", status_code=303)
+
+
+@app.get("/jobs/{job_id}/resume/download/{file_key}")
+def resume_download(job_id: int, file_key: str):
+    """Downloads the CURRENT optimized resume variant's artifact -- distinct
+    from /jobs/{job_id}/download/{file_key}, which serves the Phase 1
+    pipeline's own (unoptimized) resume artifacts."""
+    variant = resume_optimizer_repo.get_current_variant(job_id)
+    if variant is None:
+        raise HTTPException(404, "no optimized resume generated for this job yet")
+    field = {"docx": "resume_docx_path", "pdf": "resume_pdf_path", "txt": "resume_txt_path"}.get(file_key)
+    if not field:
+        raise HTTPException(404, "unknown file type")
+    path_str = variant.get(field)
+    if not path_str:
+        raise HTTPException(404, "file not generated for this variant")
+    path = Path(path_str)
+    if not path.exists():
+        raise HTTPException(404, "file missing on disk")
+    return FileResponse(path, filename=path.name)
+
+
+@app.get("/api/jobs/{job_id}/jd-analysis")
+def api_jd_analysis(job_id: int):
+    job = get_job(job_id)
+    if job is None:
+        raise HTTPException(404, "job not found")
+    fingerprint = compute_jd_fingerprint(job.title, job.company, job.description)
+    analysis = resume_optimizer_repo.get_jd_analysis(job_id, fingerprint)
+    if analysis is None:
+        return JSONResponse({"analyzed": False, "jd_fingerprint": fingerprint})
+    return JSONResponse({"analyzed": True, **analysis})
+
+
+@app.get("/api/jobs/{job_id}/resume-quality")
+def api_resume_quality(job_id: int):
+    report = resume_optimizer_repo.get_quality_report_for_job(job_id)
+    if report is None:
+        raise HTTPException(404, "no resume quality report for this job -- generate a resume first")
+    return JSONResponse(report["report"])
+
+
+@app.get("/api/jobs/{job_id}/resume-evidence")
+def api_resume_evidence(job_id: int):
+    variant = resume_optimizer_repo.get_current_variant(job_id)
+    if variant is None:
+        raise HTTPException(404, "no resume variant for this job yet")
+    return JSONResponse({
+        "variant_id": variant["variant_id"], "status": variant["status"],
+        "evidence_links": resume_optimizer_repo.list_evidence_links(variant["variant_id"]),
+    })
+
+
+@app.get("/api/pipeline/summary")
+def api_pipeline_summary():
+    import app.pipeline_dashboard as pipeline_dashboard
+
+    return JSONResponse(pipeline_dashboard.compute_pipeline_summary(list_jobs({})))
+
+
+@app.get("/resume-optimizer/doctor", response_class=HTMLResponse)
+def resume_optimizer_doctor_page(request: Request):
+    report = resume_optimizer_doctor.run_doctor()
+    return templates.TemplateResponse(request, "resume_optimizer_doctor.html", {"report": report})
+
+
+@app.get("/api/resume-optimizer/metrics")
+def api_resume_optimizer_metrics():
+    return JSONResponse(resume_optimizer_metrics.collect())
 
 
 # --- Phase 8: safe ATS application executor ---------------------------------

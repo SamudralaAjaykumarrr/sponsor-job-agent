@@ -5,6 +5,9 @@ jinja2>=3.1
 httpx>=0.27
 python-docx>=1.1
 reportlab>=4.2
+# Phase 14: PDF text extraction for ATS parse validation (never used to
+# write PDFs -- reportlab above remains the only writer).
+pypdf>=5.0
 python-multipart>=0.0.9
 pytest>=8.3
 

@@ -190,3 +190,20 @@ sharing one database (SQLite file or shared Postgres).
   Lever, Ashby, Workable, SmartRecruiters, and a repeated Workday tenant check.
 - `python -m app.applications.cli doctor` gained 8 new checks — see
   `docs/phase13-provider-resilience.md`.
+
+## Phase 14 additions
+
+- New page: `/` (unified dashboard, now with summary cards + JD-coverage/resume/application/
+  user-action pipeline table columns), `/resume-optimizer/doctor`.
+- New JSON APIs: `/api/jobs/{job_id}/jd-analysis`, `/api/jobs/{job_id}/resume-quality`,
+  `/api/jobs/{job_id}/resume-evidence`, `/api/pipeline/summary`, `/api/resume-optimizer/metrics`.
+- New job-level actions: `POST /jobs/{job_id}/resume/analyze`, `POST /jobs/{job_id}/resume/optimize`
+  (`force=true` to bypass the cached-READY shortcut), `GET /jobs/{job_id}/resume/download/{docx|pdf|txt}`.
+- New config: `RESUME_OPTIMIZATION_ENABLED` (default `false`), `RESUME_OPTIMIZATION_INTERVAL_SECONDS`
+  (default `300`), `RESUME_OPTIMIZATION_BATCH_SIZE` (default `5`).
+- New CLI: `python -m app.resume_optimizer.cli analyze|generate|report|doctor JOB_ID`.
+- `python -m app.resume_optimizer.cli doctor` — 10 integrity checks (wrong-job linkage, JD-
+  fingerprint drift, stale profile version, claim-check failures on the current variant,
+  unsupported skill inserted, missing artifacts, missing quality reports, stale-marked-current,
+  ATS-parse failures on the current variant, duplicate current variants) — see
+  `docs/phase14-resume-optimization-dashboard.md`.

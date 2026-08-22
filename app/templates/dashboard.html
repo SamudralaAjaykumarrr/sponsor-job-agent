@@ -33,7 +33,15 @@
     .tag-remote { background: #d1ecf1; color: #0c5460; }
     .tag-hybrid { background: #e2d9f3; color: #4a2e8a; }
     .tag-onsite { background: #eee; color: #555; }
+    .tag-ready { background: #d4edda; color: #155724; }
+    .tag-stale { background: #fff3cd; color: #856404; }
+    .tag-notgen { background: #eee; color: #555; }
+    .tag-failed { background: #f8d7da; color: #721c24; }
     button { cursor: pointer; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 0.6rem; margin-bottom: 1rem; }
+    .card { background: white; border: 1px solid #ddd; border-radius: 8px; padding: 0.75rem 1rem; }
+    .card .num { font-size: 1.5rem; font-weight: 700; }
+    .card .label { font-size: 0.75rem; color: #666; }
   </style>
 </head>
 <body>
@@ -43,7 +51,21 @@
     · <a href="/applications">Applications</a>
     · <a href="/fleet">Fleet</a> · <a href="/acquisition">Acquisition</a>
     · <a href="/companies">Sponsorship companies</a> · <a href="/sponsorship/review-queue">Review queue</a>
-    · <a href="/sponsorship/doctor">Sponsorship doctor</a> · <a href="/sponsorship/identity-review">Identity review</a></p>
+    · <a href="/sponsorship/doctor">Sponsorship doctor</a> · <a href="/sponsorship/identity-review">Identity review</a>
+    · <a href="/resume-optimizer/doctor">Resume optimizer doctor</a></p>
+
+  <div class="cards">
+    <div class="card"><div class="num">{{ summary.jobs_discovered }}</div><div class="label">Jobs discovered</div></div>
+    <div class="card"><div class="num">{{ summary.full_time_eligible }}</div><div class="label">Full-time eligible</div></div>
+    <div class="card"><div class="num">{{ summary.sponsor_confirmed }}</div><div class="label">Sponsor confirmed</div></div>
+    <div class="card"><div class="num">{{ summary.high_alignment_jobs }}</div><div class="label">High-alignment jobs</div></div>
+    <div class="card"><div class="num">{{ summary.resume_ready }}</div><div class="label">Resume ready</div></div>
+    <div class="card"><div class="num">{{ summary.application_ready }}</div><div class="label">Application ready</div></div>
+    <div class="card"><div class="num">{{ summary.needs_user_action }}</div><div class="label">Needs user action</div></div>
+    <div class="card"><div class="num">{{ summary.ready_for_final_submit }}</div><div class="label">Ready for final submit</div></div>
+    <div class="card"><div class="num">{{ summary.applied }}</div><div class="label">Applied</div></div>
+    <div class="card"><div class="num">{{ summary.failed_attention }}</div><div class="label">Failed / attention</div></div>
+  </div>
 
   <div class="agent-bar">
     <span><span class="dot {{ 'dot-on' if agent.enabled else 'dot-off' }}"></span>
@@ -121,33 +143,55 @@
     <a href="/?historical_strength=OLD">Old history</a>
     <a href="/?historical_strength=NONE">No known history</a>
   </div>
+  <div class="filters">
+    <span style="font-size:0.8rem;color:#666;margin-right:0.5rem;">Resume state:</span>
+    <a href="/?resume_status=READY">Ready</a>
+    <a href="/?resume_status=STALE">Stale</a>
+    <a href="/?resume_status=NOT_GENERATED">Not generated</a>
+    <a href="/?resume_status=CLAIM_CHECK_FAILED">Claim check failed</a>
+    <a href="/?needs_action_only=true">Needs user action</a>
+    <a href="/?full_time_only=false">Include non-full-time (audit)</a>
+  </div>
 
   <table>
     <thead>
       <tr>
-        <th>Company</th><th>Role</th><th>Location</th><th>Arrangement</th>
-        <th>Freshness</th><th>Sponsorship</th><th>Match</th><th>Priority</th><th>State</th><th></th>
+        <th>Company</th><th>Role</th><th>Age</th><th>Arrangement</th><th>Employment</th>
+        <th>Sponsorship</th><th>JD coverage</th><th>Resume</th><th>ATS/provider</th>
+        <th>Application status</th><th>User action</th><th>Priority</th><th>Action</th>
       </tr>
     </thead>
     <tbody>
-      {% for job in jobs %}
+      {% for row in pipeline_rows %}
+      {% set job = row.job %}
       <tr>
         <td>{{ job.company }}</td>
         <td>{{ job.title }}</td>
-        <td>{{ job.location }}</td>
+        <td>{{ job.freshness_tier.value }}{% if job.freshness_minutes is not none %} (~{{ "%.0f"|format(job.freshness_minutes) }}m){% endif %}</td>
         <td><span class="tag tag-{{ job.work_arrangement.value.lower() }}">{{ job.work_arrangement.value }}</span></td>
-        <td>{{ job.freshness_tier.value }}</td>
+        <td>{{ job.employment_type or 'unclassified' }}</td>
         <td>
           {% set s = job.sponsorship_status.value %}
           <span class="tag {{ 'tag-confirmed' if s == 'CONFIRMED_SPONSOR' else ('tag-likely' if s == 'LIKELY_SPONSOR' else ('tag-no' if s == 'NO_SPONSORSHIP' else 'tag-unknown')) }}">{{ s }}</span>
         </td>
-        <td>{{ job.technical_match_score }}%</td>
+        <td>
+          {% if row.quality_report %}
+          {% set rc = row.quality_report.required_skill_coverage %}
+          Req {{ rc.directly_verified }}+{{ rc.transferable }}/{{ rc.total }} ·
+          {{ row.quality_report.alignment_label }}
+          {% else %}
+          not analyzed
+          {% endif %}
+        </td>
+        <td><span class="tag {{ 'tag-ready' if row.resume_status == 'READY' else ('tag-stale' if row.resume_status == 'STALE' else ('tag-failed' if 'FAILED' in row.resume_status else 'tag-notgen')) }}">{{ row.resume_status }}</span></td>
+        <td>{% if row.quality_report %}{{ row.quality_report.ats_parseability.overall }}{% endif %} {{ job.provider }}</td>
+        <td>{{ row.execution.status if row.execution else job.application_state.value }}</td>
+        <td>{% if row.execution and row.execution.requires_user_action %}<strong style="color:#a94442;">{{ row.execution.user_action_reason or 'action needed' }}</strong>{% else %}—{% endif %}</td>
         <td>{{ job.priority_tier.value }} ({{ job.priority_score }})</td>
-        <td>{{ job.application_state.value }}</td>
         <td><a href="/jobs/{{ job.id }}">View</a></td>
       </tr>
       {% else %}
-      <tr><td colspan="10">No jobs ingested yet.</td></tr>
+      <tr><td colspan="13">No jobs ingested yet.</td></tr>
       {% endfor %}
     </tbody>
   </table>
