@@ -40,7 +40,9 @@
   <h1>Sponsor Job Agent</h1>
   <p class="subtitle">Local ASSIST-mode job pipeline. Nothing is auto-submitted.
     · <a href="/providers">Providers</a> · <a href="/registry">Company registry</a>
-    · <a href="/fleet">Fleet</a> · <a href="/acquisition">Acquisition</a></p>
+    · <a href="/fleet">Fleet</a> · <a href="/acquisition">Acquisition</a>
+    · <a href="/companies">Sponsorship companies</a> · <a href="/sponsorship/review-queue">Review queue</a>
+    · <a href="/sponsorship/doctor">Sponsorship doctor</a> · <a href="/sponsorship/identity-review">Identity review</a></p>
 
   <div class="agent-bar">
     <span><span class="dot {{ 'dot-on' if agent.enabled else 'dot-off' }}"></span>
@@ -110,6 +112,13 @@
     <a href="/?application_state=REVIEW_REQUIRED">Review Required</a>
     <a href="/?application_state=APPLIED">Applied</a>
     <a href="/?application_state=INTERVIEW">Interview</a>
+  </div>
+  <div class="filters">
+    <span style="font-size:0.8rem;color:#666;margin-right:0.5rem;">Historical sponsor strength (never overrides current-role status):</span>
+    <a href="/?historical_strength=STRONG_RECENT">Recent strong history</a>
+    <a href="/?historical_strength=SOME">Some history</a>
+    <a href="/?historical_strength=OLD">Old history</a>
+    <a href="/?historical_strength=NONE">No known history</a>
   </div>
 
   <table>

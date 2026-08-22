@@ -1,0 +1,95 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>{{ company.display_name }} — sponsorship profile</title>
+  <style>
+    body { font-family: -apple-system, Arial, sans-serif; margin: 2rem; background: #f7f7f9; color: #1a1a1a; max-width: 900px; }
+    .card { background: white; border: 1px solid #ddd; border-radius: 8px; padding: 1.25rem; margin-bottom: 1rem; }
+    dl { display: grid; grid-template-columns: 240px 1fr; row-gap: 6px; }
+    dt { font-weight: 600; color: #555; }
+    .banner { background: #e2d9f3; color: #4a2e8a; padding: 0.5rem 1rem; border-radius: 6px; margin-bottom: 1rem; font-size: 0.85rem; font-weight: 600; }
+    table { width: 100%; border-collapse: collapse; }
+    td, th { padding: 4px 8px; border-bottom: 1px solid #eee; font-size: 0.85rem; text-align: left; }
+  </style>
+</head>
+<body>
+  <p><a href="/companies">&larr; back to companies</a></p>
+  <h1>{{ company.display_name }}</h1>
+  <div class="banner">HISTORICAL EVIDENCE -- NOT A GUARANTEE FOR ANY CURRENT ROLE</div>
+
+  <div class="card">
+    <dl>
+      <dt>Domain</dt><dd>{{ company.primary_domain or '-' }}</dd>
+      <dt>Historical strength</dt><dd>{{ profile.historical_strength.value }}</dd>
+      <dt>Years with H-1B/LCA activity</dt><dd>{{ profile.years_with_h1b_activity }}</dd>
+      <dt>Most recent fiscal year</dt><dd>{{ profile.most_recent_fiscal_year or '-' }}</dd>
+      <dt>Recent filings (last 2 FY)</dt><dd>{{ profile.recent_filing_count }} (historical total: {{ profile.historical_filing_count }})</dd>
+      <dt>Recent LCA count</dt><dd>{{ profile.recent_lca_count }} (historical total: {{ profile.historical_lca_count }})</dd>
+      <dt>Continuity</dt><dd>filed in {{ profile.continuity_years }} of the last 4 fiscal years</dd>
+      <dt>Trend</dt><dd>{{ profile.trend }}</dd>
+      <dt>Recent occupation families</dt><dd>{{ profile.recent_occupation_families | join(', ') or '-' }}</dd>
+      <dt>Recent occupation titles</dt><dd>{{ profile.recent_occupation_titles | join(', ') or '-' }}</dd>
+      <dt>Recent states</dt><dd>{{ profile.recent_states | join(', ') or '-' }}</dd>
+      <dt>Evidence sources</dt><dd>{{ profile.source_coverage | join(', ') or '-' }}</dd>
+      <dt>History score</dt><dd>{{ profile.history_score }} (relative ranking signal, not a probability)</dd>
+      <dt>Last computed</dt><dd>{{ profile.computed_at }}</dd>
+    </dl>
+    <p><strong>Reasons:</strong></p>
+    <ul>
+      {% for reason in profile.history_reasons %}
+      <li>{{ reason }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+
+  {% if aliases %}
+  <div class="card">
+    <h3>Aliases</h3>
+    <table>
+      <thead><tr><th>Alias</th><th>Type</th><th>Verified</th><th>Confidence</th></tr></thead>
+      <tbody>
+        {% for a in aliases %}
+        <tr><td>{{ a.alias }}</td><td>{{ a.alias_type }}</td><td>{{ 'yes' if a.verified else 'no' }}</td><td>{{ a.confidence }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
+  {% if relationships %}
+  <div class="card">
+    <h3>Parent / subsidiary relationships</h3>
+    <table>
+      <thead><tr><th>Parent</th><th>Child</th><th>Type</th><th>Verified</th></tr></thead>
+      <tbody>
+        {% for r in relationships %}
+        <tr><td>{{ r.parent_company_id }}</td><td>{{ r.child_company_id }}</td><td>{{ r.relationship_type }}</td><td>{{ 'yes' if r.verified else 'no' }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <p style="font-size:0.8rem;color:#666;">Sponsorship evidence is never automatically transferred between related companies.</p>
+  </div>
+  {% endif %}
+
+  <div class="card">
+    <h3>Evidence records (most recent 50)</h3>
+    <table>
+      <thead><tr><th>FY</th><th>Source</th><th>Occupation</th><th>State</th><th>Quality</th></tr></thead>
+      <tbody>
+        {% for e in evidence %}
+        <tr>
+          <td>{{ e.fiscal_year or '-' }}</td>
+          <td>{{ e.source_type or e.source }}</td>
+          <td>{{ e.occupation_title or '-' }}</td>
+          <td>{{ e.worksite_state or e.employer_state or '-' }}</td>
+          <td>{{ e.source_quality }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="5">No evidence records.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</body>
+</html>

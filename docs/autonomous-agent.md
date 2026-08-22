@@ -106,6 +106,17 @@ semantics, ASSIST-only behavior, or the hard gates described below.
 See `docs/sponsorship_rules.md`. Historical H-1B filing data is still never proof a specific
 role sponsors -- it only ever produces `LIKELY_SPONSOR` (review-only), same as before.
 
+**Phase 7**: `analyze_job()` now calls `app.sponsorship.decision.persist_decision()`
+instead of the raw classifier directly. The autonomous agent's discovery
+cycle behavior is otherwise unaffected -- the same four sponsorship states,
+the same hard-skip-on-`NO_SPONSORSHIP`, the same review-only `LIKELY_SPONSOR`
+handling. What's new: every classification is now versioned/audited
+(`sponsorship_decisions`), a strong-recent-technical-history employer with a
+matching, currently-silent JD can now be upgraded from `UNKNOWN` to
+`LIKELY_SPONSOR` (never further), and same-JD conflicting positive/negative
+sponsorship language is now detected and routed to review instead of an
+undefined pattern-match outcome. See `docs/sponsorship-decision-engine.md`.
+
 ## ASSIST vs AUTO
 
 Default and only implemented mode is **ASSIST**: the agent prepares everything (resume,

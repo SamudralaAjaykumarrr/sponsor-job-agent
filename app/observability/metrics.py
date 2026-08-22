@@ -112,7 +112,10 @@ def collect() -> dict:
 
     queue_depth = _queue_depth()
 
+    from app.sponsorship import metrics as sponsorship_metrics
+
     return {
+        **sponsorship_metrics.collect(),
         "database_backend": db_backend(),
         "workers_online": workers_online,
         "workers_offline": workers_offline,
@@ -159,6 +162,9 @@ def render_prometheus_text(metrics: dict) -> str:
             if key == "provider_circuit_state":
                 for provider, state in value.items():
                     _gauge(key, _CIRCUIT_STATE_CODE.get(state, -1), labels=f'{{provider="{provider}"}}')
+            elif key == "sponsorship_decisions_total":
+                for status, count in value.items():
+                    _gauge(key, count, labels=f'{{status="{status}"}}')
             else:
                 for provider, count in value.items():
                     _gauge(key, count, labels=f'{{provider="{provider}"}}')

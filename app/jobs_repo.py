@@ -14,6 +14,8 @@ _COLUMNS = [
     "salary_currency", "salary_period", "provider_metadata",
     "published_at", "first_seen_at", "last_seen_at", "freshness_source",
     "work_arrangement", "sponsorship_status", "sponsorship_evidence",
+    "sponsorship_decision_version", "jd_sponsorship_fingerprint",
+    "sponsorship_conflict", "sponsorship_blocking_reason",
     "freshness_tier", "freshness_minutes",
     "technical_match_score", "matched_skills", "gap_skills", "score_breakdown",
     "priority_tier", "priority_score",
@@ -120,6 +122,18 @@ def list_jobs(filters: Optional[dict] = None) -> list[Job]:
         clauses.append("freshness_minutes IS NOT NULL AND freshness_minutes <= 360")
     if filters.get("high_priority"):
         clauses.append("priority_tier IN ('P1_REMOTE_CONFIRMED', 'P2_REMOTE_LIKELY', 'P3_HYBRID_CONFIRMED')")
+    if filters.get("historical_strength"):
+        # CLAUDE.md Phase 7 section 30: an ADDITIONAL filter axis on top of
+        # (never a replacement for) sponsorship_status -- matched by company
+        # display name against the cached employer profile. Best-effort
+        # (display-name match, not full identity resolution) -- never used
+        # to change a job's own sponsorship_status.
+        clauses.append(
+            "company IN (SELECT rc.display_name FROM registry_companies rc "
+            "JOIN employer_sponsorship_profile esp ON esp.company_id = rc.id "
+            "WHERE esp.historical_strength = ?)"
+        )
+        params.append(filters["historical_strength"])
 
     if clauses:
         query += " WHERE " + " AND ".join(clauses)

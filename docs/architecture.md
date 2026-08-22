@@ -236,3 +236,55 @@ moved:
 - `scripts/multi_machine_simulation.py`, `scripts/phase6_scale_benchmark.py`
   — distributed-coordination acceptance simulation and a separate Phase 6
   synthetic scale benchmark (SQLite and, when available, real Postgres).
+
+## Phase 7: sponsorship intelligence
+
+See `docs/phase7-sponsorship-intelligence.md` for the full map. Summary:
+
+- `app/sponsorship/evidence.py` (extended, additive columns) — the full
+  evidence schema (source type/quality, dataset linkage, occupation/
+  location detail, idempotency key). Still never imported by
+  `app/sponsorship/classifier.py`.
+- `app/sponsorship/schema.py` — shared enums (`SourceType`, `SourceQuality`,
+  `AliasType`, `RelationshipType`, `HistoricalStrength`,
+  `RoleSimilarityTier`, `RecencyBucket`) and the deterministic
+  source-quality/recency weight tables.
+- `app/sponsorship/datasets.py` — dataset versioning
+  (`sponsorship_datasets`).
+- `app/sponsorship/importers.py` — streaming/batched/idempotent/resumable
+  USCIS H-1B Employer Data Hub + DOL OFLC LCA disclosure CSV importers; see
+  `docs/sponsorship-data-import.md`.
+- `app/sponsorship/aliases.py`, `app/sponsorship/relationships.py`,
+  `app/sponsorship/identity.py` — company alias model, parent/subsidiary
+  safety, deterministic employer identity resolution (never merges on name
+  similarity alone); see `docs/employer-identity-resolution.md`.
+- `app/sponsorship/similarity.py`, `app/sponsorship/profile.py` — role/
+  occupation/location similarity and the cached, recomputed-on-import
+  employer historical profile + `history_score` (a relative ranking signal,
+  never a probability).
+- `app/sponsorship/decision.py` — the ONE place current-role evidence
+  (`classifier.py`) and historical evidence (`profile.py`) are combined,
+  with a persisted, versioned decision audit trail
+  (`sponsorship_decisions`); see `docs/sponsorship-decision-engine.md`.
+- `app/sponsorship/classifier.py` (extended, still current-role only) —
+  added negation-safety, conditional-language, and same-JD conflict
+  detection (`classify_sponsorship_detailed`); the original
+  `classify_sponsorship()` two-tuple signature and behavior are unchanged.
+- `app/sponsorship/review_queue.py`, `app/sponsorship/doctor.py`,
+  `app/sponsorship/cli.py`, `app/sponsorship/metrics.py`,
+  `app/sponsorship/acquisition_integration.py` — review queue ordering,
+  integrity checks, operational CLI, `/metrics` additions, and the (signal-
+  only, never priority-score-owning) wire-up of real evidence into
+  `app.registry.acquisition_priority`'s existing `has_sponsorship_history_signal`
+  input.
+- `app/pipeline.py` — `analyze_job()` now calls
+  `app.sponsorship.decision.persist_decision()` instead of
+  `classify_sponsorship()` directly; new `reanalyze_job()` entry point for
+  JD-change detection, safe on terminal (`APPLIED`/`INTERVIEW`/`REJECTED`)
+  jobs.
+- Dashboard: `/companies`, `/companies/{id}`, `/sponsorship/review-queue`,
+  `/sponsorship/doctor`, `/sponsorship/identity-review`, plus a decision
+  panel on `/jobs/{id}` and a `historical_strength` dashboard filter; see
+  `docs/sponsorship-review-operations.md`.
+- `scripts/sponsorship_benchmark.py` — synthetic 10k/100k(+500k/1M optional)
+  evidence-import/profile/lookup benchmark, isolated temp SQLite DB only.

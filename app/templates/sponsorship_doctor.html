@@ -1,0 +1,38 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Sponsorship Doctor — Sponsor Job Agent</title>
+  <style>
+    body { font-family: -apple-system, Arial, sans-serif; margin: 2rem; background: #f7f7f9; color: #1a1a1a; }
+    table { width: 100%; border-collapse: collapse; background: white; }
+    th, td { padding: 8px 10px; border-bottom: 1px solid #eee; text-align: left; font-size: 0.85rem; }
+    th { background: #fafafa; }
+    .tag { padding: 2px 8px; border-radius: 10px; font-size: 0.75rem; font-weight: 600; }
+    .tag-serious { background: #f8d7da; color: #721c24; }
+    .tag-warning { background: #fff3cd; color: #856404; }
+    .ok { color: #155724; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <p><a href="/">&larr; back to dashboard</a></p>
+  <h1>Sponsorship Doctor</h1>
+  <p>{{ report.serious_count }} serious issue(s), {{ report.warning_count }} warning(s).
+     Same checks as <code>python -m app.sponsorship.cli doctor</code>.</p>
+  {% if not report.issues %}
+  <p class="ok">No integrity issues found.</p>
+  {% endif %}
+  <table>
+    <thead><tr><th>Severity</th><th>Check</th><th>Detail</th></tr></thead>
+    <tbody>
+      {% for issue in report.issues %}
+      <tr>
+        <td><span class="tag tag-{{ issue.severity }}">{{ issue.severity }}</span></td>
+        <td>{{ issue.check }}</td>
+        <td>{{ issue.detail }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</body>
+</html>

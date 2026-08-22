@@ -17,7 +17,7 @@ from app.resume.generator import generate_resume_content
 from app.resume.pdf_writer import write_pdf
 from app.resume.txt_writer import write_txt
 from app.scoring.scorer import build_score_breakdown, compute_priority_score, determine_priority_tier
-from app.sponsorship.classifier import classify_sponsorship
+from app.sponsorship.decision import persist_decision
 from app.workarrangement.classifier import classify_work_arrangement
 
 
@@ -45,7 +45,8 @@ def analyze_job(job_id: int) -> Job:
         return get_job(job_id)
 
     work_arrangement = classify_work_arrangement(job.location, job.description)
-    sponsorship_status, sponsorship_evidence = classify_sponsorship(job.description, job.company)
+    decision = persist_decision(job_id, job.title, job.company, job.description, job.state)
+    sponsorship_status, sponsorship_evidence = decision.status, decision.evidence_text
     freshness_tier = compute_freshness(job.published_at, job.first_seen_at)
     freshness_minutes = compute_age_minutes(job.published_at, job.first_seen_at)
 
@@ -76,6 +77,10 @@ def analyze_job(job_id: int) -> Job:
         work_arrangement=work_arrangement,
         sponsorship_status=sponsorship_status,
         sponsorship_evidence=sponsorship_evidence,
+        sponsorship_decision_version=decision.decision_version,
+        jd_sponsorship_fingerprint=decision.jd_fingerprint,
+        sponsorship_conflict=decision.conflict,
+        sponsorship_blocking_reason=decision.blocking_reason,
         freshness_tier=freshness_tier,
         freshness_minutes=freshness_minutes,
         technical_match_score=match_score,
@@ -124,6 +129,46 @@ def analyze_job(job_id: int) -> Job:
 
     _transition(job_id, job.application_state, ApplicationState.ANALYZED, notes=sponsorship_evidence, **common_fields)
     return get_job(job_id)
+
+
+_TERMINAL_STATES = (ApplicationState.APPLIED, ApplicationState.INTERVIEW, ApplicationState.REJECTED)
+
+
+def reanalyze_job(
+    job_id: int, new_title: str | None = None, new_company: str | None = None, new_description: str | None = None,
+) -> Job:
+    """JD-change detection + re-classification (CLAUDE.md Phase 7 sections
+    24, 57 scenarios 7-8). Only re-runs the full gate pipeline when the
+    supplied text actually differs from what's stored -- calling this with
+    unchanged text is a no-op (no new decision_version, no state change).
+    A job already in a terminal human-driven state (APPLIED/INTERVIEW/
+    REJECTED) is never silently moved by a JD edit: the new decision is
+    still computed and recorded for audit history, but application_state is
+    left untouched -- a human already acted on this job."""
+    job = get_job(job_id)
+    if job is None:
+        raise ValueError(f"job {job_id} not found")
+
+    changes = {}
+    if new_title is not None and new_title != job.title:
+        changes["title"] = new_title
+    if new_company is not None and new_company != job.company:
+        changes["company"] = new_company
+    if new_description is not None and new_description != job.description:
+        changes["description"] = new_description
+
+    if not changes:
+        return job
+
+    update_job(job_id, **changes)
+
+    if job.application_state in _TERMINAL_STATES:
+        refreshed = get_job(job_id)
+        persist_decision(job_id, refreshed.title, refreshed.company, refreshed.description, refreshed.state)
+        return get_job(job_id)
+
+    analyzed = analyze_job(job_id)
+    return _progress_after_analysis(analyzed)
 
 
 def _job_output_dir(job_id: int) -> Path:
@@ -221,12 +266,7 @@ def generate_assist_outputs(job_id: int) -> Job:
     return get_job(job_id)
 
 
-def ingest_and_process(job: Job) -> Job:
-    """Full pipeline entry point for a freshly ingested job (manual paste or
-    autonomous discovery)."""
-    job_id = insert_job(job)
-    analyzed = analyze_job(job_id)
-
+def _progress_after_analysis(analyzed: Job) -> Job:
     if analyzed.mode == ApplicationMode.ANALYZE:
         return analyzed
 
@@ -237,7 +277,15 @@ def ingest_and_process(job: Job) -> Job:
         return analyzed  # do not apply -- stays ANALYZED per policy
 
     if analyzed.mode == ApplicationMode.ASSIST:
-        return generate_assist_outputs(job_id)
+        return generate_assist_outputs(analyzed.id)
 
     # AUTO mode: future use only, not implemented for MVP. Never auto-submit.
     return analyzed
+
+
+def ingest_and_process(job: Job) -> Job:
+    """Full pipeline entry point for a freshly ingested job (manual paste or
+    autonomous discovery)."""
+    job_id = insert_job(job)
+    analyzed = analyze_job(job_id)
+    return _progress_after_analysis(analyzed)

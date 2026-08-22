@@ -325,3 +325,51 @@ See `docs/phase6-production-scale.md`'s "Honest limitations" section for
 the full, unabridged list (Docker unavailability, synthetic-benchmark vs.
 real-network-capacity distinction, the domain-seed pipeline's small real
 sample size, sponsorship-evidence being Phase-7-foundation-only, etc.).
+
+## Phase 7 acceptance verification
+
+Verified 2026-08-22. Every item below was actually executed against real
+SQLite and real PostgreSQL (`pgserver`), not assumed.
+
+| Criterion | Evidence |
+|---|---|
+| SQLite backward compatibility | Full pre-Phase-7 suite (478 tests) + all Phase 7 additions run against SQLite: 571 passed |
+| Evidence schema + idempotency | `tests/test_sponsorship_evidence_schema.py` (6 tests): normalization, snippet bounding, no-PII-fields, idempotent single + bulk insert |
+| Identity resolution / aliases / relationships | `tests/test_sponsorship_identity.py` (11 tests): domain match, alias match, no-merge-on-similar-names, ambiguous → review, renamed/acquired companies, alias collision, relationship contradiction |
+| Historical profile / recency / similarity | `tests/test_sponsorship_profile.py` (10 tests): recency buckets, strong-recent-technical, old-non-technical, trend, cache roundtrip, role/location similarity |
+| Decision engine (CLAUDE.md section 43 examples A-G) | `tests/test_sponsorship_decision.py` (18 tests): all 7 required examples + 6 negation-safety phrases + versioning/JD-change/history-never-overrides |
+| Government data importers | `tests/test_sponsorship_importers.py` (11 tests): USCIS + DOL LCA mapping, idempotent re-import, malformed rows, resumability, batching, dataset versioning |
+| Review queue | `tests/test_sponsorship_review_queue.py` (2 tests) |
+| Sponsorship doctor | `tests/test_sponsorship_doctor.py` (8 tests): orphan evidence, invalid fiscal year, alias collision, relationship contradiction, confirmed-without-evidence, no-sponsorship-not-hard-skipped, identity-review backlog |
+| CLI | `tests/test_sponsorship_cli.py` (5 tests): import, stats, datasets, company, review-queue, doctor exit code |
+| Dashboard + JSON API | `tests/test_sponsorship_dashboard.py` (13 tests): companies list/detail, review queue, doctor, identity-review resolve action, job-detail decision panel, all 4 new JSON endpoints, `/metrics` |
+| Postgres compatibility | `tests/test_postgres_sponsorship.py` (real Postgres, 4 tests): schema creation, evidence insert + profile compute, decision versioning, idempotent insert — caught and fixed 2 real Postgres-specific bugs (see below) |
+| End-to-end acceptance scenarios (1-8) | `tests/test_acceptance_scenarios_phase7.py` (9 tests, all 8 required scenarios + terminal-state safety) |
+| Synthetic large-import benchmark | `scripts/sponsorship_benchmark.py` run at 10k/100k/500k (610k cumulative rows): import scales linearly, cached lookups stay flat — see `docs/phase7-sponsorship-intelligence.md` for exact numbers |
+| Real-data validation | NOT RUN — no internet access in this build environment; importers fully implemented/tested against deterministic fixtures matching documented real formats |
+| No secrets committed | No new `.env.example` entries required; verified no real credentials/raw datasets staged |
+| `pytest` (default) unaffected | 571 passed, 24 deselected (postgres-marked) |
+| `pytest -m postgres` | 24 passed, 571 deselected |
+
+### Real bugs this phase caught and fixed
+
+1. **Idempotent-insert full table scan**: `employer_sponsorship_evidence`'s
+   idempotency check wasn't matching its own partial unique index (SQLite
+   couldn't prove a bound parameter satisfied the index's `!= ''` clause),
+   silently degrading a large import to O(n²) — a 110,000-row import that
+   should take ~3s was measured taking 5+ minutes before the fix. Caught
+   live while running the synthetic benchmark, not by any unit test (they
+   only exercise small row counts). See
+   `docs/phase7-sponsorship-intelligence.md` for the full writeup.
+2. **Postgres NULL-parameter type inference**: `sponsorship_datasets`'s
+   dataset-lookup query used a `(col IS NULL AND ? IS NULL)` pattern that
+   psycopg couldn't type-infer (`IndeterminateDatatype`) when the parameter
+   was `None` — fixed by switching to the portable `col IS NOT DISTINCT
+   FROM ?` form (SQLite 3.39+ and PostgreSQL both support it). Caught by
+   `tests/test_postgres_sponsorship.py` against a real Postgres server, not
+   by the SQLite-only test suite.
+
+### Known Phase 7 limitations
+
+See `docs/phase7-sponsorship-intelligence.md`'s "Exact limitations" and
+"Recommended Phase 8" sections for the full, unabridged list.

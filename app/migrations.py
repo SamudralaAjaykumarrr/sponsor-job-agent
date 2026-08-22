@@ -191,6 +191,227 @@ def _m007_correlation_id_column(conn, backend: str) -> None:
     add_columns_if_missing(conn, backend, "jobs", [("correlation_id", "TEXT DEFAULT ''")])
 
 
+def _m008_sponsorship_evidence_v2_columns(conn, backend: str) -> None:
+    """CLAUDE.md Phase 7 section 2: extends the Phase 6
+    employer_sponsorship_evidence table (additive only -- no new table) with
+    the richer evidence fields the intelligence layer needs: source
+    categorization, dataset provenance, occupation/location detail, and an
+    idempotency key. Deliberately excludes any beneficiary/worker PII field
+    (CLAUDE.md Phase 7 section 37)."""
+    add_columns_if_missing(conn, backend, "employer_sponsorship_evidence", [
+        ("source_type", "TEXT DEFAULT ''"),
+        ("source_record_id", "TEXT DEFAULT ''"),
+        ("dataset_id", "INTEGER"),
+        ("filing_date", "TEXT"),
+        ("visa_class", "TEXT DEFAULT ''"),
+        ("occupation_code", "TEXT DEFAULT ''"),
+        ("occupation_title", "TEXT DEFAULT ''"),
+        ("worksite_city", "TEXT DEFAULT ''"),
+        ("worksite_state", "TEXT DEFAULT ''"),
+        ("employer_city", "TEXT DEFAULT ''"),
+        ("employer_state", "TEXT DEFAULT ''"),
+        ("status_outcome", "TEXT DEFAULT ''"),
+        ("count_value", "INTEGER"),
+        ("company_normalized_name", "TEXT DEFAULT ''"),
+        ("company_domain", "TEXT DEFAULT ''"),
+        ("raw_source_fingerprint", "TEXT DEFAULT ''"),
+        ("snippet", "TEXT DEFAULT ''"),
+    ])
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_sponsorship_evidence_source_record "
+        "ON employer_sponsorship_evidence (dataset_id, source_record_id) WHERE source_record_id != ''"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_sponsorship_evidence_fiscal_year ON employer_sponsorship_evidence (fiscal_year)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_sponsorship_evidence_occupation ON employer_sponsorship_evidence (occupation_code)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_sponsorship_evidence_state ON employer_sponsorship_evidence (worksite_state)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_sponsorship_evidence_source_type ON employer_sponsorship_evidence (source_type)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_sponsorship_evidence_company_norm "
+        "ON employer_sponsorship_evidence (company_normalized_name)"
+    )
+
+
+def _m009_sponsorship_datasets_table(conn, backend: str) -> None:
+    """CLAUDE.md Phase 7 section 6: dataset versioning -- never silently
+    combine unrelated years/sources without provenance."""
+    id_column = "id BIGSERIAL PRIMARY KEY" if backend == "postgres" else "id INTEGER PRIMARY KEY AUTOINCREMENT"
+    conn.execute(
+        f"""CREATE TABLE IF NOT EXISTS sponsorship_datasets (
+            {id_column},
+            dataset_name TEXT NOT NULL,
+            dataset_version TEXT NOT NULL DEFAULT '',
+            fiscal_year INTEGER,
+            source_url TEXT DEFAULT '',
+            downloaded_at TEXT,
+            imported_at TEXT,
+            record_count INTEGER DEFAULT 0,
+            checksum TEXT DEFAULT '',
+            schema_version TEXT DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'PENDING',
+            resume_cursor INTEGER NOT NULL DEFAULT 0,
+            errors TEXT DEFAULT '[]',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_sponsorship_datasets_identity "
+        "ON sponsorship_datasets (dataset_name, dataset_version, fiscal_year)"
+    )
+
+
+def _m010_company_aliases_table(conn, backend: str) -> None:
+    """CLAUDE.md Phase 7 section 9."""
+    id_column = "id BIGSERIAL PRIMARY KEY" if backend == "postgres" else "id INTEGER PRIMARY KEY AUTOINCREMENT"
+    conn.execute(
+        f"""CREATE TABLE IF NOT EXISTS company_aliases (
+            {id_column},
+            company_id INTEGER NOT NULL,
+            alias TEXT NOT NULL,
+            normalized_alias TEXT NOT NULL,
+            alias_type TEXT NOT NULL DEFAULT 'DBA',
+            source TEXT DEFAULT '',
+            confidence INTEGER DEFAULT 0,
+            verified INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_company_aliases_unique "
+        "ON company_aliases (company_id, normalized_alias)"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_company_aliases_normalized ON company_aliases (normalized_alias)")
+
+
+def _m011_company_relationships_table(conn, backend: str) -> None:
+    """CLAUDE.md Phase 7 section 10: parent/subsidiary/affiliate/acquired
+    relationships are stored, never used to auto-transfer sponsorship
+    evidence between companies."""
+    id_column = "id BIGSERIAL PRIMARY KEY" if backend == "postgres" else "id INTEGER PRIMARY KEY AUTOINCREMENT"
+    conn.execute(
+        f"""CREATE TABLE IF NOT EXISTS company_relationships (
+            {id_column},
+            parent_company_id INTEGER NOT NULL,
+            child_company_id INTEGER NOT NULL,
+            relationship_type TEXT NOT NULL DEFAULT 'SUBSIDIARY',
+            confidence INTEGER DEFAULT 0,
+            source TEXT DEFAULT '',
+            verified INTEGER NOT NULL DEFAULT 0,
+            notes TEXT DEFAULT '',
+            created_at TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_company_relationships_unique "
+        "ON company_relationships (parent_company_id, child_company_id, relationship_type)"
+    )
+
+
+def _m012_employer_sponsorship_profile_table(conn, backend: str) -> None:
+    """CLAUDE.md Phase 7 section 11/52: derived, cached, per-company
+    aggregate -- recomputed on new evidence, never scanned live from millions
+    of raw evidence rows on every job classification."""
+    id_column = "id BIGSERIAL PRIMARY KEY" if backend == "postgres" else "id INTEGER PRIMARY KEY AUTOINCREMENT"
+    conn.execute(
+        f"""CREATE TABLE IF NOT EXISTS employer_sponsorship_profile (
+            {id_column},
+            company_id INTEGER NOT NULL UNIQUE,
+            years_with_h1b_activity INTEGER DEFAULT 0,
+            most_recent_fiscal_year INTEGER,
+            recent_filing_count INTEGER DEFAULT 0,
+            historical_filing_count INTEGER DEFAULT 0,
+            recent_lca_count INTEGER DEFAULT 0,
+            historical_lca_count INTEGER DEFAULT 0,
+            recent_occupation_families TEXT DEFAULT '[]',
+            recent_occupation_titles TEXT DEFAULT '[]',
+            recent_states TEXT DEFAULT '[]',
+            continuity_years INTEGER DEFAULT 0,
+            trend TEXT DEFAULT 'STABLE',
+            source_coverage TEXT DEFAULT '[]',
+            historical_strength TEXT NOT NULL DEFAULT 'NONE',
+            history_score REAL DEFAULT 0.0,
+            history_reasons TEXT DEFAULT '[]',
+            computed_at TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_sponsorship_profile_strength ON employer_sponsorship_profile (historical_strength)"
+    )
+
+
+def _m013_sponsorship_decisions_table(conn, backend: str) -> None:
+    """CLAUDE.md Phase 7 sections 21-22: append-only decision audit trail.
+    Never updated in place -- a re-classification always inserts a new row
+    with an incremented decision_version, so prior decisions stay auditable."""
+    id_column = "id BIGSERIAL PRIMARY KEY" if backend == "postgres" else "id INTEGER PRIMARY KEY AUTOINCREMENT"
+    conn.execute(
+        f"""CREATE TABLE IF NOT EXISTS sponsorship_decisions (
+            {id_column},
+            job_id INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            decision_version INTEGER NOT NULL DEFAULT 1,
+            classifier_version TEXT NOT NULL DEFAULT '',
+            jd_fingerprint TEXT DEFAULT '',
+            current_job_evidence TEXT DEFAULT '[]',
+            historical_evidence_summary TEXT DEFAULT '{{}}',
+            company_policy_evidence TEXT DEFAULT '[]',
+            conflicts TEXT DEFAULT '[]',
+            reasons TEXT DEFAULT '[]',
+            blocking_reason TEXT DEFAULT '',
+            created_at TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_sponsorship_decisions_job_version "
+        "ON sponsorship_decisions (job_id, decision_version)"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sponsorship_decisions_job ON sponsorship_decisions (job_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_sponsorship_decisions_status ON sponsorship_decisions (status)")
+
+
+def _m014_employer_identity_review_table(conn, backend: str) -> None:
+    """CLAUDE.md Phase 7 section 36: ambiguous employer matches never get
+    force-merged -- they land here for explicit resolution."""
+    id_column = "id BIGSERIAL PRIMARY KEY" if backend == "postgres" else "id INTEGER PRIMARY KEY AUTOINCREMENT"
+    conn.execute(
+        f"""CREATE TABLE IF NOT EXISTS employer_identity_review (
+            {id_column},
+            source_company_name TEXT NOT NULL,
+            source_domain TEXT DEFAULT '',
+            candidate_company_ids TEXT DEFAULT '[]',
+            reason TEXT DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'PENDING',
+            resolved_company_id INTEGER,
+            resolution_note TEXT DEFAULT '',
+            created_at TEXT NOT NULL,
+            resolved_at TEXT
+        )"""
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_identity_review_status ON employer_identity_review (status)"
+    )
+
+
+def _m015_jobs_sponsorship_decision_columns(conn, backend: str) -> None:
+    """CLAUDE.md Phase 7 sections 21/24: lets a job row point at its latest
+    decision without a join for the common dashboard case, and lets JD-change
+    detection compare fingerprints cheaply."""
+    add_columns_if_missing(conn, backend, "jobs", [
+        ("sponsorship_decision_version", "INTEGER DEFAULT 0"),
+        ("jd_sponsorship_fingerprint", "TEXT DEFAULT ''"),
+        ("sponsorship_conflict", "INTEGER DEFAULT 0"),
+        ("sponsorship_blocking_reason", "TEXT DEFAULT ''"),
+    ])
+
+
 MIGRATIONS: list[tuple[int, str, Callable]] = [
     (2, "phase6_worker_identity_columns", _m002_worker_identity_columns),
     (3, "phase6_schema_drift_table", _m003_schema_drift_table),
@@ -198,6 +419,14 @@ MIGRATIONS: list[tuple[int, str, Callable]] = [
     (5, "phase6_acquisition_priority_columns", _m005_acquisition_priority_columns),
     (6, "phase6_acquisition_records_table", _m006_acquisition_records_table),
     (7, "phase6_correlation_id_column", _m007_correlation_id_column),
+    (8, "phase7_sponsorship_evidence_v2_columns", _m008_sponsorship_evidence_v2_columns),
+    (9, "phase7_sponsorship_datasets_table", _m009_sponsorship_datasets_table),
+    (10, "phase7_company_aliases_table", _m010_company_aliases_table),
+    (11, "phase7_company_relationships_table", _m011_company_relationships_table),
+    (12, "phase7_employer_sponsorship_profile_table", _m012_employer_sponsorship_profile_table),
+    (13, "phase7_sponsorship_decisions_table", _m013_sponsorship_decisions_table),
+    (14, "phase7_employer_identity_review_table", _m014_employer_identity_review_table),
+    (15, "phase7_jobs_sponsorship_decision_columns", _m015_jobs_sponsorship_decision_columns),
 ]
 
 # Version 1 is the implicit Phase 1-5 baseline schema, applied by

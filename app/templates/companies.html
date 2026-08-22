@@ -1,0 +1,52 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Sponsorship companies</title>
+  <style>
+    body { font-family: -apple-system, Arial, sans-serif; margin: 2rem; background: #f7f7f9; color: #1a1a1a; }
+    table { width: 100%; border-collapse: collapse; background: white; }
+    th, td { padding: 8px 10px; border-bottom: 1px solid #eee; text-align: left; font-size: 0.9rem; }
+    th { background: #fafafa; }
+    .tag { padding: 2px 8px; border-radius: 10px; font-size: 0.75rem; font-weight: 600; }
+    .tag-strong { background: #d4edda; color: #155724; }
+    .tag-some { background: #fff3cd; color: #856404; }
+    .tag-old { background: #eee; color: #555; }
+    .tag-none { background: #eee; color: #999; }
+    .banner { background: #e2d9f3; color: #4a2e8a; padding: 0.5rem 1rem; border-radius: 6px; margin-bottom: 1rem; font-size: 0.85rem; }
+    form.search input { padding: 4px 8px; }
+  </style>
+</head>
+<body>
+  <p><a href="/">&larr; back to dashboard</a></p>
+  <h1>Sponsorship companies</h1>
+  <div class="banner">HISTORICAL EVIDENCE -- NOT A GUARANTEE FOR ANY CURRENT ROLE. Only current-role JD/policy text can confirm a specific job.</div>
+  <form class="search" method="get" action="/companies">
+    <input type="text" name="search" value="{{ search }}" placeholder="search company name/domain">
+    <button type="submit">Search</button>
+  </form>
+  <table>
+    <thead><tr><th>Company</th><th>Domain</th><th>Historical strength</th><th>Recent filings</th><th>Continuity years</th><th>Trend</th><th></th></tr></thead>
+    <tbody>
+      {% for r in rows %}
+      <tr>
+        <td>{{ r.company.display_name }}</td>
+        <td>{{ r.company.primary_domain or '-' }}</td>
+        <td>
+          {% if r.profile %}
+          {% set s = r.profile.historical_strength.value %}
+          <span class="tag {{ 'tag-strong' if s == 'STRONG_RECENT' else ('tag-some' if s == 'SOME' else ('tag-old' if s == 'OLD' else 'tag-none')) }}">{{ s }}</span>
+          {% else %}-{% endif %}
+        </td>
+        <td>{{ r.profile.recent_filing_count if r.profile else 0 }}</td>
+        <td>{{ r.profile.continuity_years if r.profile else 0 }}</td>
+        <td>{{ r.profile.trend if r.profile else '-' }}</td>
+        <td><a href="/companies/{{ r.company.id }}">View</a></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="7">No registry companies yet.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</body>
+</html>

@@ -427,3 +427,72 @@ future replacements/extensions must keep obeying:
   never-collide-with-a-real-name convention as Phase 4/5's benchmarks (`benchmark-fixture`,
   `simulated-provider-fixture`) — never write synthetic rows into a real registry or a
   developer's real `data/app.db`.
+
+## Sponsorship Intelligence Rules (recorded after Phase 7, apply to all future phases)
+
+Core rule, unchanged from the Phase 7 build brief and now durable: historical sponsorship
+evidence may only ever answer "is this employer worth prioritizing/reviewing?", never "does
+this specific current role sponsor?". A specific job may only become CONFIRMED_SPONSOR from
+current-role/current-JD evidence.
+
+- `app/sponsorship/classifier.py` (`classify_sponsorship`/`classify_sponsorship_detailed`)
+  remains current-role-only — it must never import `app.sponsorship.evidence`, `.profile`,
+  `.identity`, or `.decision`. This narrows and supersedes the blanket Phase 6 wording
+  ("historical evidence may only ever influence acquisition priority, never a job's
+  sponsorship_status") for exactly one new, deliberately sanctioned integration point:
+  `app.sponsorship.decision.decide_sponsorship()`/`persist_decision()`, the only code path
+  allowed to blend historical evidence into a job's sponsorship_status, and even there it may
+  only ever upgrade UNKNOWN → LIKELY_SPONSOR — never produce CONFIRMED_SPONSOR, never override
+  NO_SPONSORSHIP, never downgrade CONFIRMED_SPONSOR. `app/pipeline.py::analyze_job()` calls
+  `persist_decision()`, not `classify_sponsorship()`, as its sponsorship step.
+- A same-JD conflict (both positive and negative sponsorship language present) always resolves
+  to LIKELY_SPONSOR with `conflict=True` and a blocking reason — never a hard skip, never
+  CONFIRMED. Conditional/case-by-case language alone also resolves to LIKELY_SPONSOR
+  (`conditional=True`), never CONFIRMED.
+- `sponsorship_decisions` is append-only and versioned per job — a reclassification always
+  inserts a new row with `decision_version` incremented; prior decisions are never overwritten.
+  A new version is only written when the JD fingerprint (or classifier version) actually
+  changed; re-persisting unchanged input is a no-op read.
+- A job in a terminal, human-driven `application_state` (APPLIED/INTERVIEW/REJECTED) must never
+  have that state silently changed by a later JD edit — `app/pipeline.py::reanalyze_job()`
+  still computes and records the new decision for audit history, but leaves `application_state`
+  untouched for terminal jobs.
+- Employer identity resolution (`app/sponsorship/identity.py`) never merges two companies on
+  name similarity alone — only an exact normalized-name+domain match, a verified alias match,
+  or an unambiguous (single-candidate) normalized-name-only match resolves automatically.
+  Anything ambiguous is written to `employer_identity_review` for manual resolution, never
+  force-matched.
+- `company_relationships` (parent/subsidiary/affiliate/acquired) is metadata for display and
+  doctor contradiction-checking only — evidence/profile aggregation in
+  `app.sponsorship.profile` always scopes strictly to one `company_id`; a relationship never
+  transfers sponsorship history between the two companies it links.
+- `employer_sponsorship_profile` is a cached, recomputed-on-import aggregate
+  (`app.sponsorship.profile.refresh_employer_profile`) — job/company classification must never
+  scan raw `employer_sponsorship_evidence` rows on a live request path (see Phase 6's
+  performance rule, reaffirmed). `history_score`/`historical_strength` are relative ranking
+  signals, never a "probability of sponsorship" — never label them that way anywhere (code,
+  docs, UI).
+- Any query filtering `employer_sponsorship_evidence` on `(dataset_id, source_record_id)` for
+  idempotency must include the literal `AND source_record_id != ''` clause matching the partial
+  unique index's own WHERE condition — SQLite cannot prove a bound parameter satisfies a partial
+  index's `!=` condition without it, and omitting it silently degrades to a full table scan
+  (a real O(n²) bug caught live during this phase's own benchmark; see
+  `docs/phase7-sponsorship-intelligence.md`).
+- Government dataset importers (`app/sponsorship/importers.py`) only ever read an
+  already-downloaded local file — never perform a live network download themselves. Import must
+  stay streaming (never load a whole file into memory), batched (one transaction per batch, not
+  per row), idempotent (safe to re-run the identical file), and resumable via
+  `sponsorship_datasets.resume_cursor`. A dataset never fabricates a field its source format
+  doesn't actually provide (e.g. USCIS's public Employer Data Hub has no occupation field —
+  `occupation_code`/`occupation_title` stay blank for those rows, never guessed).
+- `employer_sponsorship_evidence` must never store beneficiary/worker names or other
+  immigration-filing personal data — only employer/role/location/aggregate fields.
+- `app.sponsorship.acquisition_integration.sync_acquisition_signal()` may only ever write the
+  single `registry_companies.has_sponsorship_history_signal` boolean column — it must never
+  recompute or overwrite `priority_score`/`priority_reasons` itself (those need portal-level
+  inputs this module doesn't own); a company with no sponsorship history must never be starved
+  by this signal, only ever additively boosted when present.
+- Synthetic benchmark data (`scripts/sponsorship_benchmark.py`) follows the same isolated-temp-
+  DB-only, never-collide-with-a-real-name convention as every prior phase's benchmark
+  (`benchmark-fixture` dataset name) — never write synthetic rows into the real registry or a
+  developer's real `data/app.db`.

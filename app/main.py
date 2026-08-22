@@ -37,6 +37,15 @@ from app.registry import store as registry_store
 from app.registry import sync as registry_sync
 from app.registry.verification import verify_portal
 from app import migrations
+from app.sponsorship import doctor as sponsorship_doctor
+from app.sponsorship import metrics as sponsorship_metrics
+from app.sponsorship.aliases import list_aliases_for_company
+from app.sponsorship.decision import list_decision_history
+from app.sponsorship.identity import list_pending_reviews as sponsorship_list_pending_reviews
+from app.sponsorship.identity import resolve_review as sponsorship_resolve_review
+from app.sponsorship.profile import get_or_compute_profile
+from app.sponsorship.relationships import list_relationships_for_company
+from app.sponsorship.review_queue import build_review_queue
 from app.db import backend as db_backend
 from app.health import check_readiness
 from app.observability import metrics as observability_metrics
@@ -82,6 +91,7 @@ def dashboard(
     fresh_under_1hr: bool = False,
     fresh_under_6hr: bool = False,
     high_priority: bool = False,
+    historical_strength: str = "",
 ):
     filters = {
         "work_arrangement": work_arrangement or None,
@@ -90,6 +100,7 @@ def dashboard(
         "fresh_under_1hr": fresh_under_1hr or None,
         "fresh_under_6hr": fresh_under_6hr or None,
         "high_priority": high_priority or None,
+        "historical_strength": historical_strength or None,
     }
     jobs = list_jobs(filters)
     missing = missing_fields(load_profile())
@@ -124,10 +135,150 @@ def job_detail(request: Request, job_id: int):
             score_breakdown = {}
     history = get_state_history(job_id)
     provenance = list_provenance(job_id)
+    decision_history = list_decision_history(job_id)
+    latest_decision = decision_history[-1] if decision_history else None
     return templates.TemplateResponse(
         request, "job_detail.html",
-        {"job": job, "score_breakdown": score_breakdown, "history": history, "provenance": provenance},
+        {
+            "job": job, "score_breakdown": score_breakdown, "history": history, "provenance": provenance,
+            "latest_decision": latest_decision, "decision_history": decision_history,
+        },
     )
+
+
+# --- Phase 7: sponsorship intelligence dashboard ----------------------------
+
+@app.get("/companies", response_class=HTMLResponse)
+def companies_page(request: Request, search: str = ""):
+    companies = registry_store.list_companies(limit=200, search=search)
+    rows = []
+    for c in companies:
+        profile = get_or_compute_profile(c.id) if c.id else None
+        rows.append({"company": c, "profile": profile})
+    return templates.TemplateResponse(
+        request, "companies.html", {"rows": rows, "search": search},
+    )
+
+
+@app.get("/companies/{company_id}", response_class=HTMLResponse)
+def company_detail_page(request: Request, company_id: int):
+    company = registry_store.get_company(company_id)
+    if company is None:
+        raise HTTPException(404, "company not found")
+    profile = get_or_compute_profile(company_id)
+    aliases = list_aliases_for_company(company_id)
+    relationships = list_relationships_for_company(company_id)
+    from app.sponsorship.evidence import list_evidence_for_company
+
+    evidence = list_evidence_for_company(company_id, limit=50)
+    return templates.TemplateResponse(
+        request, "company_detail.html",
+        {
+            "company": company, "profile": profile, "aliases": aliases,
+            "relationships": relationships, "evidence": evidence,
+        },
+    )
+
+
+@app.get("/sponsorship/review-queue", response_class=HTMLResponse)
+def sponsorship_review_queue_page(request: Request):
+    items = build_review_queue(limit=200)
+    return templates.TemplateResponse(request, "sponsorship_review_queue.html", {"items": items})
+
+
+@app.get("/sponsorship/doctor", response_class=HTMLResponse)
+def sponsorship_doctor_page(request: Request):
+    report = sponsorship_doctor.run_doctor()
+    return templates.TemplateResponse(request, "sponsorship_doctor.html", {"report": report})
+
+
+@app.get("/sponsorship/identity-review", response_class=HTMLResponse)
+def sponsorship_identity_review_page(request: Request):
+    pending = sponsorship_list_pending_reviews()
+    resolved_companies = {}
+    for item in pending:
+        for cid in item.get("candidate_company_ids", []):
+            if cid not in resolved_companies:
+                c = registry_store.get_company(cid)
+                resolved_companies[cid] = c
+    return templates.TemplateResponse(
+        request, "sponsorship_identity_review.html", {"pending": pending, "companies": resolved_companies},
+    )
+
+
+@app.post("/sponsorship/identity-review/{review_id}/resolve")
+def sponsorship_identity_review_resolve(review_id: int, company_id: str = Form("")):
+    resolved_id = int(company_id) if company_id.strip() else None
+    sponsorship_resolve_review(review_id, resolved_id, note="resolved via dashboard")
+    return RedirectResponse(url="/sponsorship/identity-review", status_code=303)
+
+
+# --- Phase 7 (CLAUDE.md section 51): safe read-only JSON API endpoints ------
+
+@app.get("/api/companies/{company_id}/sponsorship")
+def api_company_sponsorship(company_id: int):
+    company = registry_store.get_company(company_id)
+    if company is None:
+        raise HTTPException(404, "company not found")
+    profile = get_or_compute_profile(company_id)
+    return JSONResponse({
+        "company_id": company_id, "display_name": company.display_name,
+        "primary_domain": company.primary_domain,
+        "label": "HISTORICAL EVIDENCE -- NOT A GUARANTEE FOR ANY CURRENT ROLE",
+        "historical_strength": profile.historical_strength.value,
+        "years_with_h1b_activity": profile.years_with_h1b_activity,
+        "most_recent_fiscal_year": profile.most_recent_fiscal_year,
+        "recent_filing_count": profile.recent_filing_count,
+        "historical_filing_count": profile.historical_filing_count,
+        "continuity_years": profile.continuity_years,
+        "trend": profile.trend,
+        "recent_states": profile.recent_states,
+        "recent_occupation_families": profile.recent_occupation_families,
+        "history_score": profile.history_score,
+        "history_reasons": profile.history_reasons,
+        "aliases": list_aliases_for_company(company_id),
+        "relationships": list_relationships_for_company(company_id),
+    })
+
+
+@app.get("/api/jobs/{job_id}/sponsorship")
+def api_job_sponsorship(job_id: int):
+    job = get_job(job_id)
+    if job is None:
+        raise HTTPException(404, "job not found")
+    history = list_decision_history(job_id)
+    return JSONResponse({
+        "job_id": job_id, "current_status": job.sponsorship_status.value,
+        "decision_version": job.sponsorship_decision_version,
+        "conflict": bool(job.sponsorship_conflict), "blocking_reason": job.sponsorship_blocking_reason,
+        "decision_history": history,
+    })
+
+
+@app.get("/api/sponsorship/review-queue")
+def api_sponsorship_review_queue(limit: int = 100):
+    items = build_review_queue(limit=limit)
+    return JSONResponse([
+        {
+            "job_id": i.job_id, "title": i.title, "company": i.company, "location": i.location,
+            "work_arrangement": i.work_arrangement, "technical_match_score": i.technical_match_score,
+            "priority_score": i.priority_score, "historical_strength": i.historical_strength,
+            "missing_confirmation": i.missing_confirmation, "reasons": i.reasons,
+        }
+        for i in items
+    ])
+
+
+@app.get("/api/sponsorship/datasets")
+def api_sponsorship_datasets():
+    from app.sponsorship.datasets import list_datasets
+
+    return JSONResponse(list_datasets())
+
+
+@app.get("/api/sponsorship/stats")
+def api_sponsorship_stats():
+    return JSONResponse(sponsorship_metrics.collect())
 
 
 @app.get("/providers", response_class=HTMLResponse)

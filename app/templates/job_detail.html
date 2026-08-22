@@ -43,6 +43,30 @@
     </dl>
   </div>
 
+  {% if latest_decision %}
+  <div class="card">
+    <h3>Sponsorship decision explanation</h3>
+    <dl>
+      <dt>Status</dt><dd><span class="tag {{ 'tag-confirmed' if latest_decision.status == 'CONFIRMED_SPONSOR' else ('tag-likely' if latest_decision.status == 'LIKELY_SPONSOR' else ('tag-no' if latest_decision.status == 'NO_SPONSORSHIP' else 'tag-unknown')) }}">{{ latest_decision.status }}</span></dd>
+      <dt>Decision version</dt><dd>{{ latest_decision.decision_version }} (classifier {{ latest_decision.classifier_version }})</dd>
+      <dt>Conflict?</dt><dd>{{ 'YES -- do not auto-apply' if latest_decision.conflicts | length > 0 else 'No' }}</dd>
+      <dt>Blocking reason</dt><dd>{{ latest_decision.blocking_reason or '(none -- eligible)' }}</dd>
+    </dl>
+    <p><strong>Reasons:</strong></p>
+    <ul>
+      {% for reason in latest_decision.reasons %}
+      <li>{{ reason }}</li>
+      {% endfor %}
+    </ul>
+    {% if decision_history and decision_history | length > 1 %}
+    <p><strong>Decision history</strong> (JD changes reclassify and version up -- prior decisions are retained, never overwritten):</p>
+    {% for d in decision_history %}
+    <div class="history-item">v{{ d.decision_version }} — {{ d.status }} — {{ d.created_at }}</div>
+    {% endfor %}
+    {% endif %}
+  </div>
+  {% endif %}
+
   {% if score_breakdown and score_breakdown.get('components') %}
   <div class="card">
     <h3>Score breakdown</h3>

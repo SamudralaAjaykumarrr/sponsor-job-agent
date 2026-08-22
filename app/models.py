@@ -124,6 +124,15 @@ class Job(BaseModel):
     freshness_tier: FreshnessTier = FreshnessTier.LOWER
     freshness_minutes: Optional[float] = None
 
+    # Phase 7 (CLAUDE.md sections 21/24): sponsorship decision audit linkage.
+    # sponsorship_status/sponsorship_evidence above are already the CURRENT
+    # decision's summary; these add the versioning/JD-change-detection/
+    # conflict-flag fields the dashboard and JSON API expose.
+    sponsorship_decision_version: int = 0
+    jd_sponsorship_fingerprint: str = ""
+    sponsorship_conflict: bool = False
+    sponsorship_blocking_reason: str = ""
+
     technical_match_score: float = 0.0
     matched_skills: str = ""   # comma-separated
     gap_skills: str = ""       # comma-separated

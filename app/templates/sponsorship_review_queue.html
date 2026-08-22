@@ -1,0 +1,37 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Sponsorship review queue</title>
+  <style>
+    body { font-family: -apple-system, Arial, sans-serif; margin: 2rem; background: #f7f7f9; color: #1a1a1a; }
+    table { width: 100%; border-collapse: collapse; background: white; }
+    th, td { padding: 8px 10px; border-bottom: 1px solid #eee; text-align: left; font-size: 0.9rem; }
+    th { background: #fafafa; }
+    .banner { background: #fff3cd; color: #856404; padding: 0.5rem 1rem; border-radius: 6px; margin-bottom: 1rem; font-size: 0.85rem; }
+  </style>
+</head>
+<body>
+  <p><a href="/">&larr; back to dashboard</a></p>
+  <h1>Sponsorship review queue</h1>
+  <div class="banner">LIKELY_SPONSOR jobs only -- review-only, never auto-applied. Ordered by employer historical strength, then technical match.</div>
+  <table>
+    <thead><tr><th>Company</th><th>Role</th><th>Location</th><th>Match</th><th>Historical strength</th><th>What's missing</th><th></th></tr></thead>
+    <tbody>
+      {% for item in items %}
+      <tr>
+        <td>{{ item.company }}</td>
+        <td>{{ item.title }}</td>
+        <td>{{ item.location }}</td>
+        <td>{{ item.technical_match_score }}%</td>
+        <td>{{ item.historical_strength }}</td>
+        <td>{{ item.missing_confirmation }}</td>
+        <td><a href="/jobs/{{ item.job_id }}">View</a></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="7">Review queue is empty.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</body>
+</html>

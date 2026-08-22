@@ -131,3 +131,30 @@ governs every number reported:
 - The registry itself grew by exactly 1 real verified portal in this
   phase's own validation (Duolingo, via the new domain-seed pipeline) —
   see `docs/registry-acquisition.md` for the honest, small, exact numbers.
+
+## Phase 7 update: the same honesty rule applies to sponsorship evidence
+
+**Never say** "N companies sponsor H-1B" or "N employers are sponsors" from
+a raw evidence row count. **Say** "N employer profiles show historical H-1B/
+LCA activity" — and always alongside the label every sponsorship-evidence
+surface in this app carries: *"HISTORICAL EVIDENCE -- NOT A GUARANTEE FOR
+ANY CURRENT ROLE."* A company having filing history proves nothing about
+whether any *specific current job posting* sponsors — only that job's own
+JD/policy text can do that (`docs/sponsorship-decision-engine.md`).
+
+`app/sponsorship/metrics.py::collect()` is the source of truth for every
+honestly-phrased sponsorship number: `sponsorship_evidence_records` (raw row
+count — never call this "N sponsors"), `companies_with_recent_h1b_history`
+(profiles with `STRONG_RECENT`/`SOME` historical strength — still never
+"N confirmed sponsors"), `sponsorship_decisions_total{status}` (only this
+one is a real per-job-current-role classification count).
+
+**Real-data validation status this phase**: NOT RUN — no internet access in
+this build environment, so no live USCIS/DOL dataset was downloaded. The
+importers are fully implemented and tested against deterministic fixture
+CSVs matching the documented real formats
+(`docs/sponsorship-data-import.md`); this is stated honestly rather than
+faking a live import result. See `docs/phase7-sponsorship-intelligence.md`
+for the full accounting, including the synthetic-benchmark numbers (which,
+per this same policy, prove the storage/query layer holds up at 10k-500k
+rows and say nothing about a real dataset's size or quality).
