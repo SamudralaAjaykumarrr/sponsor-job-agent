@@ -1339,6 +1339,18 @@ def _m050_agent_activity_log_table(conn, backend: str) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_agent_activity_log_ts ON agent_activity_log (ts)")
 
 
+def _m051_workday_tenant_dynamic_validation_column(conn, backend: str) -> None:
+    """Workday/SmartRecruiters/Workable browser-assist hardening (2026-08-22):
+    adds `dynamic_validation` to `workday_tenant_observations`, matching the
+    new key appended to app.applications.workday_tenant.CAPABILITY_KEYS --
+    does this tenant's real form genuinely block a Next/Continue click with
+    inline validation when a required field is left empty. Nullable, same
+    as every other capability column here: NULL means "not observed"."""
+    add_columns_if_missing(conn, backend, "workday_tenant_observations", [
+        ("dynamic_validation", "INTEGER"),
+    ])
+
+
 MIGRATIONS: list[tuple[int, str, Callable]] = [
     (2, "phase6_worker_identity_columns", _m002_worker_identity_columns),
     (3, "phase6_schema_drift_table", _m003_schema_drift_table),
@@ -1389,6 +1401,7 @@ MIGRATIONS: list[tuple[int, str, Callable]] = [
     (48, "agent_run_state_progress_columns", _m048_agent_run_state_progress_columns),
     (49, "jobs_test_fixture_column", _m049_jobs_test_fixture_column),
     (50, "agent_activity_log_table", _m050_agent_activity_log_table),
+    (51, "workday_tenant_dynamic_validation_column", _m051_workday_tenant_dynamic_validation_column),
 ]
 
 # Version 1 is the implicit Phase 1-5 baseline schema, applied by

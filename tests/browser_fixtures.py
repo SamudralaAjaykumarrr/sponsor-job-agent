@@ -586,6 +586,93 @@ def jsonld_job_posting_page(tmp_path: Path, *, title: str = "Backend Software En
     """))
 
 
+# =============================================================================
+# Workday/SmartRecruiters/Workable browser-assist hardening (2026-08-22):
+# a Workday-style multi-step wizard with genuine client-side (JS) inline
+# validation blocking Next on an empty required field, and a Workable-style
+# (real, separately-loaded) 2-step form -- exercising the new
+# app.applications.dynamic_validation detection and the generic multi-step
+# engine against a Workable-shaped flow, since the one real Workable tenant
+# found live (apply.workable.com/flosum) was single-page.
+# =============================================================================
+
+def workday_like_dynamic_validation_wizard_page(tmp_path: Path) -> str:
+    """A single-page (client-side-only) 2-step wizard: clicking Next with
+    the required 'Full Name' field empty injects a genuine
+    `role="alert"` inline validation error and does NOT advance (no route
+    change, no field-set change -- the error element itself is not an
+    input/textarea/select, so it never counts as a field-set change).
+    Filling the field first and clicking Next DOES advance (a real
+    `history.pushState` route change plus a swapped-in step-2 field).
+
+    The step transition replaces only the `#app-root` container's
+    innerHTML, never `document.body.innerHTML` -- a real SPA's step
+    transition re-renders its own root component, it does not also wipe
+    out page-level `<head>`-equivalent metadata like the embedded
+    JobPosting JSON-LD block. An earlier version of this fixture replaced
+    the whole body (destroying the JSON-LD script tag on every step
+    transition), which made `app.applications.job_identity`'s multi-signal
+    check correctly but incidentally see zero comparable signals on step 2
+    and pause `JOB_IDENTITY_UNVERIFIED` -- not a bug in the identity gate
+    or in `browser_runtime`, but an unrealistic fixture destroying its own
+    identity evidence on a step change that a genuine SPA would not."""
+    return _write(tmp_path, "wd_dynamic_validation.html", _jsonld_block() + textwrap.dedent("""
+        <div id="app-root">
+          <div class="progress-indicator">Step 1 of 2</div>
+          <form id="step1">
+            <label for="fname">Full Name</label><input id="fname" name="full_name" type="text" required>
+            <div id="error-slot"></div>
+            <button type="button" id="next-btn">Next</button>
+          </form>
+        </div>
+        <script>
+          document.getElementById('next-btn').addEventListener('click', function () {
+            var val = document.getElementById('fname').value.trim();
+            var errorSlot = document.getElementById('error-slot');
+            if (!val) {
+              errorSlot.innerHTML = '<div role="alert" class="error">Full Name is required</div>';
+              return;
+            }
+            errorSlot.innerHTML = '';
+            history.pushState({}, '', '#step2');
+            document.getElementById('app-root').innerHTML = (
+              '<div class="progress-indicator">Step 2 of 2</div>' +
+              '<form id="step2">' +
+              '<label for="resume">Resume/CV</label><input id="resume" name="resume" type="file" required>' +
+              '<button type="submit">Submit Application</button>' +
+              '</form>'
+            );
+          });
+        </script>
+    """))
+
+
+def workable_like_multistep_page(tmp_path: Path) -> tuple[str, str]:
+    """Two real, separately-loaded pages (mirroring multi_step_pages()'s own
+    real-navigation shape, closer to how a genuinely multi-step Workable
+    account would behave) with Workable-shaped field labels -- the one real
+    Workable tenant reached live (apply.workable.com/flosum) was single-page,
+    so this exercises the SAME generic multi-step engine against a
+    Workable-styled 2-step flow instead. Returns (page1_url, page2_url)."""
+    page2 = _write(tmp_path, "workable_step2.html", _jsonld_block() + textwrap.dedent("""
+        <form>
+          <label for="linkedin">LinkedIn Profile</label><input id="linkedin" name="linkedin_url" type="text">
+          <label for="salary">Desired Salary</label><input id="salary" name="salary_expectation" type="text">
+          <label for="resume">Resume/CV</label><input id="resume" name="resume" type="file" required>
+          <button type="submit">Submit Application</button>
+        </form>
+    """))
+    page1 = _write(tmp_path, "workable_step1.html", textwrap.dedent(f"""
+        <form>
+          <label for="fname">Full Name</label><input id="fname" name="full_name" type="text" required>
+          <label for="mail">Email</label><input id="mail" name="email" type="text" required>
+          <label for="phone">Phone</label><input id="phone" name="phone" type="text">
+          <button type="button" onclick="window.location.href='{page2}'">Next</button>
+        </form>
+    """))
+    return page1, page2
+
+
 def job_identity_pages(tmp_path: Path) -> tuple[str, str]:
     """CLAUDE.md Phase 12 sections 37-39: two REAL, independently reachable
     pages representing two DIFFERENT job requisitions (a query-string

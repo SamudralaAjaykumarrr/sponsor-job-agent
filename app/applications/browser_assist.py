@@ -722,8 +722,10 @@ def advance_step(session_id: str) -> dict:
     try:
         result = browser_runtime.advance_step(session_id)
         if not result.get("advanced"):
-            return {"ok": False, "detail": result.get("reason", "could not advance to the next step"),
-                    "session": session}
+            reason = result.get("reason", "could not advance to the next step")
+            if result.get("validation_errors"):
+                reason = f"{reason}: {'; '.join(result['validation_errors'][:3])}"
+            return {"ok": False, "detail": reason, "session": session}
 
         job = get_job(session["job_id"])
         application_fields = _build_fields_for_job(job) if job else []
