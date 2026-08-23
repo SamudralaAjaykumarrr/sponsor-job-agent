@@ -1,0 +1,113 @@
+{% extends "base.html" %}
+{% from "_job_card.html" import job_card %}
+{% block title %}Jobs — Sponsor Job Agent{% endblock %}
+{% block content_width %}wide{% endblock %}
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1>Jobs</h1>
+    <p class="subtitle">Search and browse every job the agent has discovered or you've added manually.</p>
+  </div>
+</div>
+
+<form method="get" action="/jobs" role="search" style="margin-bottom:1rem;">
+  <div class="field-row">
+    <div class="field" style="flex:2;min-width:240px;">
+      <label for="job-search">Search company, role, or location</label>
+      <input type="search" id="job-search" name="q" value="{{ filters.q }}" data-auto-search
+             placeholder="e.g. Backend Engineer, Acme Corp, Remote">
+    </div>
+    <div class="field">
+      <label for="f-arrangement">Arrangement</label>
+      <select id="f-arrangement" name="work_arrangement">
+        <option value="" {{ 'selected' if not filters.work_arrangement else '' }}>Any</option>
+        {% for w in ["REMOTE", "HYBRID", "ONSITE"] %}
+        <option value="{{ w }}" {{ 'selected' if filters.work_arrangement == w else '' }}>{{ w.title() }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="field">
+      <label for="f-sponsorship">Sponsorship</label>
+      <select id="f-sponsorship" name="sponsorship_status">
+        <option value="" {{ 'selected' if not filters.sponsorship_status else '' }}>Any</option>
+        {% for s in ["CONFIRMED_SPONSOR", "LIKELY_SPONSOR", "UNKNOWN", "NO_SPONSORSHIP"] %}
+        <option value="{{ s }}" {{ 'selected' if filters.sponsorship_status == s else '' }}>{{ s.replace('_', ' ').title() }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="field">
+      <label for="f-resume">Resume state</label>
+      <select id="f-resume" name="resume_status">
+        <option value="" {{ 'selected' if not filters.resume_status else '' }}>Any</option>
+        {% for r in ["READY", "STALE", "NOT_GENERATED", "CLAIM_CHECK_FAILED", "REVIEW_REQUIRED"] %}
+        <option value="{{ r }}" {{ 'selected' if filters.resume_status == r else '' }}>{{ r.replace('_', ' ').title() }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="field">
+      <label for="f-state">Application state</label>
+      <select id="f-state" name="application_state">
+        <option value="" {{ 'selected' if not filters.application_state else '' }}>Any</option>
+        {% for st in ["READY_TO_APPLY", "REVIEW_REQUIRED", "APPLIED", "INTERVIEW", "REJECTED"] %}
+        <option value="{{ st }}" {{ 'selected' if filters.application_state == st else '' }}>{{ st.replace('_', ' ').title() }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="field" style="align-self:flex-end;">
+      <button class="btn btn-primary" type="submit">Search</button>
+    </div>
+  </div>
+  <div class="chip-row">
+    <a class="chip {{ 'is-active' if filters.high_priority else '' }}" href="?high_priority=true">High priority</a>
+    <a class="chip {{ 'is-active' if not filters.full_time_only else '' }}" href="?full_time_only=false">Include non-full-time (audit)</a>
+    <a class="chip" href="/jobs">Clear filters</a>
+  </div>
+</form>
+
+{% if total_matching is defined and total_matching > pipeline_rows|length %}
+<p class="faint">Showing top {{ pipeline_rows|length }} of {{ total_matching }} matching jobs (sorted by priority).</p>
+{% endif %}
+
+{% if pipeline_rows %}
+<div class="job-grid">
+  {% for row in pipeline_rows %}{{ job_card(row) }}{% endfor %}
+</div>
+{% else %}
+<div class="empty-state surface surface-pad">
+  <div class="icon">🔍</div>
+  <p>No jobs match these filters.</p>
+  <a class="btn btn-ghost" href="/jobs">Clear filters</a>
+</div>
+{% endif %}
+
+<section class="surface surface-pad" id="add-job" style="margin-top:1.5rem;">
+  <h2>Add a job description</h2>
+  <p class="subtitle">Paste a JD to manually ingest and analyze it right away (ANALYZE or ASSIST mode).</p>
+  <form method="post" action="/jobs/ingest">
+    <div class="field-row">
+      <div class="field"><label for="ing-title">Title</label><input type="text" id="ing-title" name="title" required></div>
+      <div class="field"><label for="ing-company">Company</label><input type="text" id="ing-company" name="company" required></div>
+    </div>
+    <div class="field-row">
+      <div class="field"><label for="ing-location">Location</label><input type="text" id="ing-location" name="location"></div>
+      <div class="field"><label for="ing-url">URL</label><input type="text" id="ing-url" name="url"></div>
+      <div class="field"><label for="ing-pub">Published at (ISO, optional)</label>
+        <input type="text" id="ing-pub" name="published_at" placeholder="2026-08-21T12:00:00Z"></div>
+    </div>
+    <div class="field">
+      <label for="ing-desc">Job description</label>
+      <textarea id="ing-desc" name="description" required></textarea>
+    </div>
+    <div class="field-row">
+      <div class="field" style="max-width:220px;">
+        <label for="ing-mode">Mode</label>
+        <select id="ing-mode" name="mode">
+          <option value="ASSIST" selected>ASSIST</option>
+          <option value="ANALYZE">ANALYZE</option>
+        </select>
+      </div>
+    </div>
+    <button class="btn btn-primary" type="submit">Ingest &amp; Process</button>
+  </form>
+</section>
+{% endblock %}

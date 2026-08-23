@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Activity — Sponsor Job Agent{% endblock %}
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1>Activity</h1>
+    <p class="subtitle">What the agent has done, and what still needs you.</p>
+  </div>
+</div>
+
+{% if needs_action_queue %}
+<section class="surface surface-pad" style="margin-bottom:1.25rem;">
+  <h2>Needs Your Action <span class="faint">({{ needs_action_queue | length }})</span></h2>
+  {% for item in needs_action_queue %}
+  <div class="action-item">
+    <span class="co">{{ item.company }}</span> — {{ item.role }}
+    <br>Stage: {{ item.stage }} · Reason: {{ item.reason }}
+    <br><span class="faint">Already completed: {{ item.completed }}</span> ·
+    <span class="faint">Action needed: {{ item.action }}</span>
+    <br><a href="/jobs/{{ item.job_id }}">Continue &rarr;</a>
+  </div>
+  {% endfor %}
+</section>
+{% else %}
+<div class="banner banner-good">Nothing needs your action right now.</div>
+{% endif %}
+
+<section class="surface surface-pad">
+  <h2>Live Activity</h2>
+  {% if recent_activity %}
+  {% for a in recent_activity %}
+  <div class="activity-item"><span class="ts">{{ a.ts }}</span>{% if a.company %}{{ a.company }} — {{ a.role }}: {% endif %}{{ a.text }}</div>
+  {% endfor %}
+  {% else %}
+  <div class="empty-state">
+    <div class="icon">🕒</div>
+    <p>No activity yet — start the agent or ingest a job from the Dashboard.</p>
+  </div>
+  {% endif %}
+</section>
+{% endblock %}

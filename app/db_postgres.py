@@ -58,6 +58,9 @@ _TABLES_WITHOUT_ID_PK = {
     # provider_circuit_state's own `provider TEXT PRIMARY KEY` shape (see
     # app/migrations.py::_m022_application_provider_circuit_state_table).
     "application_provider_circuit_state",
+    # Premium UI: app_settings has a `key TEXT PRIMARY KEY` shape (see
+    # app/migrations.py::_m051_app_settings_table).
+    "app_settings",
 }
 
 _INSERT_TABLE_RE = re.compile(r"^\s*INSERT\s+INTO\s+([A-Za-z_][A-Za-z0-9_]*)", re.IGNORECASE)

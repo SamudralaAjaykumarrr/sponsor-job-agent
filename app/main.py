@@ -4,6 +4,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from app import config
@@ -22,7 +23,7 @@ from app.applications.executor import (
     queue_application,
 )
 from app.applications.reconcile import reconcile_execution
-from app.applications.tracker import can_transition
+from app.applications.tracker import can_transition, valid_manual_transitions
 from app.applications import budget as applications_budget
 from app.applications import capability_matrix as applications_capability_matrix
 from app.applications import circuit as applications_circuit
@@ -70,6 +71,8 @@ from app.registry import store as registry_store
 from app.registry import sync as registry_sync
 from app.registry.verification import verify_portal
 from app import migrations
+from app import pipeline_dashboard
+from app import settings_store
 from app.sponsorship import doctor as sponsorship_doctor
 from app.sponsorship import metrics as sponsorship_metrics
 from app.sponsorship.aliases import list_aliases_for_company
@@ -95,6 +98,12 @@ from app.workers import schema_drift_repo
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     init_db()
+    # Premium UI Settings page: re-apply any previously-saved agent tuning
+    # overrides (interval/max-jobs-per-cycle/freshness-cutoff) to `config`
+    # on every startup -- see app/settings_store.py. Must run after init_db()
+    # (the app_settings table must exist) and before the scheduler/
+    # orchestrator start reading config.* below.
+    settings_store.apply_overrides_on_startup()
     if config.REGISTRY_SEED_DEMO_DATA:
         seed_demo_entries()
     # CLAUDE.md Phase 8 section 66: never silently enable the executor --
@@ -141,6 +150,15 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title="Sponsor Job Agent", lifespan=lifespan)
 templates = Jinja2Templates(directory=str(BASE_DIR / "app" / "templates"))
+app.mount("/static", StaticFiles(directory=str(BASE_DIR / "app" / "static")), name="static")
+
+
+def _nav_ctx() -> dict:
+    """Shared context every page extending templates/base.html needs for its
+    topbar agent-status chip -- a thin read of the orchestrator's own status()
+    (never a second/duplicate status computation)."""
+    return {"orchestrator_state": agent_orchestrator.status()["actual_state"]}
+
 
 FILE_FIELDS = {
     "docx": "resume_docx_path",
@@ -172,7 +190,6 @@ def dashboard(
     application/user-action columns sourced from cached, indexed tables,
     never recomputed live), and filters, all on one screen. Specialist pages
     (/applications, /fleet, /registry, ...) remain for admin/debugging."""
-    import app.pipeline_dashboard as pipeline_dashboard
 
     filters = {
         "work_arrangement": work_arrangement or None,
@@ -197,47 +214,19 @@ def dashboard(
 
     if include_test_data:
         filters["include_test_fixtures"] = True
-    jobs = list_jobs(filters)
-    if full_time_only:
-        jobs = [j for j in jobs if pipeline_dashboard.is_actionable(j)]
-
-    job_ids = [j.id for j in jobs if j.id is not None]
-    quality_by_job = resume_optimizer_repo.get_quality_reports_for_jobs(job_ids)
-    variant_by_job = resume_optimizer_repo.get_current_variants_for_jobs(job_ids)
-    active_execution_by_job = applications_repo.get_active_executions_for_jobs(job_ids)
-
-    def resume_status_of(jid: int) -> str:
-        variant = variant_by_job.get(jid)
-        return variant["status"] if variant else "NOT_GENERATED"
-
-    if resume_status:
-        jobs = [j for j in jobs if resume_status_of(j.id) == resume_status]
-    if needs_action_only:
-        jobs = [j for j in jobs if (active_execution_by_job.get(j.id) or {}).get("requires_user_action")]
 
     # CLAUDE.md Phase 15 section 42/44: bound the rendered table to the
     # top-N matching jobs (already priority-sorted) rather than rendering
-    # every match -- a large-state benchmark measured unbounded rendering
-    # growing to tens of MB of HTML at high job counts. Applied last, after
-    # every filter above, so resume_status/needs_action_only still search
-    # the full matching set, never just the first page of it.
-    total_matching = len(jobs)
-    if total_matching > config.DASHBOARD_MAX_TABLE_ROWS:
-        jobs = jobs[: config.DASHBOARD_MAX_TABLE_ROWS]
-
-    from app.matching.employment_type import classify_employment_type
-
-    pipeline_rows = [
-        {
-            "job": j,
-            "quality_report": (quality_by_job.get(j.id) or {}).get("report"),
-            "resume_status": resume_status_of(j.id),
-            "page_count": (variant_by_job.get(j.id) or {}).get("page_count"),
-            "execution": active_execution_by_job.get(j.id),
-            "employment_classified": classify_employment_type(j.employment_type, j.title, j.description).value,
-        }
-        for j in jobs
-    ]
+    # every match -- applied last (inside build_job_rows), after every
+    # filter, so resume_status/needs_action_only still search the full
+    # matching set, never just the first page of it.
+    row_data = pipeline_dashboard.build_job_rows(
+        filters, full_time_only=full_time_only, resume_status=resume_status,
+        needs_action_only=needs_action_only, row_cap=config.DASHBOARD_MAX_TABLE_ROWS,
+    )
+    jobs = row_data["jobs"]
+    pipeline_rows = row_data["pipeline_rows"]
+    total_matching = row_data["total_matching"]
 
     missing = missing_fields(load_profile())
     needs_action_queue = pipeline_dashboard.build_needs_action_queue(limit=25)
@@ -246,6 +235,7 @@ def dashboard(
         request,
         "dashboard.html",
         {
+            **_nav_ctx(),
             "jobs": jobs, "pipeline_rows": pipeline_rows, "filters": filters,
             "summary": summary,
             "total_matching": total_matching,
@@ -266,6 +256,46 @@ def dashboard(
             "resume_optimization_enabled": config.RESUME_OPTIMIZATION_ENABLED,
             "needs_action_queue": needs_action_queue,
             "recent_activity": recent_activity,
+        },
+    )
+
+
+@app.get("/jobs", response_class=HTMLResponse)
+def jobs_page(
+    request: Request,
+    q: str = "",
+    work_arrangement: str = "",
+    sponsorship_status: str = "",
+    application_state: str = "",
+    resume_status: str = "",
+    high_priority: bool = False,
+    full_time_only: bool = True,
+):
+    """Dedicated Jobs browser: search + the same filter axes as the
+    Dashboard's pipeline table, rendered as product cards (CLAUDE.md premium
+    UI brief). Shares app.pipeline_dashboard.build_job_rows() with the
+    Dashboard route -- never a second, duplicate row-building implementation."""
+    filters = {
+        "work_arrangement": work_arrangement or None,
+        "sponsorship_status": sponsorship_status or None,
+        "application_state": application_state or None,
+        "high_priority": high_priority or None,
+    }
+    row_data = pipeline_dashboard.build_job_rows(
+        filters, full_time_only=full_time_only, resume_status=resume_status,
+        row_cap=config.DASHBOARD_MAX_TABLE_ROWS, search=q,
+    )
+    return templates.TemplateResponse(
+        request, "jobs.html",
+        {
+            **_nav_ctx(),
+            "pipeline_rows": row_data["pipeline_rows"],
+            "total_matching": row_data["total_matching"],
+            "filters": {
+                "q": q, "work_arrangement": work_arrangement, "sponsorship_status": sponsorship_status,
+                "application_state": application_state, "resume_status": resume_status,
+                "high_priority": high_priority, "full_time_only": full_time_only,
+            },
         },
     )
 
@@ -306,6 +336,7 @@ def job_detail(request: Request, job_id: int):
     return templates.TemplateResponse(
         request, "job_detail.html",
         {
+            **_nav_ctx(),
             "job": job, "score_breakdown": score_breakdown, "history": history, "provenance": provenance,
             "latest_decision": latest_decision, "decision_history": decision_history,
             "executions": executions, "active_execution": active_execution, "eligibility": eligibility,
@@ -319,8 +350,133 @@ def job_detail(request: Request, job_id: int):
             "evidence_links": evidence_links,
             "alignment_priority": alignment_priority,
             "jd_current_fingerprint": jd_fingerprint,
+            "valid_states": [s.value for s in valid_manual_transitions(job.application_state)],
         },
     )
+
+
+# --- Premium UI: Tracker / Activity / Profile / Settings --------------------
+
+@app.get("/tracker", response_class=HTMLResponse)
+def tracker_page(request: Request):
+    """Applied / Assessment / Interview / Offer / Rejected / Withdrawn
+    Kanban board. All six states are manual-only transitions a human makes
+    from the job detail page (app.applications.tracker) -- nothing here is
+    set automatically by the pipeline or executor."""
+    lanes = pipeline_dashboard.build_tracker_board()
+    return templates.TemplateResponse(
+        request, "tracker.html", {**_nav_ctx(), "lanes": lanes},
+    )
+
+
+@app.get("/activity", response_class=HTMLResponse)
+def activity_page(request: Request):
+    """Inbox / Activity: the same company/title-free-where-appropriate,
+    already-existing feed the Dashboard's Live Activity panel shows, just a
+    longer, dedicated history -- plus the current Needs Your Action queue
+    pinned at the top so nothing actionable is buried in the timeline."""
+    needs_action_queue = pipeline_dashboard.build_needs_action_queue(limit=50)
+    recent_activity = pipeline_dashboard.build_recent_activity(limit=150)
+    return templates.TemplateResponse(
+        request, "activity.html",
+        {**_nav_ctx(), "needs_action_queue": needs_action_queue, "recent_activity": recent_activity},
+    )
+
+
+@app.get("/profile", response_class=HTMLResponse)
+def profile_page(request: Request):
+    """Read-only view of the candidate's own private profile
+    (candidate_data/profile.json) -- deliberately no edit form here (the
+    premium-UI brief's 'do not modify private candidate data' instruction);
+    editing stays exactly where it already was, directly in the JSON file."""
+    profile = load_profile()
+    missing = missing_fields(profile)
+    return templates.TemplateResponse(
+        request, "profile.html",
+        {
+            **_nav_ctx(),
+            "profile": profile, "missing_fields": missing, "missing_count": len(missing),
+            "profile_path": str(config.CANDIDATE_DIR / "profile.json"),
+        },
+    )
+
+
+@app.get("/settings", response_class=HTMLResponse)
+def settings_page(request: Request, saved: bool = False):
+    return templates.TemplateResponse(
+        request, "settings.html",
+        {
+            **_nav_ctx(),
+            "values": settings_store.current_values(),
+            "specs": settings_store.ALLOWED_SETTINGS,
+            "errors": [],
+            "saved": saved,
+            "safety_flags": {
+                "application_executor_enabled": config.APPLICATION_EXECUTOR_ENABLED,
+                "auto_submit_enabled": config.AUTO_SUBMIT_ENABLED,
+                "application_auto_prepare_enabled": config.APPLICATION_AUTO_PREPARE_ENABLED,
+                "browser_assist_enabled": config.BROWSER_ASSIST_ENABLED,
+                "browser_headless": config.BROWSER_HEADLESS,
+                "one_page_resume_required": config.ONE_PAGE_RESUME_REQUIRED,
+                "resume_optimization_enabled": config.RESUME_OPTIMIZATION_ENABLED,
+                "real_ats_canary_enabled": config.REAL_ATS_CANARY_ENABLED,
+            },
+            "enabled_providers": config.ENABLED_PROVIDERS,
+            "sponsorship_policy": config.SPONSORSHIP_POLICY,
+        },
+    )
+
+
+@app.post("/settings")
+async def settings_save(request: Request):
+    """Validates + persists + immediately applies the allowlisted agent
+    tuning knobs (see app/settings_store.py) -- a real, functional Save,
+    never a no-op. Every other config flag on this page is display-only by
+    design (CLAUDE.md's 'never silently enable' rules for the
+    executor/auto-submit/browser-assist flags)."""
+    form = await request.form()
+    values = {key: form.get(key) for key in settings_store.ALLOWED_SETTINGS if form.get(key) is not None}
+    errors = settings_store.save_settings(values)
+    if errors:
+        return templates.TemplateResponse(
+            request, "settings.html",
+            {
+                **_nav_ctx(),
+                "values": settings_store.current_values(),
+                "specs": settings_store.ALLOWED_SETTINGS,
+                "errors": errors,
+                "saved": False,
+                "safety_flags": {
+                    "application_executor_enabled": config.APPLICATION_EXECUTOR_ENABLED,
+                    "auto_submit_enabled": config.AUTO_SUBMIT_ENABLED,
+                    "application_auto_prepare_enabled": config.APPLICATION_AUTO_PREPARE_ENABLED,
+                    "browser_assist_enabled": config.BROWSER_ASSIST_ENABLED,
+                    "browser_headless": config.BROWSER_HEADLESS,
+                    "one_page_resume_required": config.ONE_PAGE_RESUME_REQUIRED,
+                    "resume_optimization_enabled": config.RESUME_OPTIMIZATION_ENABLED,
+                    "real_ats_canary_enabled": config.REAL_ATS_CANARY_ENABLED,
+                },
+                "enabled_providers": config.ENABLED_PROVIDERS,
+                "sponsorship_policy": config.SPONSORSHIP_POLICY,
+            },
+            status_code=400,
+        )
+    return RedirectResponse(url="/settings?saved=true", status_code=303)
+
+
+@app.get("/api/dashboard/live")
+def api_dashboard_live():
+    """Single aggregated, read-only JSON endpoint the Dashboard's bounded
+    polling (app/static/js/app.js) reads -- purely an aggregation of
+    already-existing pure functions (agent_state, agent_orchestrator,
+    pipeline_dashboard), never new business logic."""
+    return JSONResponse({
+        "agent": agent_state.get_status(),
+        "orchestrator": agent_orchestrator.status(),
+        "summary": pipeline_dashboard.compute_pipeline_summary(list_jobs({})),
+        "needs_action_queue": pipeline_dashboard.build_needs_action_queue(limit=8),
+        "recent_activity": pipeline_dashboard.build_recent_activity(limit=10),
+    })
 
 
 # --- Phase 7: sponsorship intelligence dashboard ----------------------------
@@ -737,8 +893,6 @@ def api_resume_evidence(job_id: int):
 
 @app.get("/api/pipeline/summary")
 def api_pipeline_summary():
-    import app.pipeline_dashboard as pipeline_dashboard
-
     return JSONResponse(pipeline_dashboard.compute_pipeline_summary(list_jobs({})))
 
 
@@ -755,22 +909,40 @@ def api_resume_optimizer_metrics():
 
 # --- Phase 8: safe ATS application executor ---------------------------------
 
+_APPLICATIONS_TABS = [
+    ("", "All"), ("in_flight", "In flight"), ("needs_action", "Needs you"),
+    ("applied", "Applied"), ("failed", "Failed"), ("skipped", "Skipped"),
+]
+
+
 @app.get("/applications", response_class=HTMLResponse)
 def applications_page(
     request: Request, bucket: str = "", company: str = "", provider: str = "",
     work_arrangement: str = "", sponsorship_status: str = "",
 ):
-    rows = applications_repo.list_executions_with_jobs(
-        bucket=bucket, company=company, provider=provider,
-        work_arrangement=work_arrangement, sponsorship_status=sponsorship_status, limit=200,
-    )
+    if bucket == "skipped":
+        rows = pipeline_dashboard.list_skipped_job_rows(
+            company=company, provider=provider, work_arrangement=work_arrangement,
+            sponsorship_status=sponsorship_status,
+        )
+    else:
+        rows = applications_repo.list_executions_with_jobs(
+            bucket=bucket, company=company, provider=provider,
+            work_arrangement=work_arrangement, sponsorship_status=sponsorship_status, limit=200,
+        )
+    tab_counts = applications_repo.bucket_counts()
+    tab_counts["skipped"] = pipeline_dashboard.count_skipped_jobs()
+    tab_counts[""] = sum(tab_counts.get(b, 0) for b, _ in _APPLICATIONS_TABS if b != "")
     return templates.TemplateResponse(
         request, "applications.html",
         {
+            **_nav_ctx(),
             "rows": rows, "filters": {
                 "bucket": bucket, "company": company, "provider": provider,
                 "work_arrangement": work_arrangement, "sponsorship_status": sponsorship_status,
             },
+            "tabs": _APPLICATIONS_TABS,
+            "tab_counts": tab_counts,
             "buckets": list(applications_repo.DASHBOARD_BUCKETS.keys()),
             "executor_enabled": config.APPLICATION_EXECUTOR_ENABLED,
             "auto_submit_enabled": config.AUTO_SUBMIT_ENABLED,

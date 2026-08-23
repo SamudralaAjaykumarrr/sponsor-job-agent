@@ -1339,6 +1339,27 @@ def _m050_agent_activity_log_table(conn, backend: str) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_agent_activity_log_ts ON agent_activity_log (ts)")
 
 
+def _m051_app_settings_table(conn, backend: str) -> None:
+    """Premium UI Settings page: a small, allowlisted key/value override
+    store for the handful of runtime-mutable, non-dangerous tuning knobs
+    already read as live `config.X` attribute access (never a name-imported
+    binding) elsewhere in this codebase -- e.g. AGENT_INTERVAL_MINUTES is
+    read as `config.AGENT_INTERVAL_MINUTES` in app.agent.orchestrator's own
+    cycle loop, the same pattern the orchestrator's own
+    _apply_config_overrides already uses. See app/settings_store.py for the
+    allowlist and the setattr(config, ...) application. This table never
+    stores APPLICATION_EXECUTOR_ENABLED/AUTO_SUBMIT_ENABLED/BROWSER_ASSIST_
+    ENABLED or any other safety-relevant flag -- those remain env-only,
+    matching every 'never silently enable' rule in CLAUDE.md."""
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS app_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )"""
+    )
+
+
 MIGRATIONS: list[tuple[int, str, Callable]] = [
     (2, "phase6_worker_identity_columns", _m002_worker_identity_columns),
     (3, "phase6_schema_drift_table", _m003_schema_drift_table),
@@ -1389,6 +1410,7 @@ MIGRATIONS: list[tuple[int, str, Callable]] = [
     (48, "agent_run_state_progress_columns", _m048_agent_run_state_progress_columns),
     (49, "jobs_test_fixture_column", _m049_jobs_test_fixture_column),
     (50, "agent_activity_log_table", _m050_agent_activity_log_table),
+    (51, "app_settings_table", _m051_app_settings_table),
 ]
 
 # Version 1 is the implicit Phase 1-5 baseline schema, applied by

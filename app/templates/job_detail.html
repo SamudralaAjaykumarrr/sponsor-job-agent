@@ -1,29 +1,24 @@
-<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>{{ job.title }} — {{ job.company }}</title>
-  <style>
-    body { font-family: -apple-system, Arial, sans-serif; margin: 2rem; background: #f7f7f9; color: #1a1a1a; max-width: 900px; }
-    .card { background: white; border: 1px solid #ddd; border-radius: 8px; padding: 1.25rem; margin-bottom: 1rem; }
-    dl { display: grid; grid-template-columns: 220px 1fr; row-gap: 6px; }
-    dt { font-weight: 600; color: #555; }
-    a.btn { display: inline-block; margin-right: 0.5rem; padding: 6px 12px; background: #333; color: white; border-radius: 6px; text-decoration: none; font-size: 0.85rem; }
-    button.btn { display: inline-block; margin-right: 0.5rem; padding: 6px 12px; background: #333; color: white; border-radius: 6px; border: none; font-size: 0.85rem; }
-    pre { white-space: pre-wrap; background: #fafafa; padding: 0.75rem; border-radius: 6px; }
-    form.state { display: inline; }
-    table.breakdown { width: 100%; border-collapse: collapse; }
-    table.breakdown td, table.breakdown th { padding: 4px 8px; border-bottom: 1px solid #eee; font-size: 0.85rem; text-align: left; }
-    .skill-list { font-size: 0.85rem; }
-    .history-item { font-size: 0.85rem; padding: 3px 0; border-bottom: 1px solid #f0f0f0; }
-  </style>
-</head>
-<body>
-  <p><a href="/">&larr; back to dashboard</a></p>
-  <h1>{{ job.title }} — {{ job.company }}</h1>
+{% extends "base.html" %}
+{% block title %}{{ job.title }} — {{ job.company }} — Sponsor Job Agent{% endblock %}
+{% block content %}
+<p><a href="/jobs">&larr; back to jobs</a></p>
+<div class="page-header">
+  <div>
+    <h1>{{ job.title }}</h1>
+    <p class="subtitle">{{ job.company }} · {{ job.location }}</p>
+  </div>
+  <div class="jc-badges">
+    <span class="tag tag-{{ job.work_arrangement.value.lower() }}">{{ job.work_arrangement.value }}</span>
+    {% set s = job.sponsorship_status.value %}
+    <span class="tag {{ 'tag-confirmed' if s == 'CONFIRMED_SPONSOR' else ('tag-likely' if s == 'LIKELY_SPONSOR' else ('tag-no' if s == 'NO_SPONSORSHIP' else 'tag-unknown')) }}">{{ s }}</span>
+    <span class="tag tag-neutral">{{ job.application_state.value }}</span>
+  </div>
+</div>
 
-  <div class="card">
-    <dl>
+<div class="stack">
+  <section class="surface surface-pad">
+    <h2>Overview</h2>
+    <dl class="meta-grid">
       <dt>Location</dt><dd>{{ job.location }}</dd>
       <dt>Provider / source</dt><dd>{{ job.provider }} ({{ job.external_job_id or 'n/a' }})</dd>
       <dt>Work arrangement</dt><dd>{{ job.work_arrangement.value }}</dd>
@@ -41,61 +36,63 @@
       <dt>Notes</dt><dd>{{ job.notes }}</dd>
       <dt>Source URL</dt><dd>{% if job.url %}<a href="{{ job.url }}" target="_blank" rel="noopener">{{ job.url }}</a>{% else %}n/a{% endif %}</dd>
     </dl>
-  </div>
+  </section>
 
   {% if latest_decision %}
-  <div class="card">
-    <h3>Sponsorship decision explanation</h3>
-    <dl>
+  <section class="surface surface-pad">
+    <h2>Sponsorship decision explanation</h2>
+    <dl class="meta-grid">
       <dt>Status</dt><dd><span class="tag {{ 'tag-confirmed' if latest_decision.status == 'CONFIRMED_SPONSOR' else ('tag-likely' if latest_decision.status == 'LIKELY_SPONSOR' else ('tag-no' if latest_decision.status == 'NO_SPONSORSHIP' else 'tag-unknown')) }}">{{ latest_decision.status }}</span></dd>
       <dt>Decision version</dt><dd>{{ latest_decision.decision_version }} (classifier {{ latest_decision.classifier_version }})</dd>
       <dt>Conflict?</dt><dd>{{ 'YES -- do not auto-apply' if latest_decision.conflicts | length > 0 else 'No' }}</dd>
       <dt>Blocking reason</dt><dd>{{ latest_decision.blocking_reason or '(none -- eligible)' }}</dd>
     </dl>
-    <p><strong>Reasons:</strong></p>
+    <p style="margin-top:0.6rem;"><strong>Reasons:</strong></p>
     <ul>
       {% for reason in latest_decision.reasons %}
       <li>{{ reason }}</li>
       {% endfor %}
     </ul>
     {% if decision_history and decision_history | length > 1 %}
-    <p><strong>Decision history</strong> (JD changes reclassify and version up -- prior decisions are retained, never overwritten):</p>
-    {% for d in decision_history %}
-    <div class="history-item">v{{ d.decision_version }} — {{ d.status }} — {{ d.created_at }}</div>
-    {% endfor %}
+    <details style="margin-top:0.4rem;">
+      <summary style="cursor:pointer;">Decision history ({{ decision_history | length }}) -- JD changes reclassify and version up; prior decisions are retained, never overwritten</summary>
+      {% for d in decision_history %}
+      <div class="activity-item">v{{ d.decision_version }} — {{ d.status }} — {{ d.created_at }}</div>
+      {% endfor %}
+    </details>
     {% endif %}
-  </div>
+  </section>
   {% endif %}
 
   {% if score_breakdown and score_breakdown.get('components') %}
-  <div class="card">
-    <h3>Score breakdown</h3>
-    <table class="breakdown">
-      <thead><tr><th>Component</th><th>Value</th><th>Reason</th></tr></thead>
-      <tbody>
-        {% for c in score_breakdown.components %}
-        <tr><td>{{ c.name }}</td><td>{{ c.value if c.value is defined else '' }}</td><td>{{ c.reason }}</td></tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
+  <section class="surface surface-pad">
+    <h2>Score breakdown</h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Component</th><th>Value</th><th>Reason</th></tr></thead>
+        <tbody>
+          {% for c in score_breakdown.components %}
+          <tr><td>{{ c.name }}</td><td>{{ c.value if c.value is defined else '' }}</td><td>{{ c.reason }}</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
   {% endif %}
 
-  <div class="card">
-    <h3>JD coverage &amp; resume diagnostics</h3>
-    <p style="font-size:0.8rem;color:#666;">Not a universal ATS score -- itemized, transparent coverage against your verified profile only.</p>
-    <form method="post" action="/jobs/{{ job.id }}/resume/analyze" style="display:inline;">
-      <button class="btn" type="submit">Analyze JD</button>
-    </form>
-    <form method="post" action="/jobs/{{ job.id }}/resume/optimize" style="display:inline;">
-      <button class="btn" type="submit">{{ 'Regenerate Resume' if current_variant else 'Generate Resume' }}</button>
-    </form>
-    {% if current_variant %}
-    <form method="post" action="/jobs/{{ job.id }}/resume/optimize" style="display:inline;">
-      <input type="hidden" name="force" value="true">
-      <button class="btn" type="submit">Force Regenerate</button>
-    </form>
-    {% endif %}
+  <section class="surface surface-pad">
+    <h2>JD coverage &amp; resume diagnostics</h2>
+    <p class="help-text">Not a universal ATS score -- itemized, transparent coverage against your verified profile only.</p>
+    <div class="btn-row">
+      <form method="post" action="/jobs/{{ job.id }}/resume/analyze"><button class="btn" type="submit">Analyze JD</button></form>
+      <form method="post" action="/jobs/{{ job.id }}/resume/optimize"><button class="btn btn-primary" type="submit">{{ 'Regenerate Resume' if current_variant else 'Generate Resume' }}</button></form>
+      {% if current_variant %}
+      <form method="post" action="/jobs/{{ job.id }}/resume/optimize">
+        <input type="hidden" name="force" value="true">
+        <button class="btn btn-ghost" type="submit">Force Regenerate</button>
+      </form>
+      {% endif %}
+    </div>
 
     {% if jd_analysis %}
     <p style="margin-top:0.75rem;"><strong>JD analysis:</strong>
@@ -106,148 +103,170 @@
     {% endif %}
 
     {% if current_variant %}
-    <p>Resume status: <strong>{{ current_variant.status }}</strong> (variant {{ current_variant.variant_id[:12] }}…)
+    <p style="margin-top:0.5rem;">Resume status: <strong>{{ current_variant.status }}</strong> (variant {{ current_variant.variant_id[:12] }}…)
       {% if current_variant.page_count %}
-        {% if current_variant.page_count == 1 %}<span class="badge-1page" style="background:#d4edda;color:#155724;padding:1px 6px;border-radius:8px;font-size:0.75rem;">1 PAGE ✓</span>
-        {% else %}<span style="background:#f8d7da;color:#721c24;padding:1px 6px;border-radius:8px;font-size:0.75rem;">{{ current_variant.page_count }} PAGES -- REVIEW_REQUIRED</span>{% endif %}
+        {% if current_variant.page_count == 1 %}<span class="badge-1page">1 PAGE ✓</span>
+        {% else %}<span class="badge-overflow">{{ current_variant.page_count }} PAGES -- REVIEW_REQUIRED</span>{% endif %}
       {% endif %}
       {% if current_variant.compression_steps_applied %} · {{ current_variant.compression_steps_applied }} compression step(s) applied{% endif %}
       {% if job.promoted_resume_variant_id == current_variant.variant_id %} · <strong>promoted as this job's primary resume</strong>{% endif %}
     </p>
     {% if current_variant.status == 'READY' %}
-    <a class="btn" href="/jobs/{{ job.id }}/resume/download/docx">optimized resume.docx</a>
-    <a class="btn" href="/jobs/{{ job.id }}/resume/download/pdf">optimized resume.pdf</a>
-    <a class="btn" href="/jobs/{{ job.id }}/resume/download/txt">optimized resume.txt</a>
+    <div class="btn-row" style="margin-top:0.4rem;">
+      <a class="btn btn-ghost" href="/jobs/{{ job.id }}/resume/download/docx">optimized resume.docx</a>
+      <a class="btn btn-ghost" href="/jobs/{{ job.id }}/resume/download/pdf">optimized resume.pdf</a>
+      <a class="btn btn-ghost" href="/jobs/{{ job.id }}/resume/download/txt">optimized resume.txt</a>
+    </div>
     {% endif %}
     {% if current_variant.compression_log %}
     <details style="margin-top:0.5rem;">
-      <summary>One-page compression log ({{ current_variant.compression_log | length }} step(s))</summary>
+      <summary style="cursor:pointer;">One-page compression log ({{ current_variant.compression_log | length }} step(s))</summary>
       <ul>{% for step in current_variant.compression_log %}<li>{{ step }}</li>{% endfor %}</ul>
     </details>
     {% endif %}
     {% endif %}
 
     {% if quality_report %}
-    <table class="breakdown" style="margin-top:0.75rem;">
-      <tbody>
-        <tr><td>Required skills</td><td>{{ quality_report.required_skill_coverage.directly_verified }} direct + {{ quality_report.required_skill_coverage.transferable }} transferable / {{ quality_report.required_skill_coverage.total }}</td></tr>
-        <tr><td>Preferred skills</td><td>{{ quality_report.preferred_skill_coverage.directly_verified }} direct + {{ quality_report.preferred_skill_coverage.transferable }} transferable / {{ quality_report.preferred_skill_coverage.total }}</td></tr>
-        <tr><td>Responsibility alignment</td><td>{{ quality_report.responsibility_alignment.label }} ({{ quality_report.responsibility_alignment.matched }}/{{ quality_report.responsibility_alignment.total }})</td></tr>
-        <tr><td>Domain alignment</td><td>{{ quality_report.domain_alignment.label }}</td></tr>
-        <tr><td>Title alignment</td><td>{{ quality_report.title_alignment.label }} — {{ quality_report.title_alignment.detail }}</td></tr>
-        <tr><td>Keyword coverage</td><td>{{ quality_report.keyword_coverage.supported }}/{{ quality_report.keyword_coverage.total_keywords }} ({{ (quality_report.keyword_coverage.ratio * 100) | round(1) }}%)</td></tr>
-        <tr><td>ATS parseability</td><td>{{ quality_report.ats_parseability.overall }}</td></tr>
-        <tr><td>Internal alignment (not an ATS score)</td><td>{{ quality_report.alignment_label }} ({{ quality_report.internal_alignment_score }}/100)</td></tr>
-        <tr><td>Claim check</td><td>{{ 'PASS' if quality_report.claim_check.passed else 'FAILED: ' + (quality_report.claim_check.violations | join('; ')) }}</td></tr>
-      </tbody>
-    </table>
-    <p><strong>Missing required:</strong> {{ quality_report.missing_required | join(', ') or 'none' }}</p>
+    <div class="table-wrap" style="margin-top:0.75rem;">
+      <table>
+        <tbody>
+          <tr><td>Required skills</td><td>{{ quality_report.required_skill_coverage.directly_verified }} direct + {{ quality_report.required_skill_coverage.transferable }} transferable / {{ quality_report.required_skill_coverage.total }}</td></tr>
+          <tr><td>Preferred skills</td><td>{{ quality_report.preferred_skill_coverage.directly_verified }} direct + {{ quality_report.preferred_skill_coverage.transferable }} transferable / {{ quality_report.preferred_skill_coverage.total }}</td></tr>
+          <tr><td>Responsibility alignment</td><td>{{ quality_report.responsibility_alignment.label }} ({{ quality_report.responsibility_alignment.matched }}/{{ quality_report.responsibility_alignment.total }})</td></tr>
+          <tr><td>Domain alignment</td><td>{{ quality_report.domain_alignment.label }}</td></tr>
+          <tr><td>Title alignment</td><td>{{ quality_report.title_alignment.label }} — {{ quality_report.title_alignment.detail }}</td></tr>
+          <tr><td>Keyword coverage</td><td>{{ quality_report.keyword_coverage.supported }}/{{ quality_report.keyword_coverage.total_keywords }} ({{ (quality_report.keyword_coverage.ratio * 100) | round(1) }}%)</td></tr>
+          <tr><td>ATS parseability</td><td>{{ quality_report.ats_parseability.overall }}</td></tr>
+          <tr><td>Internal alignment (not an ATS score)</td><td>{{ quality_report.alignment_label }} ({{ quality_report.internal_alignment_score }}/100)</td></tr>
+          <tr><td>Claim check</td><td>{{ 'PASS' if quality_report.claim_check.passed else 'FAILED: ' + (quality_report.claim_check.violations | join('; ')) }}</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p style="margin-top:0.5rem;"><strong>Missing required:</strong> {{ quality_report.missing_required | join(', ') or 'none' }}</p>
     <p><strong>Missing preferred:</strong> {{ quality_report.missing_preferred | join(', ') or 'none' }}</p>
     <p><strong>Unsupported JD items (never fabricated onto resume):</strong> {{ quality_report.unsupported_jd_items | join(', ') or 'none' }}</p>
-    {% if quality_report.warnings %}<p style="color:#a94442;"><strong>Warnings:</strong> {{ quality_report.warnings | join('; ') }}</p>{% endif %}
+    {% if quality_report.warnings %}<p style="color:var(--bad);"><strong>Warnings:</strong> {{ quality_report.warnings | join('; ') }}</p>{% endif %}
     {% endif %}
 
     {% if evidence_links %}
     <details style="margin-top:0.5rem;">
-      <summary>Claim provenance — per-requirement evidence ({{ evidence_links | length }})</summary>
-      <table class="breakdown">
-        <thead><tr><th>Requirement</th><th>Priority</th><th>Status</th><th>Explanation</th></tr></thead>
-        <tbody>
-          {% for link in evidence_links %}
-          <tr><td>{{ link.requirement_text }}</td><td>{{ link.requirement_priority }}</td><td>{{ link.status }}</td><td>{{ link.explanation }}</td></tr>
-          {% endfor %}
-        </tbody>
-      </table>
+      <summary style="cursor:pointer;">Claim provenance — per-requirement evidence ({{ evidence_links | length }})</summary>
+      <div class="table-wrap" style="margin-top:0.5rem;">
+        <table>
+          <thead><tr><th>Requirement</th><th>Priority</th><th>Status</th><th>Explanation</th></tr></thead>
+          <tbody>
+            {% for link in evidence_links %}
+            <tr><td>{{ link.requirement_text }}</td><td>{{ link.requirement_priority }}</td><td>{{ link.status }}</td><td>{{ link.explanation }}</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
     </details>
     {% endif %}
 
     {% if alignment_priority %}
     <details style="margin-top:0.5rem;">
-      <summary>Match priority components ({{ alignment_priority.score }}/100 — internal ranking, not a hire probability)</summary>
-      <table class="breakdown">
-        <thead><tr><th>Component</th><th>Weight</th><th>Ratio</th><th>Contribution</th></tr></thead>
-        <tbody>
-          {% for c in alignment_priority.components %}
-          <tr><td>{{ c.name }}</td><td>{{ c.weight }}</td><td>{{ c.ratio }}</td><td>{{ c.contribution }}</td></tr>
-          {% endfor %}
-        </tbody>
-      </table>
+      <summary style="cursor:pointer;">Match priority components ({{ alignment_priority.score }}/100 — internal ranking, not a hire probability)</summary>
+      <div class="table-wrap" style="margin-top:0.5rem;">
+        <table>
+          <thead><tr><th>Component</th><th>Weight</th><th>Ratio</th><th>Contribution</th></tr></thead>
+          <tbody>
+            {% for c in alignment_priority.components %}
+            <tr><td>{{ c.name }}</td><td>{{ c.weight }}</td><td>{{ c.ratio }}</td><td>{{ c.contribution }}</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
     </details>
     {% endif %}
-  </div>
+  </section>
 
-  <div class="card">
-    <h3>Files &amp; actions</h3>
-    {% if job.resume_docx_path %}<a class="btn" href="/jobs/{{ job.id }}/download/docx">resume.docx</a>{% endif %}
-    {% if job.resume_pdf_path %}<a class="btn" href="/jobs/{{ job.id }}/download/pdf">resume.pdf</a>{% endif %}
-    {% if job.resume_txt_path %}<a class="btn" href="/jobs/{{ job.id }}/download/txt">resume.txt</a>{% endif %}
-    {% if job.job_analysis_path %}<a class="btn" href="/jobs/{{ job.id }}/download/job_analysis">job_analysis.json</a>{% endif %}
-    {% if job.application_answers_path %}<a class="btn" href="/jobs/{{ job.id }}/download/answers">application_answers.json</a>{% endif %}
-    {% if job.cover_letter_path %}<a class="btn" href="/jobs/{{ job.id }}/download/cover_letter">cover_letter.txt</a>{% endif %}
-    {% if job.url %}<a class="btn" href="{{ job.url }}" target="_blank" rel="noopener">Open Application</a>{% endif %}
-    {% if not job.resume_docx_path %}<p>No application files generated yet (sponsorship not eligible, a gate skipped this job, or profile incomplete).</p>{% endif %}
+  <section class="surface surface-pad">
+    <h2>Files &amp; actions</h2>
+    <div class="btn-row">
+      {% if job.resume_docx_path %}<a class="btn btn-ghost" href="/jobs/{{ job.id }}/download/docx">resume.docx</a>{% endif %}
+      {% if job.resume_pdf_path %}<a class="btn btn-ghost" href="/jobs/{{ job.id }}/download/pdf">resume.pdf</a>{% endif %}
+      {% if job.resume_txt_path %}<a class="btn btn-ghost" href="/jobs/{{ job.id }}/download/txt">resume.txt</a>{% endif %}
+      {% if job.job_analysis_path %}<a class="btn btn-ghost" href="/jobs/{{ job.id }}/download/job_analysis">job_analysis.json</a>{% endif %}
+      {% if job.application_answers_path %}<a class="btn btn-ghost" href="/jobs/{{ job.id }}/download/answers">application_answers.json</a>{% endif %}
+      {% if job.cover_letter_path %}<a class="btn btn-ghost" href="/jobs/{{ job.id }}/download/cover_letter">cover_letter.txt</a>{% endif %}
+      {% if job.url %}<a class="btn btn-primary" href="{{ job.url }}" target="_blank" rel="noopener">Open Application</a>{% endif %}
+    </div>
+    {% if not job.resume_docx_path %}<p class="faint" style="margin-top:0.5rem;">No application files generated yet (sponsorship not eligible, a gate skipped this job, or profile incomplete).</p>{% endif %}
     {% if job.sponsorship_status.value in ('CONFIRMED_SPONSOR', 'LIKELY_SPONSOR') %}
-    <form method="post" action="/jobs/{{ job.id }}/regenerate" style="margin-top: 0.5rem;">
+    <form method="post" action="/jobs/{{ job.id }}/regenerate" style="margin-top: 0.6rem;">
       <button class="btn" type="submit">Regenerate Resume</button>
     </form>
     {% endif %}
-  </div>
+  </section>
 
-  <div class="card">
-    <h3>Employment type</h3>
+  <section class="surface surface-pad">
+    <h2>Employment type</h2>
     <p>Classified: <strong>{{ eligibility.employment_type.value }}</strong>
-       {% if eligibility.employment_type == 'UNKNOWN' %}<span style="color:#856404;">(no explicit positive/negative signal found -- never auto-progressed as full-time)</span>{% endif %}</p>
-    <p style="font-size:0.8rem;color:#666;">Raw provider field: <code>{{ job.employment_type or '(none reported by provider)' }}</code>
+       {% if eligibility.employment_type == 'UNKNOWN' %}<span style="color:var(--warn);">(no explicit positive/negative signal found -- never auto-progressed as full-time)</span>{% endif %}</p>
+    <p class="help-text">Raw provider field: <code>{{ job.employment_type or '(none reported by provider)' }}</code>
        · Title/description are also scanned for explicit language (never inferred from silence).</p>
-  </div>
+  </section>
 
-  <div class="card">
-    <h3>Application execution</h3>
+  <section class="surface surface-pad">
+    <h2>Application execution</h2>
     <p>Executor: <strong>{{ 'ON' if executor_enabled else 'OFF' }}</strong> ·
        Auto submit: <strong>{{ 'ON' if auto_submit_enabled else 'OFF' }}</strong> ·
        Eligible for queue: <strong>{{ eligibility.enters_queue }}</strong>
        {% if eligibility.hard_skip %}(hard skip: {{ eligibility.blocking_category }}){% endif %}</p>
-    {% for r in eligibility.reasons %}<p style="font-size:0.8rem;color:#666;">{{ r }}</p>{% endfor %}
+    {% for r in eligibility.reasons %}<p class="faint">{{ r }}</p>{% endfor %}
 
     {% if active_execution %}
     <p>Active execution <code>{{ active_execution.execution_id }}</code>: status=<strong>{{ active_execution.status }}</strong>
        (provider={{ active_execution.provider }}, mode={{ active_execution.mode }})</p>
     {% if active_execution.requires_user_action %}
-    <p style="color:#a94442;">Needs user action: {{ active_execution.user_action_reason }}</p>
+    <p style="color:var(--bad);">Needs user action: {{ active_execution.user_action_reason }}</p>
     {% endif %}
     {% if active_execution.confirmation_id %}
     <p>Confirmation: {{ active_execution.confirmation_id }}
        {% if active_execution.confirmation_url %}(<a href="{{ active_execution.confirmation_url }}" target="_blank" rel="noopener">receipt</a>){% endif %}</p>
     {% endif %}
-    <form method="post" action="/jobs/{{ job.id }}/applications/retry" style="display:inline;">
-      <button class="btn" type="submit">Retry Preparation</button>
-    </form>
+    <div class="btn-row">
+      <form method="post" action="/jobs/{{ job.id }}/applications/retry"><button class="btn" type="submit">Retry Preparation</button></form>
+    </div>
     {% if active_execution.status == 'SUBMISSION_STATUS_UNKNOWN' %}
     <form method="post" action="/executions/{{ active_execution.execution_id }}/reconcile" style="margin-top:0.5rem;">
-      <select name="resolution">
-        <option value="confirmed_applied">Confirmed: was submitted</option>
-        <option value="confirmed_not_submitted">Confirmed: was NOT submitted</option>
-      </select>
-      <input type="text" name="confirmation_id" placeholder="confirmation id (if known)">
-      <button type="submit">Reconcile Submission</button>
+      <div class="field-row">
+        <div class="field">
+          <label for="resolution">Resolution</label>
+          <select id="resolution" name="resolution">
+            <option value="confirmed_applied">Confirmed: was submitted</option>
+            <option value="confirmed_not_submitted">Confirmed: was NOT submitted</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="confirmation_id">Confirmation id (if known)</label>
+          <input type="text" id="confirmation_id" name="confirmation_id">
+        </div>
+      </div>
+      <button class="btn btn-primary" type="submit">Reconcile Submission</button>
     </form>
     {% endif %}
     {% else %}
-    <form method="post" action="/jobs/{{ job.id }}/applications/prepare" style="display:inline;">
-      <select name="mode">
-        <option value="ASSIST">ASSIST</option>
-        <option value="AUTO_PERMITTED">AUTO_PERMITTED</option>
-      </select>
-      <button class="btn" type="submit">Prepare Application</button>
-    </form>
-    <form method="post" action="/jobs/{{ job.id }}/applications/queue" style="display:inline;">
-      <button class="btn" type="submit">Queue Application</button>
-    </form>
+    <div class="btn-row">
+      <form method="post" action="/jobs/{{ job.id }}/applications/prepare">
+        <div class="field-row">
+          <div class="field">
+            <select name="mode">
+              <option value="ASSIST">ASSIST</option>
+              <option value="AUTO_PERMITTED">AUTO_PERMITTED</option>
+            </select>
+          </div>
+        </div>
+        <button class="btn btn-primary" type="submit">Prepare Application</button>
+      </form>
+      <form method="post" action="/jobs/{{ job.id }}/applications/queue"><button class="btn" type="submit">Queue Application</button></form>
+    </div>
     {% endif %}
-  </div>
+  </section>
 
-  <div class="card">
-    <h3>Browser assist</h3>
+  <section class="surface surface-pad">
+    <h2>Browser assist</h2>
     <p>Browser assist: <strong>{{ 'ON' if browser_assist_enabled else 'OFF' }}</strong>
        {% if not browser_assist_enabled %}— set BROWSER_ASSIST_ENABLED=true and install Playwright + Chromium.{% endif %}</p>
     {% if active_browser_session %}
@@ -258,47 +277,54 @@
       <button class="btn" type="submit">Start Browser Assist (real ATS, visible browser)</button>
     </form>
     {% elif not active_execution %}
-    <p style="font-size:0.85rem;color:#666;">Prepare or Queue Application first, then start browser assist.</p>
+    <p class="faint">Prepare or Queue Application first, then start browser assist.</p>
     {% endif %}
-  </div>
+  </section>
 
-  <div class="card">
-    <h3>Update state</h3>
-    <form class="state" method="post" action="/jobs/{{ job.id }}/state">
+  <section class="surface surface-pad">
+    <h2>Update state</h2>
+    {% set state_labels = {
+      'READY_TO_APPLY': 'Mark Ready to Apply', 'APPLIED': 'Mark Applied', 'ASSESSMENT': 'Mark Assessment',
+      'INTERVIEW': 'Mark Interview', 'OFFER': 'Mark Offer', 'REJECTED': 'Mark Rejected',
+      'WITHDRAWN': 'Mark Withdrawn', 'SKIPPED': 'Skip',
+    } %}
+    {% if valid_states %}
+    <form method="post" action="/jobs/{{ job.id }}/state" class="btn-row">
       <select name="target_state">
-        <option value="READY_TO_APPLY">Mark Ready to Apply</option>
-        <option value="APPLIED">Mark Applied</option>
-        <option value="INTERVIEW">Mark Interview</option>
-        <option value="REJECTED">Mark Rejected</option>
-        <option value="SKIPPED">Skip</option>
+        {% for st in valid_states %}
+        <option value="{{ st }}">{{ state_labels.get(st, st) }}</option>
+        {% endfor %}
       </select>
-      <button type="submit">Update</button>
+      <button class="btn btn-primary" type="submit">Update</button>
     </form>
-    <p style="font-size:0.8rem;color:#666;">Opening the external application link never marks a job Applied automatically -- use this form once you've actually applied.</p>
-  </div>
+    {% else %}
+    <p class="faint">No manual state change is available from {{ job.application_state.value }}.</p>
+    {% endif %}
+    <p class="help-text">Opening the external application link never marks a job Applied automatically -- use this form once you've actually applied. See it move through stages on the <a href="/tracker">Tracker</a>.</p>
+  </section>
 
   {% if provenance %}
-  <div class="card">
-    <h3>Source provenance</h3>
+  <section class="surface surface-pad">
+    <h2>Source provenance</h2>
     {% for p in provenance %}
-    <div class="history-item">{{ p.provider }} · job_id={{ p.provider_job_id or 'n/a' }} · first seen {{ p.first_seen_at }} · last seen {{ p.last_seen_at }}
+    <div class="activity-item">{{ p.provider }} · job_id={{ p.provider_job_id or 'n/a' }} · first seen {{ p.first_seen_at }} · last seen {{ p.last_seen_at }}
       {% if p.source_url %} · <a href="{{ p.source_url }}" target="_blank" rel="noopener">source</a>{% endif %}</div>
     {% endfor %}
-  </div>
+  </section>
   {% endif %}
 
   {% if history %}
-  <div class="card">
-    <h3>Pipeline history</h3>
+  <section class="surface surface-pad">
+    <h2>Pipeline history</h2>
     {% for h in history %}
-    <div class="history-item">{{ h.changed_at }} — {{ h.from_state or '(created)' }} &rarr; {{ h.to_state }} ({{ h.actor }})</div>
+    <div class="activity-item">{{ h.changed_at }} — {{ h.from_state or '(created)' }} &rarr; {{ h.to_state }} ({{ h.actor }})</div>
     {% endfor %}
-  </div>
+  </section>
   {% endif %}
 
-  <div class="card">
-    <h3>Job description</h3>
+  <section class="surface surface-pad">
+    <h2>Job description</h2>
     <pre>{{ job.description }}</pre>
-  </div>
-</body>
-</html>
+  </section>
+</div>
+{% endblock %}

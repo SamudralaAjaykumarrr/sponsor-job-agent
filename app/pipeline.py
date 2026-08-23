@@ -131,7 +131,10 @@ def analyze_job(job_id: int) -> Job:
     return get_job(job_id)
 
 
-_TERMINAL_STATES = (ApplicationState.APPLIED, ApplicationState.INTERVIEW, ApplicationState.REJECTED)
+_TERMINAL_STATES = (
+    ApplicationState.APPLIED, ApplicationState.ASSESSMENT, ApplicationState.INTERVIEW,
+    ApplicationState.OFFER, ApplicationState.REJECTED, ApplicationState.WITHDRAWN,
+)
 
 
 def reanalyze_job(

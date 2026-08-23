@@ -9,8 +9,23 @@ ALLOWED_MANUAL_TRANSITIONS = {
     ApplicationState.REVIEW_REQUIRED: {
         ApplicationState.READY_TO_APPLY, ApplicationState.APPLIED, ApplicationState.SKIPPED,
     },
-    ApplicationState.APPLIED: {ApplicationState.INTERVIEW, ApplicationState.REJECTED},
-    ApplicationState.INTERVIEW: {ApplicationState.REJECTED, ApplicationState.APPLIED},
+    # Tracker board (premium UI): Applied -> Assessment/Interview/Rejected/Withdrawn,
+    # Assessment -> Interview/Rejected/Withdrawn, Interview -> Offer/Rejected/Withdrawn/
+    # back to Applied, Offer -> Rejected (declined)/Withdrawn. Manual-only, mirroring
+    # every other tracker transition in this table -- nothing here is set automatically
+    # by the pipeline/executor.
+    ApplicationState.APPLIED: {
+        ApplicationState.ASSESSMENT, ApplicationState.INTERVIEW,
+        ApplicationState.REJECTED, ApplicationState.WITHDRAWN,
+    },
+    ApplicationState.ASSESSMENT: {
+        ApplicationState.INTERVIEW, ApplicationState.REJECTED, ApplicationState.WITHDRAWN,
+    },
+    ApplicationState.INTERVIEW: {
+        ApplicationState.OFFER, ApplicationState.REJECTED,
+        ApplicationState.WITHDRAWN, ApplicationState.APPLIED,
+    },
+    ApplicationState.OFFER: {ApplicationState.REJECTED, ApplicationState.WITHDRAWN},
     ApplicationState.ANALYZED: {ApplicationState.SKIPPED},
     ApplicationState.CLAIM_VALIDATION_FAILED: {ApplicationState.SKIPPED},
     # --- Phase 8 (CLAUDE.md Phase 8 sections 40, 43): the human review queue's
@@ -35,3 +50,13 @@ ALLOWED_MANUAL_TRANSITIONS = {
 
 def can_transition(current: ApplicationState, target: ApplicationState) -> bool:
     return target in ALLOWED_MANUAL_TRANSITIONS.get(current, set())
+
+
+def valid_manual_transitions(current: ApplicationState) -> list[ApplicationState]:
+    """Premium UI: the job detail page's 'Update state' control only ever
+    offers targets that are actually legal from the job's current state --
+    CLAUDE.md's 'every visible button must work, no decorative/no-op
+    buttons' extended to this dropdown (previously it always listed the
+    full fixed option set regardless of current state, so most selections
+    from most states silently 400'd)."""
+    return sorted(ALLOWED_MANUAL_TRANSITIONS.get(current, set()), key=lambda s: s.value)
