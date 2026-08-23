@@ -39,6 +39,13 @@ def write_docx(resume: ResumeContent, out_path: Path, compression_level: int = 0
     p = doc.add_paragraph(contact_line)
     p.alignment = 1
 
+    if resume.target_role:
+        target = doc.add_paragraph()
+        target.alignment = 1
+        run = target.add_run(resume.target_role)
+        run.bold = True
+        run.font.size = Pt(max(min_font, body_size + 1))
+
     doc.add_heading("Summary", level=1)
     doc.add_paragraph(resume.summary)
 

@@ -58,6 +58,9 @@ def write_pdf(resume: ResumeContent, out_path: Path, compression_level: int = 0)
         filter(None, [resume.email, resume.phone, resume.location, resume.linkedin_url, resume.github_url, resume.portfolio_url])
     )
     story.append(Paragraph(contact_line, normal))
+    if resume.target_role:
+        target_style = ParagraphStyle("Target", parent=normal, fontSize=font_size + 1, leading=(font_size + 1) * 1.2)
+        story.append(Paragraph(f"<b>{resume.target_role}</b>", target_style))
     story.append(Spacer(1, max(2, round(8 * space_scale))))
 
     story.append(Paragraph("Summary", h2))
