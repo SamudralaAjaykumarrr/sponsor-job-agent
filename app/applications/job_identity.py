@@ -28,12 +28,23 @@ from app.db import db_session
 
 # Requisition-id shapes actually seen across this project's real providers
 # (CLAUDE.md Phase 11's own live findings): Workday's "_R-1234" URL suffix
-# (app.applications.workday_tenant._REQUISITION_RE), Greenhouse/Lever/
-# Ashby/SmartRecruiters/Workable's numeric or opaque posting-id path
-# segment, and a `?gh_jid=`/`?jobId=`/`?job=` style query parameter some
-# career portals use to link to a specific listing.
+# (app.applications.workday_tenant._REQUISITION_RE), Greenhouse's numeric
+# posting-id path segment, and a `?gh_jid=`/`?jobId=`/`?job=` style query
+# parameter some career portals use to link to a specific listing.
 _PATH_REQ_RE = re.compile(r"(?:^|[/_-])(R-?\d{3,}|\d{5,})(?:$|[/?#])")
 _QUERY_KEYS = ("gh_jid", "jobid", "job_id", "job", "req", "requisition", "postingid", "posting_id")
+
+# Lever and Ashby both identify a posting by a UUID path segment (e.g.
+# jobs.lever.co/<site>/33538a2f-d27d-4a96-8f05-fa4b0e4d940e[/apply],
+# jobs.ashbyhq.com/<board>/7458d4e9-da2e-47bd-98cb-adfda43d42b2[/application])
+# -- never numeric or "R-"-prefixed, so `_PATH_REQ_RE` above never matches
+# either provider's real id shape. Verified live against both APIs. Matched
+# as a standalone `/`-delimited path segment only, never a substring of a
+# longer token, so this can't accidentally fire on an unrelated hex string.
+_PATH_UUID_RE = re.compile(
+    r"(?:^|/)([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:$|[/?#])",
+    re.IGNORECASE,
+)
 
 
 class IdentityResult(str, Enum):
@@ -65,6 +76,9 @@ def extract_requisition_token(url: str) -> str:
             if actual_key.lower() == key and values and values[0]:
                 return values[0].strip().upper()
     match = _PATH_REQ_RE.search(parsed.path or "")
+    if match:
+        return match.group(1).upper()
+    match = _PATH_UUID_RE.search(parsed.path or "")
     if match:
         return match.group(1).upper()
     return ""
