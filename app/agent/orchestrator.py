@@ -58,6 +58,16 @@ class AgentOrchestrator:
         self._stop_event: asyncio.Event | None = None
         self._application_worker = None  # lazily created; reused across cycles (one worker identity, not one per cycle)
         self._saved_config: dict = {}
+        # Single-orchestrator-guarantee lease (see app.agent.run_state's
+        # module docstring for this section): a stable per-instance id so
+        # this orchestrator can tell "still my lease" from "someone else's".
+        # `_became_active` is only ever True once this instance genuinely
+        # acquired the lease and started running cycles -- it gates whether
+        # stop()/the loop's cleanup may touch shared actual_state/config
+        # overrides at all, so a standby instance that never became active
+        # can never clobber a different (real) active instance's state.
+        self._instance_id = run_state_mod.new_instance_id()
+        self._became_active = False
 
     # --- public control surface ------------------------------------------
 
@@ -82,7 +92,13 @@ class AgentOrchestrator:
     async def stop(self) -> dict:
         run_state_mod.set_desired_state(AgentRunState.STOPPED)
         if self._task and not self._task.done():
-            run_state_mod.set_actual_state(AgentRunState.STOPPING)
+            # Only touch actual_state if this instance ever actually became
+            # the active orchestrator -- a standby instance still waiting on
+            # the lease (see _loop below) has never set RUNNING/STARTING, so
+            # it must never overwrite a genuinely different (real) active
+            # instance's state with STOPPING/STOPPED.
+            if self._became_active:
+                run_state_mod.set_actual_state(AgentRunState.STOPPING)
             assert self._stop_event is not None
             self._stop_event.set()
             try:
@@ -95,8 +111,11 @@ class AgentOrchestrator:
             except asyncio.TimeoutError:
                 logger.warning("orchestrator did not stop within the grace period -- cancelling")
                 self._task.cancel()
-        self._restore_config_overrides()
-        run_state_mod.set_actual_state(AgentRunState.STOPPED)
+        if self._became_active:
+            self._restore_config_overrides()
+            run_state_mod.release_orchestrator_lease(self._instance_id)
+            run_state_mod.set_actual_state(AgentRunState.STOPPED)
+            self._became_active = False
         return {"stopped": True}
 
     def status(self) -> dict:
@@ -142,6 +161,9 @@ class AgentOrchestrator:
             ),
             "current_stage": run_state.get("current_stage") or "",
             "current_job_label": run_state.get("current_job_label") or "",
+            "lease_instance_id": run_state.get("instance_id") or "",
+            "lease_expires_at": run_state.get("lease_expires_at"),
+            "is_this_process_active": self._became_active,
             "totals_24h": totals_24h,
             "recent_cycles": run_state_mod.list_recent_cycles(limit=10),
             "recent_activity": run_state_mod.list_recent_activity(limit=20),
@@ -151,6 +173,29 @@ class AgentOrchestrator:
 
     async def _loop(self) -> None:
         assert self._stop_event is not None
+
+        # --- single-orchestrator-guarantee lease: never run a single cycle
+        # stage until this instance genuinely holds the lease. A second
+        # process accidentally started against the same database stays here,
+        # retrying on a bounded backoff, and never touches actual_state or
+        # config overrides -- see app.agent.run_state's module docstring and
+        # AgentOrchestrator.__init__'s _became_active comment. Self-healing:
+        # if the real holder crashes without releasing, its lease simply
+        # expires and this loop claims it on a later retry -- no
+        # heartbeat-based liveness check involved.
+        while not run_state_mod.try_acquire_orchestrator_lease(
+            self._instance_id, config.AGENT_ORCHESTRATOR_LEASE_SECONDS
+        ):
+            run_state_mod.log_activity(
+                "orchestrator_standby",
+                f"instance={self._instance_id} waiting for orchestrator lease "
+                "(another process already holds it)",
+            )
+            if await self._wait_or_stopped(min(30, max(5, config.AGENT_ORCHESTRATOR_LEASE_SECONDS // 2))):
+                return  # stop requested while never active -- nothing of ours to clean up
+
+        self._became_active = True
+        lost_lease = False
         run_state_mod.set_actual_state(AgentRunState.STARTING)
         run_id = run_state_mod.new_run_id()
         run_state_mod.begin_run(run_id)
@@ -158,10 +203,21 @@ class AgentOrchestrator:
         run_state_mod.set_actual_state(AgentRunState.RUNNING)
         test_mode_at_start = run_state_mod.is_test_mode()
         run_state_mod.log_activity(
-            "agent_started", f"run_id={run_id} test_mode={test_mode_at_start}"
+            "agent_started", f"run_id={run_id} test_mode={test_mode_at_start} instance={self._instance_id}"
         )
 
-        while not self._stop_event.is_set():
+        while self._should_keep_running():
+            if not run_state_mod.renew_orchestrator_lease(self._instance_id, config.AGENT_ORCHESTRATOR_LEASE_SECONDS):
+                # Lost the lease (should not happen under normal operation --
+                # only if this process stalled past the lease window and
+                # another instance reclaimed it). Never keep running cycle
+                # stages without a valid lease; log and stop touching shared
+                # state, matching the same defensive posture as a standby
+                # instance that never acquired it in the first place.
+                logger.warning("orchestrator instance %s lost its lease -- stopping", self._instance_id)
+                run_state_mod.log_activity("orchestrator_lease_lost", f"instance={self._instance_id}")
+                lost_lease = True
+                break
             started = datetime.now(timezone.utc)
             test_mode = run_state_mod.is_test_mode()
             cycle_number = run_state_mod.mark_cycle_start(started.isoformat())
@@ -191,15 +247,72 @@ class AgentOrchestrator:
             await self._wait(interval_seconds)
 
         self._restore_config_overrides()
-        run_state_mod.set_actual_state(AgentRunState.STOPPED)
-        run_state_mod.log_activity("agent_stopped", f"run_id={run_id}")
+        # Safe to call even if lost_lease (a no-op: its own WHERE
+        # instance_id = ? guard means it can never touch a lease this
+        # instance no longer holds).
+        run_state_mod.release_orchestrator_lease(self._instance_id)
+        if not lost_lease:
+            # If we lost the lease, someone else already owns it and may be
+            # concurrently transitioning agent_run_state toward
+            # STARTING/RUNNING -- never overwrite that with STOPPED here.
+            stopped_remotely = self._stop_event is not None and not self._stop_event.is_set()
+            run_state_mod.set_actual_state(AgentRunState.STOPPED)
+            if stopped_remotely:
+                run_state_mod.log_activity(
+                    "agent_stop_detected_remote",
+                    f"instance={self._instance_id}: desired_state changed away from RUNNING "
+                    "(stop requested on a different process)",
+                )
+            else:
+                run_state_mod.log_activity("agent_stopped", f"run_id={run_id}")
+        self._became_active = False
+
+    def _should_keep_running(self) -> bool:
+        """False the instant a stop is requested -- either locally (this
+        process's own stop_event, set immediately by stop()) or remotely
+        (desired_state flipped away from RUNNING by a different process/
+        instance that has no way to signal this instance's local event).
+        Checked both between cycles and periodically during the inter-cycle
+        wait (_wait, below), so a remote STOP is honored within a few
+        seconds rather than only at the next multi-minute cycle boundary."""
+        assert self._stop_event is not None
+        if self._stop_event.is_set():
+            return False
+        return run_state_mod.get_run_state()["desired_state"] == AgentRunState.RUNNING.value
+
+    _REMOTE_STOP_POLL_SECONDS = 5.0
 
     async def _wait(self, seconds: float) -> None:
+        """Bounded inter-cycle wait, woken early by either the local
+        stop_event or a remote desired_state flip (polled in small
+        increments -- see _should_keep_running)."""
+        assert self._stop_event is not None
+        remaining = seconds
+        while remaining > 0:
+            chunk = min(self._REMOTE_STOP_POLL_SECONDS, remaining)
+            try:
+                await asyncio.wait_for(self._stop_event.wait(), timeout=chunk)
+                return
+            except asyncio.TimeoutError:
+                pass
+            remaining -= chunk
+            if self._became_active and not self._should_keep_running():
+                return
+
+    async def _wait_or_stopped(self, seconds: float) -> bool:
+        """Same bounded wait as _wait, but reports whether a stop was
+        requested during it -- used by the lease-acquisition standby loop to
+        distinguish "still waiting for the lease" from "give up, STOP was
+        requested". A standby instance never became active, so it only ever
+        checks the local stop_event, never desired_state (checking that here
+        too would make it exit its retry loop the instant ANY stop is
+        requested, even one meant for the current active instance)."""
         assert self._stop_event is not None
         try:
             await asyncio.wait_for(self._stop_event.wait(), timeout=seconds)
         except asyncio.TimeoutError:
             pass
+        return self._stop_event.is_set()
 
     # --- config override management -----------------------------------------
 
@@ -228,10 +341,26 @@ class AgentOrchestrator:
 
     # --- one bounded cycle ----------------------------------------------------
 
+    def _heartbeat(self, *, stage: str = "", job_label: str = "") -> None:
+        """Every heartbeat also renews the single-orchestrator-guarantee
+        lease (best-effort -- a renewal failure here is surfaced by
+        app.agent.doctor's lease check and self-corrects on the loop's next
+        top-of-cycle renew_orchestrator_lease call, never aborted mid-work).
+        Called once per stage at minimum and once per job within the resume
+        stage (see _run_resume_stage) -- this keeps the lease alive across a
+        single long-running cycle (e.g. a large resume batch or a slow
+        provider) rather than only renewing once per multi-stage cycle,
+        which could otherwise let AGENT_ORCHESTRATOR_LEASE_SECONDS expire
+        mid-cycle on an unusually large/slow one and let a standby instance
+        claim it while this one is still legitimately working."""
+        run_state_mod.heartbeat(stage=stage, job_label=job_label)
+        if self._became_active:
+            run_state_mod.renew_orchestrator_lease(self._instance_id, config.AGENT_ORCHESTRATOR_LEASE_SECONDS)
+
     def _run_cycle_sync(self, cycle_started_at: str, test_mode: bool) -> CycleCounters:
         counters = CycleCounters()
 
-        run_state_mod.heartbeat(stage="discovering")
+        self._heartbeat(stage="discovering")
         try:
             summary = run_discovery_cycle()
             counters.jobs_processed += summary.get("jobs_fetched", 0)
@@ -249,7 +378,7 @@ class AgentOrchestrator:
             logger.exception("discovery stage failed")
             counters.errors += 1
 
-        run_state_mod.heartbeat(stage="generating_resumes")
+        self._heartbeat(stage="generating_resumes")
         try:
             resume_stats = self._run_resume_stage()
             counters.resumes_generated += resume_stats["generated"]
@@ -266,7 +395,7 @@ class AgentOrchestrator:
             logger.exception("resume optimization stage failed")
             counters.errors += 1
 
-        run_state_mod.heartbeat(stage="preparing_applications")
+        self._heartbeat(stage="preparing_applications")
         try:
             prepared = self._run_auto_prepare_stage()
             counters.applications_prepared += prepared
@@ -276,7 +405,7 @@ class AgentOrchestrator:
             logger.exception("application auto-prepare stage failed")
             counters.errors += 1
 
-        run_state_mod.heartbeat(stage="executing_applications")
+        self._heartbeat(stage="executing_applications")
         try:
             exec_stats = self._run_application_worker_cycle(cycle_started_at)
             counters.applications_submitted += exec_stats["applied"]
@@ -289,7 +418,7 @@ class AgentOrchestrator:
             logger.exception("application execution stage failed")
             counters.errors += 1
 
-        run_state_mod.heartbeat(stage="idle")
+        self._heartbeat(stage="idle")
         return counters
 
     def _run_resume_stage(self) -> dict:
@@ -314,6 +443,12 @@ class AgentOrchestrator:
         job_ids = _find_jobs_needing_optimization(config.MAX_RESUMES_PER_CYCLE)
 
         for job_id in job_ids:
+            # Watchdog diagnostics: heartbeat per job, not just once per
+            # stage -- with MAX_RESUMES_PER_CYCLE jobs in one stage, a stage-
+            # only heartbeat can't distinguish "working through a big batch"
+            # from "stuck on job N" until the whole stage finishes, which can
+            # be well past AGENT_HEARTBEAT_STALE_SECONDS on a large batch.
+            self._heartbeat(stage="generating_resumes", job_label=f"job {job_id}")
             try:
                 result = optimize_resume(job_id)
             except Exception:  # noqa: BLE001 -- one job's optimization failure must never stop the batch

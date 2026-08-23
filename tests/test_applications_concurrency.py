@@ -10,6 +10,7 @@ import threading
 import pytest
 
 from app import config
+from app.applications import queue as app_queue
 from app.applications import repo as applications_repo
 from app.applications.executor import queue_application
 from app.candidate.profile import save_profile
@@ -63,3 +64,40 @@ def test_concurrent_queue_application_never_creates_two_active_executions(profil
 
     active_count = len(applications_repo.list_executions_for_job(job.id))
     assert active_count == 1
+
+
+def test_two_workers_never_claim_the_same_execution_batch(profile_saved):
+    """CLAUDE.md Phase 9 section 4/CLAUDE.md mission 'duplicate worker':
+    app.applications.queue.claim_execution_batch is the atomic guard behind
+    the application worker fleet -- multiple worker identities racing to
+    claim from the same pool of QUEUED executions must partition it exactly,
+    with zero executions claimed by more than one worker."""
+    jobs = [
+        ingest_and_process(Job(
+            title="Backend Software Engineer", company=f"DupCo{i}", location="Remote - US",
+            description=JD_TEXT, employment_type="Full-time", provider="mock_ats",
+            external_job_id=f"dup-worker-{i}", provider_metadata=json.dumps({"mock_scenario": "simple"}),
+            mode=ApplicationMode.ASSIST,
+        ))
+        for i in range(20)
+    ]
+    execution_ids = [queue_application(j.id, mode="ASSIST").execution_id for j in jobs]
+    assert all(execution_ids)
+
+    results: dict[str, list[str]] = {}
+    lock = threading.Lock()
+
+    def worker(worker_id: str) -> None:
+        claimed = app_queue.claim_execution_batch(worker_id=worker_id, limit=20, lease_seconds=60)
+        with lock:
+            results[worker_id] = [c["execution_id"] for c in claimed]
+
+    threads = [threading.Thread(target=worker, args=(f"worker-{i}",)) for i in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    all_claimed = [eid for ids in results.values() for eid in ids]
+    assert len(all_claimed) == len(set(all_claimed)) == len(execution_ids)
+    assert set(all_claimed) == set(execution_ids)

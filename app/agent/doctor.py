@@ -55,6 +55,39 @@ def _check_running_but_loop_absent(report: DoctorReport) -> None:
                                     "loop task is not alive."))
 
 
+def _check_running_without_valid_lease(report: DoctorReport) -> None:
+    """autonomous-core-v3 hardening: actual_state RUNNING must always be
+    backed by a live (unexpired, owned) single-orchestrator-guarantee lease
+    -- see app.agent.run_state's lease section and
+    AGENT_ORCHESTRATOR_LEASE_SECONDS. Should never trigger under normal
+    operation (the loop only ever sets RUNNING after acquiring the lease,
+    and renews it every cycle) -- catches a genuine regression, e.g. a future
+    change that sets actual_state without going through the lease-guarded
+    path in app.agent.orchestrator._loop."""
+    from app.agent.run_state import get_run_state
+
+    run = get_run_state()
+    if run["actual_state"] != "RUNNING":
+        return
+    lease_expires_at = run.get("lease_expires_at")
+    instance_id = run.get("instance_id") or ""
+    if not instance_id or not lease_expires_at:
+        report.issues.append(Issue("serious", "agent_running_without_lease",
+                                    "agent_run_state.actual_state is RUNNING but no instance currently holds "
+                                    "the single-orchestrator-guarantee lease."))
+        return
+    try:
+        expires = datetime.fromisoformat(lease_expires_at)
+    except ValueError:
+        return
+    if expires.tzinfo is None:
+        expires = expires.replace(tzinfo=timezone.utc)
+    if expires < datetime.now(timezone.utc):
+        report.issues.append(Issue("serious", "agent_running_with_expired_lease",
+                                    f"agent_run_state.actual_state is RUNNING but instance {instance_id}'s "
+                                    f"orchestrator lease expired at {lease_expires_at} and was never renewed."))
+
+
 def _check_stopped_but_workers_leaking(conn, report: DoctorReport) -> None:
     """A STOPPED agent must never leave an application worker actively
     WORKING/STARTING with a fresh heartbeat -- app.agent.orchestrator.stop()
@@ -213,6 +246,7 @@ def run_doctor() -> DoctorReport:
     report = DoctorReport()
     _check_running_but_loop_absent(report)
     _check_running_but_no_cycle_ever(report)
+    _check_running_without_valid_lease(report)
     _check_stale_heartbeat(report)
     _check_needs_action_count_matches_queue(report)
     _check_legacy_scheduler_and_orchestrator_both_running(report)
