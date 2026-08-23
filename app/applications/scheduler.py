@@ -60,6 +60,18 @@ def _candidate_job_ids(limit: int) -> list[int]:
         return [r["id"] for r in rows]
 
 
+def _alignment_meets_threshold(job_id: int) -> bool:
+    from app.resume_optimizer.repo import get_quality_report_for_job
+
+    report_row = get_quality_report_for_job(job_id)
+    if report_row is None:
+        return True
+    score = report_row["report"].get("internal_alignment_score")
+    if score is None:
+        return True
+    return score >= config.MIN_ALIGNMENT_FOR_AUTO_PREPARE
+
+
 def run_cycle(*, limit: int | None = None) -> SchedulerCycleResult:
     result = SchedulerCycleResult()
     if not config.APPLICATION_AUTO_PREPARE_ENABLED:
@@ -86,6 +98,16 @@ def run_cycle(*, limit: int | None = None) -> SchedulerCycleResult:
 
         eligibility = evaluate_executor_eligibility(job)
         if not eligibility.enters_queue:
+            result.skipped_not_eligible += 1
+            continue
+
+        if not _alignment_meets_threshold(job_id):
+            # CLAUDE.md one-click-agent section 13: alignment must pass a
+            # repository-defined threshold before automatic preparation. A
+            # job with no quality report yet (resume optimization hasn't run
+            # for it) is never blocked here -- absence of a score is not
+            # evidence of a bad one, matching this project's existing
+            # "never reject for missing info" pattern (compensation/salary).
             result.skipped_not_eligible += 1
             continue
 

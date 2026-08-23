@@ -42,51 +42,121 @@
     .card { background: white; border: 1px solid #ddd; border-radius: 8px; padding: 0.75rem 1rem; }
     .card .num { font-size: 1.5rem; font-weight: 700; }
     .card .label { font-size: 0.75rem; color: #666; }
+    .agent-hero { background: white; border: 1px solid #ddd; border-radius: 10px; padding: 1rem 1.25rem; margin-bottom: 1rem; }
+    .agent-hero .top-row { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
+    .state-pill { padding: 4px 12px; border-radius: 14px; font-weight: 700; font-size: 0.85rem; }
+    .state-STOPPED { background: #eee; color: #555; }
+    .state-STARTING, .state-STOPPING { background: #fff3cd; color: #856404; }
+    .state-RUNNING { background: #d4edda; color: #155724; }
+    .state-PAUSED { background: #e2d9f3; color: #4a2e8a; }
+    .state-ERROR { background: #f8d7da; color: #721c24; }
+    .agent-hero button.start { background: #155724; color: white; border: none; padding: 8px 18px; border-radius: 6px; font-weight: 600; }
+    .agent-hero button.stop { background: #721c24; color: white; border: none; padding: 8px 18px; border-radius: 6px; font-weight: 600; }
+    .agent-hero button.test { background: #4a2e8a; color: white; border: none; padding: 8px 14px; border-radius: 6px; font-size: 0.85rem; }
+    .agent-hero .meta { font-size: 0.8rem; color: #666; margin-top: 0.5rem; }
+    .queue-item { border-bottom: 1px solid #eee; padding: 0.5rem 0; font-size: 0.85rem; }
+    .queue-item .co { font-weight: 600; }
+    .activity-item { font-size: 0.82rem; padding: 3px 0; color: #444; }
+    .activity-item .ts { color: #999; margin-right: 6px; }
+    .badge-1page { background: #d4edda; color: #155724; padding: 1px 6px; border-radius: 8px; font-size: 0.7rem; }
+    .badge-review { background: #f8d7da; color: #721c24; padding: 1px 6px; border-radius: 8px; font-size: 0.7rem; }
   </style>
 </head>
 <body>
   <h1>Sponsor Job Agent</h1>
-  <p class="subtitle">Local ASSIST-mode job pipeline. Nothing is auto-submitted.
+  <p class="subtitle">Autonomous agent · ASSIST by default -- nothing is auto-submitted unless a legitimate,
+    verified submission capability exists (see AUTO-SUBMIT status below).
     · <a href="/providers">Providers</a> · <a href="/registry">Company registry</a>
     · <a href="/applications">Applications</a>
     · <a href="/fleet">Fleet</a> · <a href="/acquisition">Acquisition</a>
     · <a href="/companies">Sponsorship companies</a> · <a href="/sponsorship/review-queue">Review queue</a>
     · <a href="/sponsorship/doctor">Sponsorship doctor</a> · <a href="/sponsorship/identity-review">Identity review</a>
-    · <a href="/resume-optimizer/doctor">Resume optimizer doctor</a></p>
+    · <a href="/resume-optimizer/doctor">Resume optimizer doctor</a>
+    · <a href="/applications/capability-matrix">ATS capability matrix</a></p>
+
+  <div class="agent-hero">
+    <div class="top-row">
+      <span>Agent Status: <span class="state-pill state-{{ orchestrator.actual_state }}">{{ orchestrator.actual_state }}</span>
+        {% if orchestrator.test_mode %}<span class="state-pill" style="background:#e2d9f3;color:#4a2e8a;">TEST MODE</span>{% endif %}
+      </span>
+      {% if orchestrator.actual_state in ('RUNNING', 'STARTING', 'STOPPING') %}
+      <form method="post" action="/agent/stop"><button class="stop" type="submit">STOP AGENT</button></form>
+      {% else %}
+      <form method="post" action="/agent/start"><button class="start" type="submit">START AGENT</button></form>
+      <form method="post" action="/agent/start">
+        <input type="hidden" name="test_mode" value="true">
+        <button class="test" type="submit">START AGENT (TEST MODE)</button>
+      </form>
+      {% endif %}
+      <span class="meta">Interval: {{ agent_config.interval_minutes }}m ·
+        Providers: {{ agent_config.enabled_providers | join(', ') }} ·
+        Application executor: {{ 'ON' if agent_config.application_executor_enabled or orchestrator.actual_state == 'RUNNING' else 'OFF' }} ·
+        Auto-submit: {{ 'ON' if agent_config.auto_submit_enabled else 'OFF (safe default)' }}</span>
+    </div>
+    <div class="meta">
+      Last cycle: {{ orchestrator.last_cycle.started_at if orchestrator.last_cycle else 'never' }} ·
+      Next cycle: {{ orchestrator.next_cycle_at or 'pending' }}
+      {% if orchestrator.last_error %} · <span style="color:#a94442;">Last error: {{ orchestrator.last_error }}</span>{% endif %}
+    </div>
+    {% if orchestrator.last_cycle %}
+    <div class="meta">
+      Last cycle counters — jobs processed {{ orchestrator.last_cycle.jobs_processed }},
+      resumes generated {{ orchestrator.last_cycle.resumes_generated }}
+      (one-page {{ orchestrator.last_cycle.one_page_success }}, overflow {{ orchestrator.last_cycle.one_page_overflow }}),
+      applications prepared {{ orchestrator.last_cycle.applications_prepared }},
+      submitted {{ orchestrator.last_cycle.applications_submitted }},
+      needs action {{ orchestrator.last_cycle.needs_user_action }},
+      skipped {{ orchestrator.last_cycle.skipped }}, errors {{ orchestrator.last_cycle.errors }}
+    </div>
+    {% endif %}
+    <details style="margin-top:0.4rem;">
+      <summary style="font-size:0.8rem;color:#666;">Legacy discovery-only toggle (autonomous agent scheduler)</summary>
+      <div class="agent-bar" style="margin-top:0.5rem;">
+        <span><span class="dot {{ 'dot-on' if agent.enabled else 'dot-off' }}"></span>
+          Autonomous agent: <strong>{{ 'ON' if agent.enabled else 'OFF' }}</strong>{{ ' (running)' if agent.running else '' }}</span>
+        <form method="post" action="/agent/toggle">
+          <input type="hidden" name="enabled" value="{{ 'false' if agent.enabled else 'true' }}">
+          <button type="submit">{{ 'Turn OFF' if agent.enabled else 'Turn ON' }}</button>
+        </form>
+      </div>
+    </details>
+  </div>
 
   <div class="cards">
-    <div class="card"><div class="num">{{ summary.jobs_discovered }}</div><div class="label">Jobs discovered</div></div>
+    <div class="card"><div class="num">{{ summary.jobs_discovered }}</div><div class="label">Jobs found</div></div>
     <div class="card"><div class="num">{{ summary.full_time_eligible }}</div><div class="label">Full-time eligible</div></div>
-    <div class="card"><div class="num">{{ summary.sponsor_confirmed }}</div><div class="label">Sponsor confirmed</div></div>
-    <div class="card"><div class="num">{{ summary.high_alignment_jobs }}</div><div class="label">High-alignment jobs</div></div>
-    <div class="card"><div class="num">{{ summary.resume_ready }}</div><div class="label">Resume ready</div></div>
-    <div class="card"><div class="num">{{ summary.application_ready }}</div><div class="label">Application ready</div></div>
-    <div class="card"><div class="num">{{ summary.needs_user_action }}</div><div class="label">Needs user action</div></div>
-    <div class="card"><div class="num">{{ summary.ready_for_final_submit }}</div><div class="label">Ready for final submit</div></div>
-    <div class="card"><div class="num">{{ summary.applied }}</div><div class="label">Applied</div></div>
-    <div class="card"><div class="num">{{ summary.failed_attention }}</div><div class="label">Failed / attention</div></div>
+    <div class="card"><div class="num">{{ summary.sponsor_confirmed }}</div><div class="label">Confirmed sponsor</div></div>
+    <div class="card"><div class="num">{{ summary.strong_matches }}</div><div class="label">Strong matches</div></div>
+    <div class="card"><div class="num">{{ summary.one_page_ready }}</div><div class="label">One-page resumes ready</div></div>
+    <div class="card"><div class="num">{{ summary.application_ready }}</div><div class="label">Applications prepared</div></div>
+    <div class="card"><div class="num">{{ summary.applying }}</div><div class="label">Applying</div></div>
+    <div class="card"><div class="num">{{ summary.needs_user_action }}</div><div class="label">Needs your action</div></div>
+    <div class="card"><div class="num">{{ summary.applied_today }}</div><div class="label">Applied today</div></div>
+    <div class="card"><div class="num">{{ summary.skipped }}</div><div class="label">Skipped</div></div>
   </div>
 
-  <div class="agent-bar">
-    <span><span class="dot {{ 'dot-on' if agent.enabled else 'dot-off' }}"></span>
-      Autonomous agent: <strong>{{ 'ON' if agent.enabled else 'OFF' }}</strong>{{ ' (running)' if agent.running else '' }}</span>
-    <span>Last cycle: {{ agent.last_cycle_started_at or 'never' }}</span>
-    <span>Next cycle: {{ agent.next_cycle_at or (('disabled') if not agent.enabled else 'pending') }}</span>
-    {% if agent.last_cycle_summary %}
-    <span>Last: fetched {{ agent.last_cycle_summary.get('jobs_fetched', 0) }},
-      new {{ agent.last_cycle_summary.get('jobs_new', 0) }},
-      confirmed {{ agent.last_cycle_summary.get('confirmed_sponsors', 0) }},
-      likely {{ agent.last_cycle_summary.get('likely_sponsors', 0) }},
-      skipped {{ agent.last_cycle_summary.get('hard_skips', 0) }},
-      ready/review {{ agent.last_cycle_summary.get('packages_generated', 0) }},
-      errors {{ agent.last_cycle_summary.get('errors', []) | length }}</span>
-    {% endif %}
-    <span>Interval: {{ agent_config.interval_minutes }}m · Providers: {{ agent_config.enabled_providers | join(', ') }}</span>
-    <form method="post" action="/agent/toggle">
-      <input type="hidden" name="enabled" value="{{ 'false' if agent.enabled else 'true' }}">
-      <button type="submit">{{ 'Turn OFF' if agent.enabled else 'Turn ON' }}</button>
-    </form>
+  {% if needs_action_queue %}
+  <div class="card" style="margin-bottom:1rem;">
+    <h3>Needs Your Action: {{ needs_action_queue | length }}</h3>
+    {% for item in needs_action_queue %}
+    <div class="queue-item">
+      <span class="co">{{ item.company }}</span> — {{ item.role }}
+      <br>Stage: {{ item.stage }} · Reason: {{ item.reason }}
+      <br><em>Already completed:</em> {{ item.completed }} <em>Action needed:</em> {{ item.action }}
+      <a href="/jobs/{{ item.job_id }}">Continue &rarr;</a>
+    </div>
+    {% endfor %}
   </div>
+  {% endif %}
+
+  {% if recent_activity %}
+  <div class="card" style="margin-bottom:1rem;">
+    <h3>Live Activity</h3>
+    {% for a in recent_activity %}
+    <div class="activity-item"><span class="ts">{{ a.ts }}</span>{{ a.company }} — {{ a.role }}: {{ a.text }}</div>
+    {% endfor %}
+  </div>
+  {% endif %}
 
   {% if missing_profile_count > 0 %}
   <div class="warning">
@@ -190,7 +260,8 @@
           not analyzed
           {% endif %}
         </td>
-        <td><span class="tag {{ 'tag-ready' if row.resume_status == 'READY' else ('tag-stale' if row.resume_status == 'STALE' else ('tag-failed' if 'FAILED' in row.resume_status else 'tag-notgen')) }}">{{ row.resume_status }}</span></td>
+        <td><span class="tag {{ 'tag-ready' if row.resume_status == 'READY' else ('tag-stale' if row.resume_status == 'STALE' else ('tag-failed' if 'FAILED' in row.resume_status else 'tag-notgen')) }}">{{ row.resume_status }}</span>
+          {% if row.page_count == 1 %}<span class="badge-1page">1 PAGE ✓</span>{% elif row.resume_status == 'REVIEW_REQUIRED' %}<span class="badge-review">REVIEW_REQUIRED</span>{% endif %}</td>
         <td>{% if row.quality_report %}{{ row.quality_report.ats_parseability.overall }}{% endif %} {{ job.provider }}</td>
         <td>{{ row.execution.status if row.execution else job.application_state.value }}</td>
         <td>{% if row.execution and row.execution.requires_user_action %}<strong style="color:#a94442;">{{ row.execution.user_action_reason or 'action needed' }}</strong>{% else %}—{% endif %}</td>

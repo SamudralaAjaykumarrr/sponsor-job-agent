@@ -66,7 +66,15 @@ _SKIP_EXTENSIONS = {".pyc", ".png", ".jpg", ".jpeg", ".gif", ".pdf", ".docx", ".
 # Lines in this scanner's own source and .env.example are expected to
 # contain pattern-example text (e.g. documenting what NOT to commit) --
 # never flag this file or the documented example file against themselves.
-_SELF_EXEMPT = {"scripts/secret_scan.py", ".env.example", "docs/data-retention.md"}
+# The two test files below deliberately contain realistic-but-fake secret-
+# shaped fixture strings (AWS key format, private key block, connection
+# strings) to exercise CONTENT_PATTERNS/_redact_database_url's own detection
+# logic -- pre-existing on this branch, not something this scanner should
+# ever treat as a real finding about the repository's actual contents.
+_SELF_EXEMPT = {
+    "scripts/secret_scan.py", ".env.example", "docs/data-retention.md",
+    "tests/test_secret_scan.py", "tests/test_config_doctor.py",
+}
 
 
 def _tracked_files() -> list[str]:

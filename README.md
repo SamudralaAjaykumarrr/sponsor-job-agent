@@ -6,9 +6,13 @@ for sponsorship and full-time eligibility, generates a truthful JD-specific resu
 each strong match, and assists (never blindly automates) the application itself — through
 one local dashboard.
 
-Release candidate: **15.0.0-rc1** (see `/version`). Default pytest baseline: **1125
+Release candidate: **15.0.0-rc1** (see `/version`). Default pytest baseline: **1160
 passing** (0 failing). See `docs/release-candidate-audit.md` for the full Phase 15
 acceptance record.
+
+**One-click agent**: the dashboard now has a single START AGENT / STOP AGENT control
+that coordinates discovery, one-page resume generation, application preparation, and
+execution end to end — see "The one-click agent" below and `docs/one-click-agent.md`.
 
 ## What this does
 
@@ -91,6 +95,28 @@ upgrades (a `git pull` never silently turns one on): `AGENT_ENABLED`,
 to `false`. Run `python -m app.config_doctor` (or the global doctor, below) to sanity-check
 your configuration.
 
+## The one-click agent
+
+```
+OPEN WEBSITE -> click START AGENT -> leave it running
+```
+
+One button on the dashboard starts a background orchestrator that continuously finds
+eligible jobs, generates a unique one-page truthful resume per job, prepares the
+application, and executes it as far as the provider safely/permittedly supports —
+auto-submitting only where a legitimate, verified submission capability actually exists
+(today, only the deterministic `mock_ats` test fixture; every real ATS stays ASSIST-only
+until proven otherwise). Everything else pauses at `NEEDS_USER_ACTION`/
+`READY_FOR_FINAL_SUBMIT` and shows up in the dashboard's "Needs Your Action" queue. A
+separate **START AGENT (TEST MODE)** button proves the entire loop end to end — discover,
+analyze, one-page resume, prepare, submit, confirm, `APPLIED` — against the safe
+`mock_ats` fixture only, never a real employer. See `docs/one-click-agent.md`,
+`docs/one-page-resume-contract.md`, and `docs/autonomous-orchestration.md`.
+
+Every automatically-generated resume is enforced to render as exactly one PDF page, via a
+bounded, truthfulness-preserving compression ladder (never a font shrunk below
+readability, never a fabricated claim) — see `docs/one-page-resume-contract.md`.
+
 ## The dashboard
 
 `/` is the primary, single-page workflow — company, role, freshness, work arrangement,
@@ -105,8 +131,9 @@ See `docs/unified-dashboard.md`.
 ## Doctors and health
 
 - `python -m app.doctor` — global doctor: aggregates every subsystem doctor (registry,
-  sponsorship, applications, resume optimizer) plus database/schema, candidate-profile,
-  configuration, and job-integrity checks. Exits nonzero on any serious issue. Read-only.
+  sponsorship, applications, resume optimizer, agent orchestrator) plus database/schema,
+  candidate-profile, configuration, and job-integrity checks. Exits nonzero on any serious
+  issue. Read-only.
 - `GET /health` — liveness only, never touches the database.
 - `GET /readiness` — database reachable + schema compatible.
 - `GET /version` — app/schema/optimizer/classifier/provider-capability version identifiers.
@@ -128,7 +155,7 @@ See `docs/unified-dashboard.md`.
 ## Tests
 
 ```bash
-pytest                       # default suite -- 1125 passing, no network/DB server/browser required
+pytest                       # default suite -- 1160 passing, no network/DB server/browser required
 pytest -m postgres           # requires `pip install -r requirements-dev.txt` (bundles a local pgserver binary)
 pytest -m browser            # requires `pip install -r requirements-dev.txt` && playwright install chromium
 ```

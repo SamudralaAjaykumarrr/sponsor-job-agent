@@ -16,6 +16,22 @@ a backgrounded dashboard). Workers finish their current lease/attempt before exi
 (`*_SHUTDOWN_GRACE_SECONDS`) -- see `docs/worker-architecture.md`,
 `docs/application-worker-architecture.md`.
 
+## The one-click agent
+
+The normal way to run this project day to day: start the dashboard as above, then click
+**START AGENT** (or `POST /agent/start`). One background orchestrator then coordinates
+discovery, resume optimization, application preparation, and execution on its own schedule
+-- no need to separately launch `app.workers.cli run` / `app.applications.worker run` for
+ordinary single-machine use. **STOP AGENT** (`POST /agent/stop`) finishes/releases current
+safe work before stopping. `GET /agent/status` reports the full state (desired/actual,
+last/next cycle, per-cycle counters). If the process restarts while the desired state was
+`RUNNING`, it resumes automatically on the next startup -- no manual re-start needed. See
+`docs/one-click-agent.md`.
+
+The standalone worker processes above remain fully supported and safe to run alongside the
+agent (or instead of it, for a real multi-machine deployment) -- both claim from the same
+leased queues, so nothing double-processes.
+
 ## Workers
 
 - Discovery fleet: `docs/distributed-workers.md`, `docs/fleet-operations.md`. Status via
@@ -55,6 +71,7 @@ python -m app.registry.cli doctor
 python -m app.sponsorship.cli doctor
 python -m app.applications.cli doctor
 python -m app.resume_optimizer.cli doctor
+python -c "from app.agent.doctor import run_doctor; r = run_doctor(); print(r.as_dict())"
 ```
 
 All read-only; a nonzero exit means at least one SERIOUS issue. See each subsystem's own

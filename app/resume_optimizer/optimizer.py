@@ -17,11 +17,9 @@ from app.candidate.schema import CandidateProfile
 from app.config import OUTPUT_DIR
 from app.jobs_repo import get_job
 from app.resume.claim_checker import check_resume_claims
-from app.resume.docx_writer import write_docx
 from app.resume.generator import EducationBlock, ExperienceBlock, ProjectBlock, ResumeContent
-from app.resume.pdf_writer import write_pdf
-from app.resume.txt_writer import write_txt
 from app.resume_optimizer import ats_parse, repo
+from app.resume_optimizer.one_page import enforce_one_page
 from app.resume_optimizer.evidence import build_evidence_graph
 from app.resume_optimizer.fingerprint import compute_artifact_hash, compute_jd_fingerprint, compute_profile_version, OPTIMIZER_VERSION
 from app.resume_optimizer.jd_analysis import analyze_jd
@@ -202,18 +200,35 @@ def optimize_resume(job_id: int, *, force: bool = False) -> OptimizeResult:
     variant_id = claimed["variant_id"]
     resume = generate_optimized_resume_content(profile, job.title, job.description, jd_analysis, matches)
 
+    # Content-level truthfulness gate runs on the FULL, uncompressed resume
+    # first: one_page.enforce_one_page() only ever removes/shortens content,
+    # never adds any, so if the full resume is truthful, every compressed
+    # subset it might produce is too (CLAUDE.md Phase 14's claim_checker
+    # remains the single, unmodified firewall -- see app.resume_optimizer.
+    # one_page's module docstring for why compression is designed around it).
     violations = check_resume_claims(resume, profile)
 
     out_dir = _variant_dir(job_id, variant_id)
-    docx_path = write_docx(resume, out_dir / "resume.docx")
-    pdf_path = write_pdf(resume, out_dir / "resume.pdf")
-    txt_path = write_txt(resume, out_dir / "resume.txt")
+    # JD-matched requirement text doubles as the "never remove this skill
+    # during one-page compression" protected set -- the same signal
+    # generate_optimized_resume_content() above used to prioritize skill
+    # ordering (section 25).
+    protected_lower = {t.lower() for t in _matched_requirement_texts(matches, (MatchStatus.MATCHED,))}
+
+    one_page_result = enforce_one_page(resume, out_dir, protected_skills_lower=protected_lower)
+    docx_path, pdf_path, txt_path = one_page_result.docx_path, one_page_result.pdf_path, one_page_result.txt_path
+    resume = one_page_result.resume  # the FINAL (possibly compressed) content actually rendered
 
     ats_report = ats_parse.validate_all(docx_path, pdf_path, txt_path, resume)
     artifact_hash = compute_artifact_hash(txt_path.read_bytes())
 
     if violations:
         status = ResumeVariantStatus.CLAIM_CHECK_FAILED
+    elif not one_page_result.one_page:
+        # CLAUDE.md one-click-agent section 8: a page count that still can't
+        # be safely brought to 1 within the bounded compression ladder is an
+        # honest REVIEW_REQUIRED, never a tiny unreadable render.
+        status = ResumeVariantStatus.REVIEW_REQUIRED
     elif ats_report.overall.value == "FAIL":
         status = ResumeVariantStatus.ATS_PARSE_FAILED
     else:
@@ -222,6 +237,8 @@ def optimize_resume(job_id: int, *, force: bool = False) -> OptimizeResult:
     repo.finalize_variant(
         variant_id, status=status.value, resume_docx_path=str(docx_path), resume_pdf_path=str(pdf_path),
         resume_txt_path=str(txt_path), resume_artifact_hash=artifact_hash, make_current=True,
+        page_count=one_page_result.page_count, compression_steps_applied=one_page_result.compression_steps_applied,
+        compression_log=one_page_result.compression_log,
     )
     repo.save_evidence_links(variant_id, matches)
 

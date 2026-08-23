@@ -55,6 +55,12 @@ from now) can find the right one without a search.
 - Per-provider: `greenhouse-application-assist.md`, `smartrecruiters-application-assist.md`, `smartrecruiters-spa-validation.md`, `workday-application-assist.md`, `workday-observation-model.md`, `workday-tenant-validation.md`
 - `real-ats-validation.md` -- bounded, read-only live validation runs against real public postings
 
+## One-click agent
+
+- `one-click-agent.md` -- the single START/STOP AGENT control, what it turns on, TEST MODE
+- `autonomous-orchestration.md` -- why the orchestrator coordinates rather than duplicates
+- `one-page-resume-contract.md` -- the one-page hard output contract and bounded compression ladder
+
 ## Dashboard & observability
 
 - `unified-dashboard.md` -- the single-page primary workflow

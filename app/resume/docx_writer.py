@@ -5,9 +5,30 @@ from docx.shared import Pt
 
 from app.resume.generator import ResumeContent
 
+_MAX_LEVEL = 6
+_BASE_FONT_SIZE = 10.5
 
-def write_docx(resume: ResumeContent, out_path: Path) -> Path:
+
+def _clamp(level: int) -> int:
+    return max(0, min(level, _MAX_LEVEL))
+
+
+def write_docx(resume: ResumeContent, out_path: Path, compression_level: int = 0) -> Path:
+    """`compression_level` mirrors app.resume.pdf_writer.write_pdf's ladder --
+    reduces base body font size only (bounded by ONE_PAGE_MIN_FONT_SIZE), so
+    the DOCX stays visually consistent with a compressed PDF. Structure is
+    never altered here -- content-level compression (removing/shortening
+    bullets, skills, summary) happens once, upstream, on the shared
+    ResumeContent before either writer is called."""
+    level = _clamp(compression_level)
+
+    from app import config
+
+    min_font = config.ONE_PAGE_MIN_FONT_SIZE
+    body_size = max(min_font, _BASE_FONT_SIZE - 0.3 * level)
+
     doc = Document()
+    doc.styles["Normal"].font.size = Pt(body_size)
 
     title = doc.add_heading(resume.full_name or "NEEDS_USER_INPUT", level=0)
     title.alignment = 1
@@ -30,7 +51,7 @@ def write_docx(resume: ResumeContent, out_path: Path) -> Path:
             heading = doc.add_paragraph()
             run = heading.add_run(f"{e.title} — {e.company}")
             run.bold = True
-            run.font.size = Pt(11)
+            run.font.size = Pt(max(min_font, body_size + 0.5))
             doc.add_paragraph(f"{e.start_date} - {e.end_date} | {e.location}")
             for b in e.bullets:
                 doc.add_paragraph(b, style="List Bullet")

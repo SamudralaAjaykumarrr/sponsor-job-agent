@@ -98,14 +98,29 @@ def _profile_fingerprint() -> str:
 
 
 def _verify_resume_artifact(job: Job, execution: dict) -> tuple[bool, str, str]:
-    """CLAUDE.md Phase 8 section 19. Returns (ok, reason, hash)."""
+    """CLAUDE.md Phase 8 section 19. Returns (ok, reason, hash).
+
+    A resume artifact's path either matches the legacy flat layout
+    (`output/<job_id>/resume.pdf`, immediate parent dir == job_id) or the
+    resume_optimizer's nested one-page-variant layout (`output/<job_id>/
+    optimized/<variant_id>/resume.pdf`, promoted by app.agent.orchestrator.
+    _run_resume_stage) -- checking the `/<job_id>/` path segment appears
+    anywhere, matching the exact convention app.applications.doctor.
+    _check_wrong_resume_job_mapping and app.resume_optimizer.doctor.
+    _check_resume_linked_to_wrong_job already use for this same question, so
+    all three 'does this resume belong to this job' checks in this project
+    agree. A real integration gap between the Phase 8 executor and the Phase
+    14+ optimizer's nested paths, caught live once resume promotion started
+    exercising both together -- never re-narrow this back to an exact
+    immediate-parent-name match."""
     path_str = job.resume_pdf_path
     if not path_str:
         return False, "no resume artifact on job", ""
     path = Path(path_str)
     if not path.exists():
         return False, f"resume artifact missing on disk: {path}", ""
-    if path.parent.name != str(job.id):
+    normalized = str(path).replace("\\", "/")
+    if f"/{job.id}/" not in normalized:
         return False, f"resume artifact path '{path}' does not correspond to job_id {job.id}", ""
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
     stored_hash = execution.get("resume_artifact_hash")

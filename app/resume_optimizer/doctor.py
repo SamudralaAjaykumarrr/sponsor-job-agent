@@ -170,6 +170,43 @@ def _check_duplicate_current(conn, report: DoctorReport) -> None:
                                     f"job {r['job_id']} has {r['c']} variants marked current -- unique index should prevent this."))
 
 
+def _check_ready_variant_not_one_page(conn, report: DoctorReport) -> None:
+    """One-click-agent section 8/47: every automatically-generated resume
+    marked READY must be exactly one PDF page -- app.resume_optimizer.
+    optimizer.optimize_resume() should never mark a variant READY unless
+    app.resume_optimizer.one_page.enforce_one_page() reported one_page=True
+    (a multi-page result becomes REVIEW_REQUIRED instead)."""
+    rows = conn.execute(
+        "SELECT variant_id, job_id, page_count FROM resume_variants WHERE status = 'READY' "
+        "AND (page_count IS NULL OR page_count != 1)"
+    ).fetchall()
+    for r in rows:
+        report.issues.append(Issue("serious", "ready_variant_not_one_page",
+                                    f"variant {r['variant_id']} (job {r['job_id']}) is READY with page_count="
+                                    f"{r['page_count']} -- expected exactly 1."))
+
+
+def _check_application_linked_to_non_one_page_resume(conn, report: DoctorReport) -> None:
+    """One-click-agent section 27/47: an active application execution must
+    never be linked to a promoted resume variant that isn't a one-page READY
+    artifact -- app.agent.orchestrator._run_resume_stage only ever promotes
+    a variant onto jobs.resume_docx_path/promoted_resume_variant_id when it
+    is READY with page_count == 1."""
+    rows = conn.execute(
+        """SELECT j.id AS job_id, j.promoted_resume_variant_id, rv.page_count, rv.status
+           FROM jobs j
+           JOIN application_executions e ON e.job_id = j.id AND e.active = 1
+           LEFT JOIN resume_variants rv ON rv.variant_id = j.promoted_resume_variant_id
+           WHERE j.promoted_resume_variant_id IS NOT NULL AND j.promoted_resume_variant_id != ''
+             AND (rv.variant_id IS NULL OR rv.page_count IS NULL OR rv.page_count != 1 OR rv.status != 'READY')"""
+    ).fetchall()
+    for r in rows:
+        report.issues.append(Issue("serious", "application_linked_to_non_one_page_resume",
+                                    f"job {r['job_id']} has an active application execution but its promoted "
+                                    f"resume variant {r['promoted_resume_variant_id']} is not a one-page READY "
+                                    f"resume (page_count={r['page_count']})."))
+
+
 def run_doctor() -> DoctorReport:
     report = DoctorReport()
     with db_session() as conn:
@@ -183,4 +220,6 @@ def run_doctor() -> DoctorReport:
         _check_stale_variant_marked_current(conn, report)
         _check_parse_failure_current(conn, report)
         _check_duplicate_current(conn, report)
+        _check_ready_variant_not_one_page(conn, report)
+        _check_application_linked_to_non_one_page_resume(conn, report)
     return report

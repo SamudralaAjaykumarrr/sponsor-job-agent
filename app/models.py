@@ -179,6 +179,13 @@ class Job(BaseModel):
     # generated for this job.
     resume_jd_fingerprint: str = ""
 
+    # One-click agent (app.agent.orchestrator._run_resume_stage): which
+    # resume_optimizer variant (if any) was promoted to be the resume
+    # artifact actually used for this job's application -- distinct from
+    # resume_variants.current (the optimizer's own latest variant,
+    # independent of whether it was ever promoted).
+    promoted_resume_variant_id: str = ""
+
     technical_match_score: float = 0.0
     matched_skills: str = ""   # comma-separated
     gap_skills: str = ""       # comma-separated

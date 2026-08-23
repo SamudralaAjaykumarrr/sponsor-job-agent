@@ -110,6 +110,7 @@ def collect() -> dict:
 
     queue_depth = _queue_depth()
 
+    from app.agent import metrics as agent_metrics
     from app.applications import budget as application_budget
     from app.applications import metrics as application_metrics
     from app.sponsorship import metrics as sponsorship_metrics
@@ -119,6 +120,7 @@ def collect() -> dict:
         **application_metrics.collect(),
         **application_metrics.collect_worker_fleet(),
         **application_budget.collect().as_dict(),
+        **agent_metrics.collect(),
         "database_backend": db_backend(),
         "workers_online": workers_online,
         "workers_offline": workers_offline,
@@ -159,7 +161,7 @@ def render_prometheus_text(metrics: dict) -> str:
         lines.append(f"{full_name}{labels} {value}")
 
     for key, value in metrics.items():
-        if key in ("database_backend",):
+        if key in ("database_backend", "agent_actual_state"):
             continue
         if isinstance(value, dict):
             if key in ("provider_circuit_state", "application_provider_circuit_state"):

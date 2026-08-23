@@ -202,3 +202,38 @@ timestamps/bounded safe-error-text only, never field values.
 - **Phase 13: a stale resume never gets uploaded.** `app.applications.resume_integrity.
   verify_resume_freshness()` refuses to start a browser session at all when the job's resume was
   generated against a JD fingerprint that has since diverged from the job's current one.
+
+## One-click agent: what STARTING the agent does and doesn't unlock
+
+See `docs/one-click-agent.md` for the full picture. In safety terms:
+
+- `AgentOrchestrator` (`app/agent/orchestrator.py`) temporarily sets
+  `APPLICATION_EXECUTOR_ENABLED=True` and `APPLICATION_AUTO_PREPARE_ENABLED=True`
+  for as long as the agent is `RUNNING`, restoring the operator's actual
+  `.env`-configured values the moment it stops. **It never touches
+  `AUTO_SUBMIT_ENABLED`** in a normal run — that stays whatever `.env` says
+  (default `false`), so every gate documented above (AUTO_PERMITTED gating,
+  CAPTCHA/MFA/auth detection, duplicate protection, rate limiting,
+  confirmation-before-APPLIED) applies completely unchanged. With
+  `AUTO_SUBMIT_ENABLED` at its safe default, a running agent prepares
+  applications all the way to `SUBMISSION_READY`/`NEEDS_USER_ACTION` and
+  never calls `submit()`.
+- **TEST MODE is the one deliberate exception**, and only for the
+  deterministic `mock_ats` fixture: starting the agent in TEST MODE also
+  temporarily allows `AUTO_SUBMIT_ENABLED`, restored on stop exactly like the
+  other two flags. `mock_ats` is not a real ATS and can never be a real
+  job's provider (see `app.applications.doctor`'s existing
+  `_check_real_provider_capability_auto_without_authorization`), so this
+  never risks a real submission.
+- A new gate, `MIN_ALIGNMENT_FOR_AUTO_PREPARE`, is checked by
+  `app.applications.scheduler.run_cycle()` in addition to every existing
+  eligibility check — a job whose resume_optimizer `internal_alignment_score`
+  is below this threshold is never auto-queued (a job with no quality report
+  yet is never blocked by this, matching the project's "never reject for
+  missing info" pattern).
+- The orchestrator's application-execution stage reuses
+  `app.applications.worker.ApplicationWorker`'s exact public `run()`
+  entrypoint — the same mechanism `python -m app.applications.worker run
+  --once` already exposes — rather than a second execution loop, so every
+  safety property documented above (leasing, circuit breaker, crash
+  recovery, pre-submission revalidation) applies unchanged.

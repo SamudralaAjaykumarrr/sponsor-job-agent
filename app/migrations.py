@@ -1196,6 +1196,89 @@ def _m043_resume_evidence_links_table(conn, backend: str) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_resume_evidence_links_variant ON resume_evidence_links (variant_id)")
 
 
+def _m044_agent_run_state_table(conn, backend: str) -> None:
+    """One-click autonomous agent orchestrator: durable desired/actual run
+    state (STOPPED/STARTING/RUNNING/PAUSED/STOPPING/ERROR) so a dashboard
+    refresh or a process restart never loses whether the user asked the
+    agent to be running -- see app/agent/orchestrator.py. Single-row table
+    (id always 1); never a column for a secret/token."""
+    id_column = "id BIGSERIAL PRIMARY KEY" if backend == "postgres" else "id INTEGER PRIMARY KEY AUTOINCREMENT"
+    conn.execute(
+        f"""CREATE TABLE IF NOT EXISTS agent_run_state (
+            {id_column},
+            desired_state TEXT NOT NULL DEFAULT 'STOPPED',
+            actual_state TEXT NOT NULL DEFAULT 'STOPPED',
+            test_mode INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT DEFAULT '',
+            started_at TEXT,
+            stopped_at TEXT,
+            start_count INTEGER NOT NULL DEFAULT 0,
+            stop_count INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        "INSERT INTO agent_run_state (id, desired_state, actual_state, updated_at) "
+        "SELECT 1, 'STOPPED', 'STOPPED', ? WHERE NOT EXISTS (SELECT 1 FROM agent_run_state WHERE id = 1)",
+        (utcnow(),),
+    )
+
+
+def _m045_agent_cycle_log_table(conn, backend: str) -> None:
+    """Append-only per-cycle orchestrator run log -- the durable source for
+    the agent_* Prometheus counters (app.agent.metrics), matching this
+    project's existing 'never an in-process counter, always a live query
+    over persisted state' convention (see app/observability/metrics.py's own
+    module docstring). One row per completed orchestrator cycle."""
+    id_column = "id BIGSERIAL PRIMARY KEY" if backend == "postgres" else "id INTEGER PRIMARY KEY AUTOINCREMENT"
+    conn.execute(
+        f"""CREATE TABLE IF NOT EXISTS agent_cycle_log (
+            {id_column},
+            started_at TEXT NOT NULL,
+            finished_at TEXT,
+            test_mode INTEGER NOT NULL DEFAULT 0,
+            jobs_processed INTEGER NOT NULL DEFAULT 0,
+            resumes_generated INTEGER NOT NULL DEFAULT 0,
+            one_page_success INTEGER NOT NULL DEFAULT 0,
+            one_page_overflow INTEGER NOT NULL DEFAULT 0,
+            one_page_compression_events INTEGER NOT NULL DEFAULT 0,
+            applications_prepared INTEGER NOT NULL DEFAULT 0,
+            applications_submitted INTEGER NOT NULL DEFAULT 0,
+            needs_user_action INTEGER NOT NULL DEFAULT 0,
+            skipped INTEGER NOT NULL DEFAULT 0,
+            errors INTEGER NOT NULL DEFAULT 0,
+            detail TEXT DEFAULT '{{}}'
+        )"""
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_agent_cycle_log_started ON agent_cycle_log (started_at)")
+
+
+def _m046_resume_variants_one_page_columns(conn, backend: str) -> None:
+    """One-page resume hard output contract (CLAUDE.md one-click-agent
+    section 7-8): records the final rendered PDF page count and the bounded
+    compression steps actually applied, alongside the existing status column
+    -- ResumeVariantStatus.REVIEW_REQUIRED is reused (it was defined but
+    never set in Phase 14) for 'one page could not be safely achieved',
+    never a fabricated tiny/unreadable render."""
+    add_columns_if_missing(conn, backend, "resume_variants", [
+        ("page_count", "INTEGER"),
+        ("compression_steps_applied", "INTEGER NOT NULL DEFAULT 0"),
+        ("compression_log", "TEXT DEFAULT '[]'"),
+    ])
+
+
+def _m047_jobs_promoted_resume_columns(conn, backend: str) -> None:
+    """Tracks which resume_variants row (if any) the orchestrator promoted
+    to be this job's PRIMARY resume artifact (jobs.resume_docx_path etc) --
+    lets the dashboard/doctor confirm 'the resume actually used for this
+    application is the one-page-verified JD-tailored variant', distinct from
+    resume_variants.current (which only tracks the optimizer's own latest
+    variant, independent of whether it was ever promoted)."""
+    add_columns_if_missing(conn, backend, "jobs", [
+        ("promoted_resume_variant_id", "TEXT DEFAULT ''"),
+    ])
+
+
 MIGRATIONS: list[tuple[int, str, Callable]] = [
     (2, "phase6_worker_identity_columns", _m002_worker_identity_columns),
     (3, "phase6_schema_drift_table", _m003_schema_drift_table),
@@ -1239,6 +1322,10 @@ MIGRATIONS: list[tuple[int, str, Callable]] = [
     (41, "phase14_resume_variants_table", _m041_resume_variants_table),
     (42, "phase14_resume_quality_reports_table", _m042_resume_quality_reports_table),
     (43, "phase14_resume_evidence_links_table", _m043_resume_evidence_links_table),
+    (44, "agent_run_state_table", _m044_agent_run_state_table),
+    (45, "agent_cycle_log_table", _m045_agent_cycle_log_table),
+    (46, "resume_variants_one_page_columns", _m046_resume_variants_one_page_columns),
+    (47, "jobs_promoted_resume_columns", _m047_jobs_promoted_resume_columns),
 ]
 
 # Version 1 is the implicit Phase 1-5 baseline schema, applied by

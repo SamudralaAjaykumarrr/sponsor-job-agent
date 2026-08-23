@@ -21,6 +21,7 @@ _COLUMNS = [
     "priority_tier", "priority_score",
     "application_state", "mode",
     "resume_docx_path", "resume_pdf_path", "resume_txt_path", "resume_jd_fingerprint",
+    "promoted_resume_variant_id",
     "job_analysis_path", "application_answers_path", "cover_letter_path",
     "notes", "correlation_id", "created_at", "updated_at",
 ]

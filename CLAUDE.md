@@ -974,3 +974,65 @@ and must remain first; no downstream executor code path may bypass it.
   (`benchmark-fixture` provider name) — never write synthetic rows into a real registry or a
   developer's real `data/app.db`, and never claim the benchmark predicts interview/hiring
   outcomes.
+
+## One-Click Autonomous Agent Rules (recorded after the one-click-autonomous-agent build,
+apply to all future phases)
+
+These are durable rules the orchestration layer (`app/agent/orchestrator.py`,
+`app/agent/run_state.py`) and the one-page resume contract (`app/resume_optimizer/one_page.py`)
+must keep obeying as this project evolves further:
+
+- `AgentOrchestrator` coordinates existing stages by calling their unmodified public entry points
+  (`app.agent.cycle.run_discovery_cycle`, `app.resume_optimizer.optimizer.optimize_resume`,
+  `app.applications.scheduler.run_cycle`, `app.applications.worker.ApplicationWorker.run`) — it
+  must never reimplement, fork, or partially duplicate any stage's own logic. A new pipeline stage
+  added in the future is wired into the orchestrator by calling its own entry point the same way,
+  never by copying its internals into `app/agent/orchestrator.py`.
+- The orchestrator raises `config.APPLICATION_EXECUTOR_ENABLED`/`APPLICATION_AUTO_PREPARE_ENABLED`
+  for the duration it is `RUNNING` and always restores the operator's actual pre-start value on
+  stop (`_apply_config_overrides`/`_restore_config_overrides`) — it must never leave either flag
+  permanently altered, and it must never touch `AUTO_SUBMIT_ENABLED` in a normal (non-test-mode)
+  run. `AUTO_SUBMIT_ENABLED` may only ever be temporarily raised for TEST MODE, and only alongside
+  the deterministic `mock_ats` fixture — never for a real provider, never in a normal run, no
+  matter how the orchestrator's scope grows.
+- `agent_run_state` (single-row, durable desired/actual state) and `agent_cycle_log` (append-only
+  per-cycle counters) remain the only source of truth for agent status and the `agent_*`/
+  `one_page_resume_*` metrics — never an in-process-only counter that a restart would silently
+  reset, matching this project's existing "never an in-process counter, always a live query over
+  persisted state" metrics convention.
+- Restart recovery (`app/main.py`'s `lifespan` re-starting the orchestrator when
+  `desired_state == RUNNING`) must remain safe with zero new duplicate-prevention logic of its
+  own — it works only because every stage the orchestrator drives already has its own idempotent/
+  leased claim mechanism (partial unique indexes, lease-expiry-only recovery). A future stage added
+  to the orchestrator must have the same property before restart recovery can safely include it.
+- `app.resume_optimizer.one_page.enforce_one_page()` is the only place PDF page count is measured
+  and compression is applied — it must never rewrite a verified bullet/skill's text character-by-
+  character (that would produce a string absent from `verified_bullets`, which
+  `app.resume.claim_checker.check_resume_claims()` — unmodified, per the existing Phase 14 rule
+  above — would correctly reject). Every compression step must stay removal-only (whole
+  bullets/skills/projects) or apply to genuinely free, non-claim-checked text (the summary) or pure
+  rendering (font/spacing via `compression_level`). `ONE_PAGE_MIN_FONT_SIZE` is never bypassed
+  regardless of how many compression steps have been applied, and a resume that cannot safely reach
+  one page becomes `ResumeVariantStatus.REVIEW_REQUIRED` — never a fabricated tiny/unreadable
+  render, and never silently left multi-page while still marked `READY`.
+- `app.agent.orchestrator._run_resume_stage()` promotes a resume_optimizer variant onto
+  `jobs.resume_docx_path`/`resume_pdf_path`/`resume_txt_path`/`resume_jd_fingerprint`/
+  `promoted_resume_variant_id` only when that variant is `READY` with `page_count == 1` — a
+  `REVIEW_REQUIRED` overflow result must never be promoted, so the application executor can never
+  pick up a multi-page resume through the automatic pipeline.
+- `app.applications.executor._verify_resume_artifact()`'s path-ownership check recognizes any
+  path containing the `/<job_id>/` segment (matching `app.applications.doctor.
+  _check_wrong_resume_job_mapping` and `app.resume_optimizer.doctor.
+  _check_resume_linked_to_wrong_job`'s existing convention) — never re-narrow this back to an
+  exact-immediate-parent-directory-name match, which breaks the resume_optimizer's nested
+  `output/<job_id>/optimized/<variant_id>/` layout (a real integration bug this feature's own live
+  testing caught).
+- Any new mutating FastAPI route that itself calls `asyncio.create_task()` (or otherwise needs to
+  run on the actual event loop thread) must be declared `async def` — a plain `def` route handler
+  runs in FastAPI's worker threadpool, where there is no running event loop
+  (`asyncio.get_running_loop()` raises), a real bug this feature's own route-level testing caught
+  on `/agent/start`.
+- Synthetic/fixture data for TEST MODE (`agent-test-mode-fixture-1`, provider `mock_ats`) follows
+  the same never-collide-with-a-real-identifier convention as every other benchmark/fixture in this
+  project — idempotent re-seeding (matched by its fixed `external_job_id`), never written to
+  anything but the `mock_ats` provider path, and never mistaken for a real job.

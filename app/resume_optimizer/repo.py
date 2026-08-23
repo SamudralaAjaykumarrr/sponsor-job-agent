@@ -167,12 +167,16 @@ def claim_variant(job_id: int, jd_fingerprint: str, profile_version: str, optimi
 
 def finalize_variant(
     variant_id: str, *, status: str, resume_docx_path: str, resume_pdf_path: str, resume_txt_path: str,
-    resume_artifact_hash: str, make_current: bool,
+    resume_artifact_hash: str, make_current: bool, page_count: int | None = None,
+    compression_steps_applied: int = 0, compression_log: list | None = None,
 ) -> None:
-    """Marks one variant READY/CLAIM_CHECK_FAILED/ATS_PARSE_FAILED and, if
-    make_current, atomically demotes any prior current variant for the same
-    job first -- so the partial unique index on (job_id) WHERE current = 1
-    is never violated by two rows racing to become current."""
+    """Marks one variant READY/CLAIM_CHECK_FAILED/ATS_PARSE_FAILED/
+    REVIEW_REQUIRED and, if make_current, atomically demotes any prior
+    current variant for the same job first -- so the partial unique index on
+    (job_id) WHERE current = 1 is never violated by two rows racing to
+    become current. `page_count`/`compression_steps_applied`/
+    `compression_log` record the one-page hard-output-contract outcome
+    (app.resume_optimizer.one_page) for dashboard/doctor visibility."""
     now = utcnow()
     with db_session() as conn:
         row = conn.execute("SELECT job_id FROM resume_variants WHERE variant_id = ?", (variant_id,)).fetchone()
@@ -188,9 +192,11 @@ def finalize_variant(
             )
         conn.execute(
             """UPDATE resume_variants SET status = ?, current = ?, resume_docx_path = ?, resume_pdf_path = ?,
-               resume_txt_path = ?, resume_artifact_hash = ?, updated_at = ? WHERE variant_id = ?""",
+               resume_txt_path = ?, resume_artifact_hash = ?, page_count = ?, compression_steps_applied = ?,
+               compression_log = ?, updated_at = ? WHERE variant_id = ?""",
             (status, _coerce(make_current), resume_docx_path, resume_pdf_path, resume_txt_path,
-             resume_artifact_hash, now, variant_id),
+             resume_artifact_hash, page_count, compression_steps_applied, json.dumps(compression_log or []),
+             now, variant_id),
         )
 
 

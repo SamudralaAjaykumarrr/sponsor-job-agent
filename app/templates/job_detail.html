@@ -106,11 +106,24 @@
     {% endif %}
 
     {% if current_variant %}
-    <p>Resume status: <strong>{{ current_variant.status }}</strong> (variant {{ current_variant.variant_id[:12] }}…)</p>
+    <p>Resume status: <strong>{{ current_variant.status }}</strong> (variant {{ current_variant.variant_id[:12] }}…)
+      {% if current_variant.page_count %}
+        {% if current_variant.page_count == 1 %}<span class="badge-1page" style="background:#d4edda;color:#155724;padding:1px 6px;border-radius:8px;font-size:0.75rem;">1 PAGE ✓</span>
+        {% else %}<span style="background:#f8d7da;color:#721c24;padding:1px 6px;border-radius:8px;font-size:0.75rem;">{{ current_variant.page_count }} PAGES -- REVIEW_REQUIRED</span>{% endif %}
+      {% endif %}
+      {% if current_variant.compression_steps_applied %} · {{ current_variant.compression_steps_applied }} compression step(s) applied{% endif %}
+      {% if job.promoted_resume_variant_id == current_variant.variant_id %} · <strong>promoted as this job's primary resume</strong>{% endif %}
+    </p>
     {% if current_variant.status == 'READY' %}
     <a class="btn" href="/jobs/{{ job.id }}/resume/download/docx">optimized resume.docx</a>
     <a class="btn" href="/jobs/{{ job.id }}/resume/download/pdf">optimized resume.pdf</a>
     <a class="btn" href="/jobs/{{ job.id }}/resume/download/txt">optimized resume.txt</a>
+    {% endif %}
+    {% if current_variant.compression_log %}
+    <details style="margin-top:0.5rem;">
+      <summary>One-page compression log ({{ current_variant.compression_log | length }} step(s))</summary>
+      <ul>{% for step in current_variant.compression_log %}<li>{{ step }}</li>{% endfor %}</ul>
+    </details>
     {% endif %}
     {% endif %}
 

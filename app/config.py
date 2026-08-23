@@ -490,6 +490,44 @@ RESUME_OPTIMIZATION_BATCH_SIZE = _env_int("RESUME_OPTIMIZATION_BATCH_SIZE", 5)
 # CLAUDE.md Phase 15: dashboard result bounding.
 # =============================================================================
 
+# =============================================================================
+# One-click autonomous agent orchestrator (app/agent/orchestrator.py) and the
+# one-page resume hard output contract (app/resume_optimizer/one_page.py).
+# =============================================================================
+
+# How often the orchestrator's cycle (discovery -> resume -> auto-prepare ->
+# execute) repeats while the agent is RUNNING. AGENT_INTERVAL_MINUTES is the
+# name this build brief uses; falls back to the existing
+# DISCOVERY_INTERVAL_MINUTES (unchanged Phase 2 default of 15) so a single
+# number controls both unless an operator deliberately sets them differently.
+AGENT_INTERVAL_MINUTES = _env_int("AGENT_INTERVAL_MINUTES", DISCOVERY_INTERVAL_MINUTES)
+
+# Every automatically-generated job-specific resume must render as exactly
+# one PDF page. True by default -- this is a hard output contract, not an
+# optional nicety (see docs/one-page-resume-contract.md).
+ONE_PAGE_RESUME_REQUIRED = _env_bool("ONE_PAGE_RESUME_REQUIRED", True)
+# Bounded compression ladder (CLAUDE.md one-click-agent section 8): never
+# shrink font below this size, never take more than this many compression
+# steps before giving up honestly (ResumeVariantStatus.REVIEW_REQUIRED)
+# rather than producing a tiny unreadable one-page render.
+ONE_PAGE_MIN_FONT_SIZE = _env_float("ONE_PAGE_MIN_FONT_SIZE", 9.5)
+ONE_PAGE_MAX_COMPRESSION_STEPS = _env_int("ONE_PAGE_MAX_COMPRESSION_STEPS", 8)
+
+# Minimum resume_optimizer internal_alignment_score (0-100, NOT an ATS score
+# or interview probability -- see app.resume_optimizer.quality) required for
+# a job to be automatically prepared/queued by the orchestrator. Distinct
+# from MIN_APPLICATION_MATCH_SCORE (the older, keyword-based technical match
+# score) -- both gates apply.
+MIN_ALIGNMENT_FOR_AUTO_PREPARE = _env_int("MIN_ALIGNMENT_FOR_AUTO_PREPARE", 40)
+
+# Budget/daily-cap config the orchestrator's own cycle additionally respects
+# (on top of the existing MAX_APPLICATIONS_PER_HOUR/_PER_DAY/
+# _PER_COMPANY_PER_DAY rate limits enforced by app.applications.rate_limit,
+# which are absolute safety limits, not orchestrator-cycle pacing). These are
+# deliberately never called "interview probability" or similar.
+MAX_RESUMES_PER_CYCLE = _env_int("MAX_RESUMES_PER_CYCLE", 10)
+MAX_APPLICATIONS_PER_CYCLE = _env_int("MAX_APPLICATIONS_PER_CYCLE", 5)
+
 # CLAUDE.md Phase 15 section 42/44: a Phase 15 large-state benchmark
 # (scripts/phase15_release_benchmark.py) measured the unified dashboard's
 # rendered pipeline table growing unboundedly with total job count -- 24MB

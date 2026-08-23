@@ -157,7 +157,8 @@ def run_global_doctor() -> GlobalDoctorReport:
         # single root cause honestly rather than a wall of downstream
         # "database unreachable" crashes from four separate subsystems.
         report.subsystems_skipped.extend(
-            ["registry", "sponsorship", "applications", "resume_optimizer", "candidate_profile", "job_integrity", "dead_letter_backlog"]
+            ["registry", "sponsorship", "applications", "resume_optimizer", "agent", "candidate_profile",
+             "job_integrity", "dead_letter_backlog"]
         )
         return report
 
@@ -170,11 +171,13 @@ def run_global_doctor() -> GlobalDoctorReport:
     from app.sponsorship.doctor import run_doctor as run_sponsorship_doctor
     from app.applications.doctor import run_doctor as run_applications_doctor
     from app.resume_optimizer.doctor import run_doctor as run_resume_optimizer_doctor
+    from app.agent.doctor import run_doctor as run_agent_doctor
 
     _run_subsystem_doctor(report, "registry", run_registry_doctor)
     _run_subsystem_doctor(report, "sponsorship", run_sponsorship_doctor)
     _run_subsystem_doctor(report, "applications", run_applications_doctor)
     _run_subsystem_doctor(report, "resume_optimizer", run_resume_optimizer_doctor)
+    _run_subsystem_doctor(report, "agent", run_agent_doctor)
 
     return report
 

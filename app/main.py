@@ -8,6 +8,8 @@ from fastapi.templating import Jinja2Templates
 
 from app import config
 from app.agent import state as agent_state
+from app.agent import run_state as agent_run_state
+from app.agent.orchestrator import orchestrator as agent_orchestrator
 from app.agent.scheduler import scheduler
 from app.applications import doctor as applications_doctor
 from app.applications import metrics as applications_metrics
@@ -112,10 +114,26 @@ async def lifespan(_: FastAPI):
     # optimization -- print its actual on/off state on every startup, same
     # as every other optional background loop in this project.
     print(f"Resume optimization:  {'ON' if config.RESUME_OPTIMIZATION_ENABLED else 'OFF'}")
+    print(f"One-page resumes:     {'REQUIRED' if config.ONE_PAGE_RESUME_REQUIRED else 'not enforced'}")
     scheduler.start()
     applications_background_scheduler.start()
     resume_optimization_scheduler.start()
+
+    # Restart recovery (CLAUDE.md one-click-agent section 42): if the
+    # process restarted while the user's desired state was RUNNING, resume
+    # safely -- never require the user to re-click START after a routine
+    # restart, and never duplicate in-flight applications (the orchestrator's
+    # own stages all reuse this project's existing idempotent/leased
+    # queue-claim mechanisms regardless of how the process starts).
+    recovered_state = agent_run_state.get_run_state()
+    if recovered_state["desired_state"] == agent_run_state.AgentRunState.RUNNING.value:
+        print("Agent:                 RECOVERING (desired state was RUNNING before restart)")
+        agent_orchestrator.start(test_mode=bool(recovered_state["test_mode"]))
+    else:
+        print("Agent:                 STOPPED")
+
     yield
+    await agent_orchestrator.stop()
     await scheduler.stop()
     await applications_background_scheduler.stop()
     await resume_optimization_scheduler.stop()
@@ -203,12 +221,15 @@ def dashboard(
             "job": j,
             "quality_report": (quality_by_job.get(j.id) or {}).get("report"),
             "resume_status": resume_status_of(j.id),
+            "page_count": (variant_by_job.get(j.id) or {}).get("page_count"),
             "execution": active_execution_by_job.get(j.id),
         }
         for j in jobs
     ]
 
     missing = missing_fields(load_profile())
+    needs_action_queue = pipeline_dashboard.build_needs_action_queue(limit=25)
+    recent_activity = pipeline_dashboard.build_recent_activity(limit=20)
     return templates.TemplateResponse(
         request,
         "dashboard.html",
@@ -220,13 +241,18 @@ def dashboard(
             "missing_profile_fields": missing[:10],
             "missing_profile_count": len(missing),
             "agent": agent_state.get_status(),
+            "orchestrator": agent_orchestrator.status(),
             "agent_config": {
-                "interval_minutes": config.DISCOVERY_INTERVAL_MINUTES,
+                "interval_minutes": config.AGENT_INTERVAL_MINUTES,
                 "max_jobs_per_cycle": config.MAX_JOBS_PER_CYCLE,
                 "min_match_score": config.MIN_MATCH_SCORE,
                 "enabled_providers": config.ENABLED_PROVIDERS,
+                "application_executor_enabled": config.APPLICATION_EXECUTOR_ENABLED,
+                "auto_submit_enabled": config.AUTO_SUBMIT_ENABLED,
             },
             "resume_optimization_enabled": config.RESUME_OPTIMIZATION_ENABLED,
+            "needs_action_queue": needs_action_queue,
+            "recent_activity": recent_activity,
         },
     )
 
@@ -253,6 +279,11 @@ def job_detail(request: Request, job_id: int):
 
     # --- Phase 14: JD analysis / resume optimization diagnostics ------------
     current_variant = resume_optimizer_repo.get_current_variant(job_id)
+    if current_variant is not None and isinstance(current_variant.get("compression_log"), str):
+        try:
+            current_variant["compression_log"] = json.loads(current_variant["compression_log"] or "[]")
+        except json.JSONDecodeError:
+            current_variant["compression_log"] = []
     quality_row = resume_optimizer_repo.get_quality_report_for_job(job_id)
     jd_fingerprint = compute_jd_fingerprint(job.title, job.company, job.description)
     jd_analysis_row = resume_optimizer_repo.get_jd_analysis(job_id, jd_fingerprint)
@@ -1101,12 +1132,41 @@ def agent_status():
         "enabled_providers": config.ENABLED_PROVIDERS,
     }
     status["recent_cycles"] = list_discovery_cycles(limit=10)
+    status["orchestrator"] = agent_orchestrator.status()
     return JSONResponse(status)
 
 
 @app.post("/agent/toggle")
 def agent_toggle(enabled: bool = Form(...)):
+    """Legacy Phase 2 discovery-only toggle -- kept working unchanged for any
+    existing caller/deployment that still uses it. The primary control
+    surface for the one-click agent is /agent/start and /agent/stop below,
+    which additionally coordinate resume optimization and application
+    preparation/execution."""
     agent_state.set_enabled(enabled)
+    return RedirectResponse(url="/", status_code=303)
+
+
+@app.post("/agent/start")
+async def agent_start(test_mode: bool = Form(False)):
+    """START AGENT (CLAUDE.md one-click-agent sections 1, 17, 43): returns
+    quickly -- the actual discovery/resume/application work happens in the
+    background orchestrator loop, never inside this request. No GET request
+    may start the agent (mutating action, POST-only, matching every other
+    mutating route in this project). Declared `async def` (unlike most
+    routes in this file) so AgentOrchestrator.start()'s asyncio.create_task()
+    call runs on the actual event loop thread -- a sync route handler runs
+    in FastAPI's worker threadpool instead, where there is no running loop."""
+    agent_orchestrator.start(test_mode=test_mode)
+    return RedirectResponse(url="/", status_code=303)
+
+
+@app.post("/agent/stop")
+async def agent_stop():
+    """STOP AGENT: finishes/releases current safe work, then stops cleanly
+    -- never an abrupt interruption of a possible in-flight submission (see
+    AgentOrchestrator.stop())."""
+    await agent_orchestrator.stop()
     return RedirectResponse(url="/", status_code=303)
 
 

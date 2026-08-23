@@ -26,13 +26,15 @@ def _confirmed_remote_job(**overrides) -> Job:
 
 
 def test_dashboard_shows_summary_cards(tmp_env, sample_profile):
+    """CLAUDE.md one-click-agent section 23 redefines the dashboard's card
+    row -- these labels supersede the older Phase 14 wording."""
     save_profile(sample_profile)
     client = TestClient(app)
     resp = client.get("/")
     assert resp.status_code == 200
-    assert "Jobs discovered" in resp.text
-    assert "Resume ready" in resp.text
-    assert "High-alignment jobs" in resp.text
+    assert "Jobs found" in resp.text
+    assert "One-page resumes ready" in resp.text
+    assert "Strong matches" in resp.text
 
 
 def test_dashboard_pipeline_table_shows_jd_coverage_column(tmp_env, sample_profile):

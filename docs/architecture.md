@@ -557,3 +557,42 @@ read layer for the unified dashboard -- it queries `jobs`, `resume_variants`,
 writes to none of them.
 
 See `docs/phase14-resume-optimization-dashboard.md` for the full writeup.
+
+## One-click autonomous agent: a thin coordination layer, not a new pipeline
+
+`app/agent/orchestrator.py`, `app/agent/run_state.py`, `app/agent/metrics.py`,
+`app/agent/doctor.py`, and `app/resume_optimizer/one_page.py` are new modules that
+coordinate/measure the existing pipeline rather than adding a new one:
+
+- `AgentOrchestrator` calls unmodified entry points from four existing stages
+  (`app.agent.cycle.run_discovery_cycle`, `app.resume_optimizer.optimizer.optimize_resume`,
+  `app.applications.scheduler.run_cycle`, `app.applications.worker.ApplicationWorker`) on a
+  schedule, and for two of them temporarily raises their gating `app.config` flag for as
+  long as it's running (restored on stop) rather than adding a second, parallel gate. See
+  `docs/autonomous-orchestration.md`.
+- `app.resume_optimizer.one_page` sits between `optimize_resume()`'s content generation and
+  its existing claim-check/ATS-parse validation, enforcing exactly one PDF page via a
+  bounded, removal-only compression ladder (never rewriting a verified claim's wording — see
+  `docs/one-page-resume-contract.md`). `app.resume.pdf_writer`/`docx_writer` gained an
+  optional `compression_level` parameter (default 0, byte-for-byte unchanged from before);
+  `app.resume_optimizer.repo.finalize_variant` gained three new optional columns
+  (`page_count`, `compression_steps_applied`, `compression_log`).
+- `jobs` gained one additive column, `promoted_resume_variant_id` — which resume_optimizer
+  variant (if any) was copied onto `jobs.resume_docx_path`/`resume_pdf_path`/
+  `resume_txt_path`/`resume_jd_fingerprint` to become the artifact the application executor
+  actually uses. `app.applications.executor._verify_resume_artifact`'s path-ownership check
+  was broadened (same `/​<job_id>/​` substring convention the doctor checks already used) to
+  recognize the optimizer's nested variant directory alongside the legacy flat one — a real
+  integration gap this feature's own live testing caught between the Phase 8 executor and the
+  Phase 14 optimizer, which had never previously been exercised together on the automatic
+  path.
+- Two new tables, `agent_run_state` (single-row, durable desired/actual orchestrator state)
+  and `agent_cycle_log` (append-only per-cycle counters) — read/written through the same
+  `app.db.db_session()` every other table in this project uses.
+- `app/pipeline_dashboard.py` gained two new read-only functions
+  (`build_needs_action_queue`, `build_recent_activity`) and several new summary-card
+  counters, following its existing "small, indexed, already-existing queries" convention
+  unchanged.
+
+Nothing in this layer implements a gate, a submission policy, or a leasing/circuit-breaker
+mechanism itself — every one of those still lives exactly where it did before.

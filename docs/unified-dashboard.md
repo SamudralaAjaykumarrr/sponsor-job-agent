@@ -2,18 +2,30 @@
 
 `GET /` (`app/main.py::dashboard`, `app/templates/dashboard.html`)
 
-## What one page shows (section 79)
+## What one page shows
 
-- **Summary cards**: Jobs discovered, Full-time eligible, Sponsor confirmed, High-alignment
-  jobs, Resume ready, Application ready, Needs user action, Ready for final submit, Applied,
-  Failed/attention -- computed by `app/pipeline_dashboard.py::compute_pipeline_summary()`, a
-  handful of small grouped `COUNT(*)` queries (never a per-job loop, never a full-table scan
-  beyond what the pipeline table itself already fetches).
+- **Agent Status hero** (see `docs/one-click-agent.md`): the current orchestrator state
+  (`STOPPED`/`STARTING`/`RUNNING`/`PAUSED`/`STOPPING`/`ERROR`), START AGENT / STOP AGENT / START
+  AGENT (TEST MODE) buttons, last/next cycle, and per-cycle counters. The older Phase 2
+  discovery-only Turn ON/OFF toggle still exists, collapsed under a `<details>` disclosure, for
+  backward compatibility.
+- **Summary cards** (superseding the older Phase 14 wording): Jobs found, Full-time eligible,
+  Confirmed sponsor, Strong matches, One-page resumes ready, Applications prepared, Applying,
+  Needs your action, Applied today, Skipped -- computed by
+  `app/pipeline_dashboard.py::compute_pipeline_summary()`, a handful of small grouped `COUNT(*)`
+  queries (never a per-job loop, never a full-table scan beyond what the pipeline table itself
+  already fetches).
+- **Needs Your Action queue** (`build_needs_action_queue`): centralizes every blocker across
+  applications, browser-assist sessions, `LIKELY_SPONSOR` reviews, and resume one-page overflow
+  into one list -- company, role, reason, current stage, what the agent already completed, the
+  exact action required, and a Continue link to the job detail page.
+- **Live Activity feed** (`build_recent_activity`): a rolling feed of state transitions and
+  application events, company/title only -- never JD text, resume content, or profile fields.
 - **Pipeline table**: Company, Role, Age (freshness), Arrangement, Employment, Sponsorship, JD
-  coverage, Resume (state), ATS/provider, Application status, User action, Priority, Action --
-  one row per job, sourced from already-persisted/cached tables (`resume_quality_reports`,
-  `resume_variants`, `application_executions`), never a live JD/resume recomputation on page
-  load (section 55).
+  coverage, Resume (state + a `1 PAGE ✓`/`REVIEW_REQUIRED` badge), ATS/provider, Application
+  status, User action, Priority, Action -- one row per job, sourced from already-persisted/cached
+  tables (`resume_quality_reports`, `resume_variants`, `application_executions`), never a live
+  JD/resume recomputation on page load (section 55).
 - **Filters**: work arrangement, sponsorship status, freshness, high priority, resume state,
   needs-user-action-only, and a "Include non-full-time (audit)" toggle.
 
@@ -56,6 +68,9 @@ confirmed CONTRACT/etc jobs, for audit/discovery-metrics visibility (section 54)
 | `POST /jobs/{job_id}/resume/optimize` | Generate/regenerate (`force=true` to bypass the cached-READY shortcut) |
 | `GET /jobs/{job_id}/resume/download/{docx\|pdf\|txt}` | Current optimized-variant artifact download |
 | `GET /resume-optimizer/doctor` | Doctor report page |
+| `GET /agent/status` | Legacy discovery-scheduler status plus the full one-click-agent orchestrator state |
+| `POST /agent/start` | Starts the one-click agent (`test_mode: bool = false`) -- see `docs/one-click-agent.md` |
+| `POST /agent/stop` | Stops it cleanly |
 
 None of these expose raw candidate PII beyond what the existing job-detail page already shows
 (name/contact fields the candidate themselves entered); evidence links reference verified

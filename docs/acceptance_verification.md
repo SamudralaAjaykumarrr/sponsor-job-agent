@@ -838,3 +838,125 @@ Working tree only -- no `git add`, no commit. `data/app.db`, `candidate_data/`, 
 `data/known_h1b_sponsors.json` and the registry seed CSVs are pre-existing tracked fixture files,
 not private data. No new private-data path was introduced by this phase (optimized resumes write
 under the already-ignored `output/<job_id>/optimized/<variant_id>/`).
+
+## One-Click Autonomous Agent (verified 2026-08-22)
+
+### Default test suite
+
+`pytest` (no marker filter): **1160 passed**, 101 deselected (postgres/browser-marked) -- 1135
+Phase 1-15 baseline (after two pre-existing failures on this branch, described below, were
+fixed) + 25 new tests across `tests/test_agent_orchestrator.py` (8),
+`tests/test_one_page_resume.py` (7), `tests/test_agent_doctor.py` (4),
+`tests/test_agent_start_stop_routes.py` (6). One pre-existing Phase 14 test
+(`test_dashboard_shows_summary_cards`) was updated, not broken -- its label assertions matched
+the OLD dashboard card wording this feature deliberately supersedes (CLAUDE.md one-click-agent
+section 23 redefines the card row).
+
+### Two pre-existing failures found and fixed (not caused by this feature, but blocking a clean
+baseline)
+
+Both existed on `feat/one-click-autonomous-agent` at commit `65dbdc2`, before any change in this
+feature -- verified via `git stash`:
+
+1. `tests/test_secret_scan.py::test_current_repo_tracked_files_are_clean` and
+   `tests/test_release_acceptance.py::test_lightweight_checks_pass_on_clean_repo` both failed
+   because `tests/test_secret_scan.py` and `tests/test_config_doctor.py` deliberately contain
+   realistic-but-fake secret-shaped fixture strings (AWS key format, private key block, fake
+   connection strings with joke passwords like `hunter2`) to exercise the scanner's/redactor's
+   own detection logic -- but neither file was in `scripts/secret_scan.py`'s `_SELF_EXEMPT` set,
+   so the repo's own self-scan flagged its own test fixtures as findings. Fixed by adding both
+   files to `_SELF_EXEMPT`, mirroring the existing exemption rationale already documented there
+   for `scripts/secret_scan.py` itself.
+
+### A real integration bug caught live
+
+`app.applications.executor._verify_resume_artifact()`'s path-ownership check required a resume
+artifact's *immediate parent directory* to be named exactly the job's id (`path.parent.name !=
+str(job.id)`) -- true for the legacy flat `output/<job_id>/resume.pdf` layout, but never true for
+the resume_optimizer's nested `output/<job_id>/optimized/<variant_id>/resume.pdf` layout. This
+had never been exercised together before, because nothing previously copied an optimizer variant
+onto `jobs.resume_pdf_path`. The first full TEST MODE end-to-end run
+(`test_full_test_mode_cycle_reaches_applied`) caught it immediately (execution landed on
+`VALIDATION_REQUIRED` with `"resume artifact path ... does not correspond to job_id"`). Fixed by
+broadening the check to the same `/​<job_id>/​` substring convention
+`app.applications.doctor._check_wrong_resume_job_mapping` and
+`app.resume_optimizer.doctor._check_resume_linked_to_wrong_job` already used for this exact
+question -- all three "does this resume belong to this job" checks in the codebase now agree.
+
+A second, narrower bug was caught in the SAME test during development: FastAPI executes a plain
+`def` (non-`async`) route handler in a worker threadpool, where `asyncio.get_running_loop()`
+raises `RuntimeError: no running event loop` -- so `AgentOrchestrator.start()`'s
+`asyncio.create_task()` call would have crashed on every real `POST /agent/start` request (it
+only worked when called directly from an already-async test, which is why the orchestrator's own
+unit tests didn't initially catch it). Fixed by declaring `/agent/start` `async def`, matching
+`/agent/stop`, which was already correctly async. Caught by
+`tests/test_agent_start_stop_routes.py::test_start_and_stop_via_dashboard_routes`, which drives
+the route through `TestClient` (the real ASGI stack) rather than calling
+`AgentOrchestrator.start()` directly.
+
+### Mandatory TEST MODE end-to-end acceptance (CLAUDE.md one-click-agent section 35)
+
+Verified BOTH via `tests/test_agent_orchestrator.py::test_full_test_mode_cycle_reaches_applied`
+(fast, deterministic, calls the orchestrator's real synchronous cycle body directly) AND via a
+live manual run against a real `uvicorn` server (see below) -- one click, no manual intermediate
+button clicks, reaching: fixture discovered -> `FULL_TIME` confirmed -> `CONFIRMED_SPONSOR` ->
+JD analyzed -> unique one-page resume produced (`page_count == 1`) -> claim check PASS -> ATS
+parse PASS -> application prepared -> `mock_ats` submitted -> confirmation stored -> `APPLIED` ->
+`promoted_resume_variant_id` set (the one-page resume is the artifact actually used) -> agent
+continues (no crash, next cycle scheduled).
+
+### Manual live verification against a real server
+
+Ran `uvicorn` (via a small launcher that redirects `app.config`'s data/output/candidate paths to
+an isolated scratch directory -- never the real project's `data/app.db`/`candidate_data/`) with a
+synthetic candidate profile. `GET /` (200, new Agent Status hero + START AGENT / START AGENT
+(TEST MODE) buttons render). `POST /agent/start?test_mode=true` (303) -> polled
+`GET /agent/status`: `orchestrator.actual_state` reached `RUNNING`, first cycle completed in
+~0.24s with `resumes_generated=1, one_page_success=1, applications_prepared=1,
+applications_submitted=1`. `GET /` showed the fixture job `APPLIED` with a `1 PAGE ✓` badge.
+`GET /jobs/1` showed "promoted as this job's primary resume". `GET /metrics` showed
+`sponsor_job_agent_agent_start_total 1`, `..._applications_submitted_total 1`,
+`..._one_page_resume_success_total 1`, etc. `POST /agent/stop` (303) -> `actual_state` returned to
+`STOPPED`. `python -m app.doctor` (including the new `app.agent.doctor` subsystem) against that
+same live scratch database: **0 serious issues**.
+
+### One-page resume acceptance (sections 36-38)
+
+`tests/test_one_page_resume.py` covers: a short resume needing zero compression; a moderately
+verbose (realistic) resume compressing to exactly one page with the compression log recorded; an
+intentionally pathological resume (8 employers x 14 verbose bullets each) honestly reaching
+`REVIEW_REQUIRED` rather than a fabricated unreadable render; required-evidence bullets
+(JD-relevance-overlapping) surviving compression before zero-relevance optional bullets are
+removed; the font-size floor never being violated at the maximum compression level; DOCX/PDF/TXT
+all reflecting the identical final (possibly compressed) content; and `optimize_resume()`'s own
+end-to-end wiring recording `page_count == 1` on a real `READY` variant.
+
+Truthfulness acceptance (JD asks unsupported Go -> stays missing; JD asks Java OR Python ->
+verified Python satisfies the alternative, no fake Java; verified years unchanged) is unchanged
+and already covered by the existing Phase 14 truthfulness suite above -- this feature adds no new
+claim-generation logic, only removal-based compression on top of already-truthful content (see
+`docs/one-page-resume-contract.md`'s "Truthfulness ordering" section for why compression can never
+introduce a new unsupported claim).
+
+### Global doctor / agent doctor
+
+New checks added and verified to fire correctly: `agent_running_but_loop_absent` (fires when
+`actual_state=RUNNING` but the orchestrator task is dead); `agent_stopped_but_worker_leaking`;
+`auto_prepare_without_safety_gates` (static source-inspection assertion); plus two
+`app.resume_optimizer.doctor` checks (`ready_variant_not_one_page`,
+`application_linked_to_non_one_page_resume`). All confirmed clean (no false positives) against
+both the pytest fixtures and the live manual server run above.
+
+### `git diff --stat` / privacy for this feature
+
+Working tree only -- no `git add`, no commit (per this feature's explicit instructions). New
+tables (`agent_run_state`, `agent_cycle_log`) and columns
+(`resume_variants.page_count`/`compression_steps_applied`/`compression_log`,
+`jobs.promoted_resume_variant_id`) store no candidate PII -- state machine labels, counters, and a
+compression-step description list (bullet/skill *removal* descriptions, not bullet text itself,
+except where a bullet's own already-verified text is quoted back in the compression log for
+operator visibility, matching this project's existing "job-posting/resume-diagnostic metadata is
+not the kind of PII this project's privacy rules are about" precedent -- e.g.
+`job_identity_verifications` already stores title/company). The live manual verification server
+above used exclusively synthetic fixture data in an isolated scratch directory outside the repo,
+never the real project's `data/app.db` or `candidate_data/profile.json`.
