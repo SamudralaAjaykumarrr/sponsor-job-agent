@@ -35,7 +35,13 @@ def test_scenario_a_ashby_job_flows_through_full_pipeline(tmp_env, sample_profil
                 "Build REST APIs in Python with FastAPI and PostgreSQL, deployed via "
                 "Docker with CI/CD. Fully remote. Visa sponsorship available. 3+ years experience."
             ),
-            "employmentType": "FullTime", "publishedAt": "2026-08-21T00:00:00Z",
+            "employmentType": "FullTime",
+            # Relative to "now" (not a hardcoded date) so this test never
+            # flakes as real wall-clock time passes and a fixed past date
+            # ages past FRESHNESS_MAX_DAYS -- same pre-existing flakiness
+            # class already fixed this way in scenario C below (CLAUDE.md
+            # section 51).
+            "publishedAt": (datetime.now(timezone.utc) - timedelta(hours=6)).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "applyUrl": "https://jobs.ashbyhq.com/ashby-acme/job-1/apply",
             "jobUrl": "https://jobs.ashbyhq.com/ashby-acme/job-1",
         }]})
@@ -82,7 +88,12 @@ def test_scenario_b_workable_job_flows_through_full_pipeline(tmp_env, sample_pro
             return httpx.Response(200, json={"jobs": [{
                 "title": "Python Developer", "shortcode": "PY1", "employment_type": "full",
                 "telecommute": True, "city": "Remote", "country": "United States",
-                "published_on": "2026-08-20",
+                # Relative to "now" (not a hardcoded date) so this test never
+                # flakes as real wall-clock time passes and a fixed past date
+                # ages past FRESHNESS_MAX_DAYS -- same pre-existing flakiness
+                # class already fixed this way in scenario C below (CLAUDE.md
+                # section 51).
+                "published_on": (datetime.now(timezone.utc) - timedelta(hours=6)).strftime("%Y-%m-%d"),
                 "url": "https://apply.workable.com/workable-acme/j/PY1/",
             }]})
         return httpx.Response(200, json={"jobs": []})

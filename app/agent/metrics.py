@@ -14,10 +14,13 @@ from app.agent import run_state
 def collect() -> dict:
     run = run_state.get_run_state()
     totals = run_state.totals_since(hours=None)
+    heartbeat_age = run_state.heartbeat_age_seconds()
     return {
         "agent_start_total": run["start_count"],
         "agent_stop_total": run["stop_count"],
         "agent_actual_state": run["actual_state"],
+        "agent_cycle_number": run.get("cycle_number") or 0,
+        "agent_heartbeat_age_seconds": heartbeat_age if heartbeat_age is not None else -1,
         "agent_cycles_total": totals["cycles"],
         "agent_jobs_processed_total": totals["jobs_processed"],
         "agent_resumes_generated_total": totals["resumes_generated"],

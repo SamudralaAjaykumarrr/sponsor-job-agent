@@ -80,6 +80,115 @@ def _check_stopped_but_workers_leaking(conn, report: DoctorReport) -> None:
                                     f"{r['last_heartbeat_at']} with status {r['status']} -- expected idle/stopped."))
 
 
+_STARTUP_GRACE_SECONDS = 30
+
+
+def _check_running_but_no_cycle_ever(report: DoctorReport) -> None:
+    """CLAUDE.md production-v2 dashboard defect 1: RUNNING with
+    last_cycle_started_at still null more than _STARTUP_GRACE_SECONDS after
+    started_at is exactly the reported real defect ('Agent Status = RUNNING
+    but Last cycle = never') -- a brief STARTING window is expected and
+    excluded, a genuinely stuck-before-first-cycle loop is not."""
+    from app.agent.run_state import get_run_state
+
+    run = get_run_state()
+    if run["actual_state"] != "RUNNING" or not run.get("started_at"):
+        return
+    if run.get("last_cycle_started_at"):
+        return
+    try:
+        started = datetime.fromisoformat(run["started_at"])
+    except ValueError:
+        return
+    if started.tzinfo is None:
+        started = started.replace(tzinfo=timezone.utc)
+    age = (datetime.now(timezone.utc) - started).total_seconds()
+    if age > _STARTUP_GRACE_SECONDS:
+        report.issues.append(Issue(
+            "serious", "agent_running_but_no_cycle_ever",
+            f"agent has been RUNNING for {age:.0f}s but last_cycle_started_at is still null -- "
+            "the first cycle should begin within seconds of START.",
+        ))
+
+
+def _check_stale_heartbeat(report: DoctorReport) -> None:
+    """CLAUDE.md production-v2 section 5: RUNNING + stale/missing heartbeat
+    must be detectable -- surfaced as a warning here (dashboard also shows
+    it), never auto-restarted (this project cannot safely force-cancel a
+    hung synchronous stage mid-network-call)."""
+    from app.agent.run_state import get_run_state, heartbeat_age_seconds
+
+    run = get_run_state()
+    if run["actual_state"] != "RUNNING":
+        return
+    age = heartbeat_age_seconds()
+    if age is not None and age > config.AGENT_HEARTBEAT_STALE_SECONDS:
+        report.issues.append(Issue(
+            "warning", "agent_heartbeat_stale",
+            f"agent is RUNNING but heartbeat_at is {age:.0f}s old (threshold "
+            f"{config.AGENT_HEARTBEAT_STALE_SECONDS}s) -- possible stuck cycle stage.",
+        ))
+
+
+def _check_needs_action_count_matches_queue(report: DoctorReport) -> None:
+    """CLAUDE.md production-v2 dashboard defect 2: the summary card and the
+    'Needs Your Action' list must never disagree -- both now derive from
+    app.pipeline_dashboard's single _NEEDS_ACTION_QUERIES source, so this
+    check is a live regression guard, not a fix in itself."""
+    from app.pipeline_dashboard import build_needs_action_queue, count_needs_action
+
+    total = count_needs_action()
+    queue_len = len(build_needs_action_queue(limit=max(total, 25)))
+    if total != queue_len:
+        report.issues.append(Issue(
+            "serious", "needs_action_count_mismatch",
+            f"count_needs_action()={total} but build_needs_action_queue() returned {queue_len} items "
+            "for the same (raised) limit -- these must always agree.",
+        ))
+
+
+def _check_test_fixture_not_in_real_dashboard(conn, report: DoctorReport) -> None:
+    """CLAUDE.md production-v2 dashboard defect 6: a job marked
+    is_test_fixture must never appear in a default (non-opt-in) real-mode
+    query result -- this checks the actual list_jobs() default behavior
+    rather than merely inspecting the flag's existence."""
+    from app.jobs_repo import list_jobs
+
+    test_rows = conn.execute("SELECT COUNT(*) AS c FROM jobs WHERE is_test_fixture = 1").fetchone()["c"]
+    if test_rows == 0:
+        return
+    default_jobs = list_jobs({})
+    if any(j.is_test_fixture for j in default_jobs):
+        report.issues.append(Issue(
+            "serious", "test_fixture_in_real_dashboard",
+            "list_jobs({}) (the default, real-mode query) returned at least one is_test_fixture=1 row.",
+        ))
+
+
+def _check_legacy_scheduler_and_orchestrator_both_running(report: DoctorReport) -> None:
+    """CLAUDE.md production-v2 'CURRENT REAL DASHBOARD DEFECTS' item 3: the
+    one-click orchestrator and the legacy discovery-only scheduler
+    (app.agent.state/app.agent.scheduler) are deliberately decoupled
+    (orchestrator no longer touches agent_state.set_enabled) so starting one
+    never silently starts the other -- but a user can still explicitly turn
+    the legacy toggle ON via /agent/toggle while the orchestrator is also
+    RUNNING, which means two independent run_discovery_cycle() loops running
+    concurrently. Not unsafe (discovery is dedup-safe), but wasteful and
+    exactly the 'two competing agent controls' confusion this build fixes --
+    flagged so it's visible, never silently allowed to look normal."""
+    from app.agent import state as agent_state
+    from app.agent.run_state import get_run_state
+
+    run = get_run_state()
+    if run["actual_state"] == "RUNNING" and agent_state.is_enabled():
+        report.issues.append(Issue(
+            "warning", "duplicate_discovery_loops",
+            "Both the one-click agent (RUNNING) and the legacy discovery-only scheduler toggle "
+            "are ON at the same time -- two independent discovery cycles are running. Turn the "
+            "legacy toggle OFF; the one-click agent already covers discovery.",
+        ))
+
+
 def _check_auto_prepare_without_safety_gates(report: DoctorReport) -> None:
     """Static assertion (source inspection), mirroring app.applications.
     doctor's own '_check_no_browser_auto_submit_capability' pattern: the
@@ -103,7 +212,12 @@ def run_doctor() -> DoctorReport:
 
     report = DoctorReport()
     _check_running_but_loop_absent(report)
+    _check_running_but_no_cycle_ever(report)
+    _check_stale_heartbeat(report)
+    _check_needs_action_count_matches_queue(report)
+    _check_legacy_scheduler_and_orchestrator_both_running(report)
     _check_auto_prepare_without_safety_gates(report)
     with db_session() as conn:
         _check_stopped_but_workers_leaking(conn, report)
+        _check_test_fixture_not_in_real_dashboard(conn, report)
     return report

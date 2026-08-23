@@ -16,6 +16,7 @@ other piece of persisted state in this project -- never an in-process-only
 flag for anything that must survive a restart."""
 
 import json
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -47,7 +48,9 @@ def get_run_state() -> dict:
             return {
                 "desired_state": AgentRunState.STOPPED.value, "actual_state": AgentRunState.STOPPED.value,
                 "test_mode": False, "last_error": "", "started_at": None, "stopped_at": None,
-                "start_count": 0, "stop_count": 0,
+                "start_count": 0, "stop_count": 0, "run_id": "", "cycle_number": 0,
+                "last_cycle_started_at": None, "last_cycle_finished_at": None, "next_cycle_at": None,
+                "heartbeat_at": None, "current_stage": "", "current_job_label": "",
             }
         d = dict(row)
         d["test_mode"] = bool(d["test_mode"])
@@ -188,3 +191,118 @@ def totals_since(hours: Optional[float] = None) -> dict:
     with db_session() as conn:
         row = conn.execute(query, params).fetchone()
         return dict(row)
+
+
+# --- in-progress cycle tracking (CLAUDE.md production-v2 dashboard defect 1:
+# "Agent Status = RUNNING but Last cycle = never, Next cycle = pending" must
+# be impossible except for a brief STARTING window) --------------------------
+
+def new_run_id() -> str:
+    return uuid.uuid4().hex[:12]
+
+
+def begin_run(run_id: str) -> None:
+    """Called once when the orchestrator's loop actually starts (not merely
+    when the user clicks START -- see AgentRunState.STARTING vs RUNNING)."""
+    with db_session() as conn:
+        conn.execute(
+            "UPDATE agent_run_state SET run_id = ?, cycle_number = 0, next_cycle_at = NULL, "
+            "heartbeat_at = ?, current_stage = 'starting', current_job_label = '', updated_at = ? WHERE id = 1",
+            (run_id, utcnow(), utcnow()),
+        )
+
+
+def mark_cycle_start(started_at: str) -> int:
+    """Records that a cycle is now IN PROGRESS -- distinct from 'never run'.
+    Clears next_cycle_at (there is no 'next' while one is actively running)
+    and returns the new cycle_number so callers/logs can reference it."""
+    with db_session() as conn:
+        conn.execute(
+            "UPDATE agent_run_state SET cycle_number = cycle_number + 1, last_cycle_started_at = ?, "
+            "heartbeat_at = ?, current_stage = 'discovering', current_job_label = '', "
+            "next_cycle_at = NULL, updated_at = ? WHERE id = 1",
+            (started_at, started_at, utcnow()),
+        )
+        row = conn.execute("SELECT cycle_number FROM agent_run_state WHERE id = 1").fetchone()
+        return row["cycle_number"]
+
+
+def heartbeat(*, stage: str = "", job_label: str = "") -> None:
+    """Cheap, frequent liveness signal so the dashboard/watchdog can tell
+    'RUNNING and genuinely working' from 'RUNNING but stuck' (see CLAUDE.md
+    production-v2 section 5/39). Called once per pipeline stage per job at
+    minimum -- never only once per whole cycle."""
+    now = utcnow()
+    with db_session() as conn:
+        if stage:
+            conn.execute(
+                "UPDATE agent_run_state SET heartbeat_at = ?, current_stage = ?, current_job_label = ?, "
+                "updated_at = ? WHERE id = 1",
+                (now, stage, job_label, now),
+            )
+        else:
+            conn.execute(
+                "UPDATE agent_run_state SET heartbeat_at = ?, current_job_label = ?, updated_at = ? WHERE id = 1",
+                (now, job_label, now),
+            )
+
+
+def mark_cycle_finish(finished_at: str, next_cycle_at: Optional[str]) -> None:
+    with db_session() as conn:
+        conn.execute(
+            "UPDATE agent_run_state SET last_cycle_finished_at = ?, next_cycle_at = ?, heartbeat_at = ?, "
+            "current_stage = 'idle', current_job_label = '', updated_at = ? WHERE id = 1",
+            (finished_at, next_cycle_at, finished_at, utcnow()),
+        )
+
+
+def heartbeat_age_seconds() -> Optional[float]:
+    """None when the agent has never produced a heartbeat (e.g. STOPPED and
+    never started this process lifetime) -- never 0/negative-as-unknown."""
+    state = get_run_state()
+    hb = state.get("heartbeat_at")
+    if not hb:
+        return None
+    try:
+        hb_dt = datetime.fromisoformat(hb)
+    except ValueError:
+        return None
+    if hb_dt.tzinfo is None:
+        hb_dt = hb_dt.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - hb_dt).total_seconds()
+
+
+# --- agent-level activity log (CLAUDE.md production-v2 dashboard defect 7 /
+# one-click-agent section 38): lifecycle/cycle events that have no natural
+# job to attach to (Agent started, Discovery cycle started, Found N jobs,
+# Agent stopped, Error/recovered, ...) -- distinct from
+# app.pipeline_dashboard.build_recent_activity's job-level state/audit rows,
+# merged with them for display. -------------------------------------------
+
+_ACTIVITY_LOG_MAX_ROWS = 500
+
+
+def log_activity(event: str, detail: str = "") -> None:
+    """Best-effort: a logging failure must never interrupt the orchestrator
+    loop it's called from."""
+    try:
+        with db_session() as conn:
+            conn.execute(
+                "INSERT INTO agent_activity_log (ts, event, detail) VALUES (?, ?, ?)",
+                (utcnow(), event, detail),
+            )
+            conn.execute(
+                "DELETE FROM agent_activity_log WHERE id NOT IN "
+                "(SELECT id FROM agent_activity_log ORDER BY id DESC LIMIT ?)",
+                (_ACTIVITY_LOG_MAX_ROWS,),
+            )
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def list_recent_activity(limit: int = 20) -> list[dict]:
+    with db_session() as conn:
+        rows = conn.execute(
+            "SELECT ts, event, detail FROM agent_activity_log ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()
+        return [dict(r) for r in rows]

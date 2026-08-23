@@ -1279,6 +1279,66 @@ def _m047_jobs_promoted_resume_columns(conn, backend: str) -> None:
     ])
 
 
+def _m048_agent_run_state_progress_columns(conn, backend: str) -> None:
+    """Fixes the real defect 'Agent Status = RUNNING but Last cycle = never,
+    Next cycle = pending': the orchestrator's own loop (app/agent/orchestrator.py)
+    previously had nowhere durable to record that a cycle was in progress or
+    when the next one is due -- app.agent.state's next_cycle_at is the OLDER,
+    separate legacy scheduler's field and was never written by the new
+    orchestrator. These columns let the orchestrator own its own progress
+    state directly on agent_run_state, survives a restart same as every other
+    field on this table, and lets the dashboard show real in-progress status
+    instead of a misleading blank."""
+    add_columns_if_missing(conn, backend, "agent_run_state", [
+        ("run_id", "TEXT DEFAULT ''"),
+        ("cycle_number", "INTEGER NOT NULL DEFAULT 0"),
+        ("last_cycle_started_at", "TEXT"),
+        ("last_cycle_finished_at", "TEXT"),
+        ("next_cycle_at", "TEXT"),
+        ("heartbeat_at", "TEXT"),
+        ("current_stage", "TEXT DEFAULT ''"),
+        ("current_job_label", "TEXT DEFAULT ''"),
+    ])
+
+
+def _m049_jobs_test_fixture_column(conn, backend: str) -> None:
+    """CLAUDE.md one-click-agent section 68/CLAUDE.md 'CURRENT REAL DASHBOARD
+    DEFECTS' item 6: synthetic/test rows (TEST MODE's mock_ats fixture, any
+    legacy Acme/manually-ingested demo rows) must never masquerade as real
+    production opportunities on the default dashboard. Rather than infer this
+    from provider name string-matching scattered across call sites, a single
+    explicit column is set once at ingest time (app.pipeline) and read
+    everywhere the dashboard/summary/needs-action queries filter real-mode
+    data -- see app.pipeline_dashboard.REAL_MODE_JOB_FILTER."""
+    add_columns_if_missing(conn, backend, "jobs", [
+        ("is_test_fixture", "INTEGER NOT NULL DEFAULT 0"),
+    ])
+    conn.execute("UPDATE jobs SET is_test_fixture = 1 WHERE provider = 'mock_ats'")
+
+
+def _m050_agent_activity_log_table(conn, backend: str) -> None:
+    """CLAUDE.md production-v2 dashboard defect 7 / one-click-agent section 38:
+    the orchestrator's own lifecycle/cycle events ('Agent started', 'Discovery
+    cycle started', 'Found N jobs', 'Agent stopped', 'Error / recovered', ...)
+    previously had nowhere to persist -- build_recent_activity() only ever
+    read job-level application_state_history/application_audit_log rows, so
+    the Live Activity feed looked stale while the agent was genuinely running
+    a cycle with nothing yet to report at the job level. Append-only,
+    company/title-free (these are agent-level, not job-level, events) --
+    trimmed to the most recent 500 rows on insert so a long-running local
+    single-user process never grows this table unbounded."""
+    id_column = "id BIGSERIAL PRIMARY KEY" if backend == "postgres" else "id INTEGER PRIMARY KEY AUTOINCREMENT"
+    conn.execute(
+        f"""CREATE TABLE IF NOT EXISTS agent_activity_log (
+            {id_column},
+            ts TEXT NOT NULL,
+            event TEXT NOT NULL,
+            detail TEXT DEFAULT ''
+        )"""
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_agent_activity_log_ts ON agent_activity_log (ts)")
+
+
 MIGRATIONS: list[tuple[int, str, Callable]] = [
     (2, "phase6_worker_identity_columns", _m002_worker_identity_columns),
     (3, "phase6_schema_drift_table", _m003_schema_drift_table),
@@ -1326,6 +1386,9 @@ MIGRATIONS: list[tuple[int, str, Callable]] = [
     (45, "agent_cycle_log_table", _m045_agent_cycle_log_table),
     (46, "resume_variants_one_page_columns", _m046_resume_variants_one_page_columns),
     (47, "jobs_promoted_resume_columns", _m047_jobs_promoted_resume_columns),
+    (48, "agent_run_state_progress_columns", _m048_agent_run_state_progress_columns),
+    (49, "jobs_test_fixture_column", _m049_jobs_test_fixture_column),
+    (50, "agent_activity_log_table", _m050_agent_activity_log_table),
 ]
 
 # Version 1 is the implicit Phase 1-5 baseline schema, applied by

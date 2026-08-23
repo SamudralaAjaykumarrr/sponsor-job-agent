@@ -194,6 +194,14 @@
   </div>
 
   <div class="card">
+    <h3>Employment type</h3>
+    <p>Classified: <strong>{{ eligibility.employment_type.value }}</strong>
+       {% if eligibility.employment_type == 'UNKNOWN' %}<span style="color:#856404;">(no explicit positive/negative signal found -- never auto-progressed as full-time)</span>{% endif %}</p>
+    <p style="font-size:0.8rem;color:#666;">Raw provider field: <code>{{ job.employment_type or '(none reported by provider)' }}</code>
+       · Title/description are also scanned for explicit language (never inferred from silence).</p>
+  </div>
+
+  <div class="card">
     <h3>Application execution</h3>
     <p>Executor: <strong>{{ 'ON' if executor_enabled else 'OFF' }}</strong> ·
        Auto submit: <strong>{{ 'ON' if auto_submit_enabled else 'OFF' }}</strong> ·

@@ -165,6 +165,7 @@ def dashboard(
     resume_status: str = "",
     needs_action_only: bool = False,
     full_time_only: bool = True,
+    include_test_data: bool = False,
 ):
     """CLAUDE.md Phase 14 sections 44-55, 79: the unified one-page dashboard
     -- summary cards, the pipeline table (with JD-coverage/resume/
@@ -185,9 +186,17 @@ def dashboard(
         "needs_action_only": needs_action_only or None,
         "full_time_only": full_time_only or None,
     }
+    # CLAUDE.md production-v2 dashboard defect 6: synthetic/test rows (TEST
+    # MODE's mock_ats fixture) are excluded from the real-mode dashboard by
+    # default -- include_test_data=true is the explicit, opt-in audit view
+    # for the TABLE only; summary cards/metrics always stay real-only
+    # (CLAUDE.md section 68: test counters must never contaminate production
+    # statistics), regardless of this toggle.
     all_jobs = list_jobs({})
     summary = pipeline_dashboard.compute_pipeline_summary(all_jobs)
 
+    if include_test_data:
+        filters["include_test_fixtures"] = True
     jobs = list_jobs(filters)
     if full_time_only:
         jobs = [j for j in jobs if pipeline_dashboard.is_actionable(j)]
@@ -216,6 +225,8 @@ def dashboard(
     if total_matching > config.DASHBOARD_MAX_TABLE_ROWS:
         jobs = jobs[: config.DASHBOARD_MAX_TABLE_ROWS]
 
+    from app.matching.employment_type import classify_employment_type
+
     pipeline_rows = [
         {
             "job": j,
@@ -223,6 +234,7 @@ def dashboard(
             "resume_status": resume_status_of(j.id),
             "page_count": (variant_by_job.get(j.id) or {}).get("page_count"),
             "execution": active_execution_by_job.get(j.id),
+            "employment_classified": classify_employment_type(j.employment_type, j.title, j.description).value,
         }
         for j in jobs
     ]
@@ -249,6 +261,7 @@ def dashboard(
                 "enabled_providers": config.ENABLED_PROVIDERS,
                 "application_executor_enabled": config.APPLICATION_EXECUTOR_ENABLED,
                 "auto_submit_enabled": config.AUTO_SUBMIT_ENABLED,
+                "sponsorship_policy": config.SPONSORSHIP_POLICY,
             },
             "resume_optimization_enabled": config.RESUME_OPTIMIZATION_ENABLED,
             "needs_action_queue": needs_action_queue,

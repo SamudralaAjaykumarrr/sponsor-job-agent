@@ -77,7 +77,7 @@
   <div class="agent-hero">
     <div class="top-row">
       <span>Agent Status: <span class="state-pill state-{{ orchestrator.actual_state }}">{{ orchestrator.actual_state }}</span>
-        {% if orchestrator.test_mode %}<span class="state-pill" style="background:#e2d9f3;color:#4a2e8a;">TEST MODE</span>{% endif %}
+        {% if orchestrator.test_mode %}<span class="state-pill" style="background:#e2d9f3;color:#4a2e8a;">TEST MODE</span> <a href="/?include_test_data=true" style="font-size:0.75rem;">view test job &rarr;</a>{% endif %}
       </span>
       {% if orchestrator.actual_state in ('RUNNING', 'STARTING', 'STOPPING') %}
       <form method="post" action="/agent/stop"><button class="stop" type="submit">STOP AGENT</button></form>
@@ -91,11 +91,25 @@
       <span class="meta">Interval: {{ agent_config.interval_minutes }}m ·
         Providers: {{ agent_config.enabled_providers | join(', ') }} ·
         Application executor: {{ 'ON' if agent_config.application_executor_enabled or orchestrator.actual_state == 'RUNNING' else 'OFF' }} ·
-        Auto-submit: {{ 'ON' if agent_config.auto_submit_enabled else 'OFF (safe default)' }}</span>
+        Auto-submit: {{ 'ON' if agent_config.auto_submit_enabled else 'OFF (safe default)' }} ·
+        Sponsorship policy: {{ agent_config.sponsorship_policy }}</span>
     </div>
+    {% if orchestrator.actual_state == 'RUNNING' %}
+    <div class="meta" style="font-weight:600;color:#155724;">
+      {% if orchestrator.cycle_in_progress %}
+        Current: {{ {'discovering': 'Discovering fresh jobs', 'generating_resumes': 'Generating one-page resumes', 'preparing_applications': 'Preparing applications', 'executing_applications': 'Filling/submitting applications', 'starting': 'Starting up'}.get(orchestrator.current_stage, orchestrator.current_stage or 'Working') }}
+        {% if orchestrator.current_job_label %} — {{ orchestrator.current_job_label }}{% endif %}
+        (cycle #{{ orchestrator.cycle_number }})
+      {% else %}
+        Waiting until next cycle.
+      {% endif %}
+      {% if orchestrator.heartbeat_stale %}<span style="color:#a94442;"> · ⚠ heartbeat stale ({{ "%.0f"|format(orchestrator.heartbeat_age_seconds) }}s) -- possible stuck cycle, see doctor</span>{% endif %}
+    </div>
+    {% endif %}
     <div class="meta">
-      Last cycle: {{ orchestrator.last_cycle.started_at if orchestrator.last_cycle else 'never' }} ·
-      Next cycle: {{ orchestrator.next_cycle_at or 'pending' }}
+      Last cycle started: {{ orchestrator.last_cycle_started_at or 'never (first cycle begins within seconds of START)' }} ·
+      Last cycle finished: {{ orchestrator.last_cycle_finished_at or ('in progress' if orchestrator.cycle_in_progress else 'never') }} ·
+      Next cycle: {{ orchestrator.next_cycle_at or ('in progress' if orchestrator.cycle_in_progress else 'pending') }}
       {% if orchestrator.last_error %} · <span style="color:#a94442;">Last error: {{ orchestrator.last_error }}</span>{% endif %}
     </div>
     {% if orchestrator.last_cycle %}
@@ -110,14 +124,17 @@
     </div>
     {% endif %}
     <details style="margin-top:0.4rem;">
-      <summary style="font-size:0.8rem;color:#666;">Legacy discovery-only toggle (autonomous agent scheduler)</summary>
+      <summary style="font-size:0.8rem;color:#666;">Advanced / legacy diagnostics: standalone discovery-only scheduler (not the primary control -- use START/STOP AGENT above)</summary>
       <div class="agent-bar" style="margin-top:0.5rem;">
         <span><span class="dot {{ 'dot-on' if agent.enabled else 'dot-off' }}"></span>
-          Autonomous agent: <strong>{{ 'ON' if agent.enabled else 'OFF' }}</strong>{{ ' (running)' if agent.running else '' }}</span>
+          Legacy discovery-only scheduler: <strong>{{ 'ON' if agent.enabled else 'OFF' }}</strong>{{ ' (running)' if agent.running else '' }}</span>
         <form method="post" action="/agent/toggle">
           <input type="hidden" name="enabled" value="{{ 'false' if agent.enabled else 'true' }}">
           <button type="submit">{{ 'Turn OFF' if agent.enabled else 'Turn ON' }}</button>
         </form>
+        {% if agent.enabled and orchestrator.actual_state == 'RUNNING' %}
+        <p style="color:#a94442;font-size:0.75rem;">⚠ Both this legacy toggle and the one-click agent are ON -- two independent discovery cycles are running. Turn this OFF; the one-click agent above already covers discovery.</p>
+        {% endif %}
       </div>
     </details>
   </div>
@@ -137,7 +154,10 @@
 
   {% if needs_action_queue %}
   <div class="card" style="margin-bottom:1rem;">
-    <h3>Needs Your Action: {{ needs_action_queue | length }}</h3>
+    <h3>Needs Your Action: {{ summary.needs_user_action }}</h3>
+    {% if summary.needs_user_action > needs_action_queue | length %}
+    <p style="font-size:0.75rem;color:#666;">Showing top {{ needs_action_queue | length }} of {{ summary.needs_user_action }}.</p>
+    {% endif %}
     {% for item in needs_action_queue %}
     <div class="queue-item">
       <span class="co">{{ item.company }}</span> — {{ item.role }}
@@ -153,7 +173,7 @@
   <div class="card" style="margin-bottom:1rem;">
     <h3>Live Activity</h3>
     {% for a in recent_activity %}
-    <div class="activity-item"><span class="ts">{{ a.ts }}</span>{{ a.company }} — {{ a.role }}: {{ a.text }}</div>
+    <div class="activity-item"><span class="ts">{{ a.ts }}</span>{% if a.company %}{{ a.company }} — {{ a.role }}: {% endif %}{{ a.text }}</div>
     {% endfor %}
   </div>
   {% endif %}
@@ -242,11 +262,12 @@
       {% for row in pipeline_rows %}
       {% set job = row.job %}
       <tr>
-        <td>{{ job.company }}</td>
+        <td>{{ job.company }}{% if job.is_test_fixture %} <span class="tag" style="background:#e2d9f3;color:#4a2e8a;">TEST</span>{% endif %}</td>
         <td>{{ job.title }}</td>
         <td>{{ job.freshness_tier.value }}{% if job.freshness_minutes is not none %} (~{{ "%.0f"|format(job.freshness_minutes) }}m){% endif %}</td>
         <td><span class="tag tag-{{ job.work_arrangement.value.lower() }}">{{ job.work_arrangement.value }}</span></td>
-        <td>{{ job.employment_type or 'unclassified' }}</td>
+        <td><span class="tag {{ 'tag-confirmed' if row.employment_classified == 'FULL_TIME' else ('tag-no' if row.employment_classified not in ('FULL_TIME', 'UNKNOWN') else 'tag-unknown') }}">{{ row.employment_classified }}</span>
+          {% if job.employment_type %}<br><span style="font-size:0.7rem;color:#999;">raw: {{ job.employment_type }}</span>{% endif %}</td>
         <td>
           {% set s = job.sponsorship_status.value %}
           <span class="tag {{ 'tag-confirmed' if s == 'CONFIRMED_SPONSOR' else ('tag-likely' if s == 'LIKELY_SPONSOR' else ('tag-no' if s == 'NO_SPONSORSHIP' else 'tag-unknown')) }}">{{ s }}</span>

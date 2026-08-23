@@ -48,13 +48,13 @@ class WorkdayProvider(JobProvider):
     name = "workday"
     capabilities = ProviderCapabilities(
         provider_name="workday",
-        provider_version="1.0.0",
+        provider_version="1.1.0",
         discovery_supported=True,
         detail_fetch_supported=True,
         structured_location_supported=True,
         structured_published_at_supported=False,
         structured_salary_supported=False,
-        structured_employment_type_supported=False,
+        structured_employment_type_supported=True,
         public_interface=True,
         requires_credentials=False,
         submission_supported=False,
@@ -62,7 +62,10 @@ class WorkdayProvider(JobProvider):
         notes=(
             "Requires each tenant's exact base URL (hosting number + site name are not guessable); "
             "postedOn is relative text, not a timestamp, so freshness falls back to first_seen_at; "
-            "some tenants front this endpoint with bot protection this client will not attempt to bypass."
+            "some tenants front this endpoint with bot protection this client will not attempt to bypass. "
+            "employment_type_raw is populated from the per-job detail endpoint's jobPostingInfo.timeType "
+            "field (live-verified against walmart.wd504.myworkdayjobs.com/WalmartExternal -- e.g. "
+            "'Full time'/'Part time'); a tenant that omits this field simply leaves employment_type_raw empty."
         ),
     )
 
@@ -71,18 +74,24 @@ class WorkdayProvider(JobProvider):
         self._client = client
         self._timeout = timeout
 
-    def _fetch_detail(self, client: httpx.Client, base_url: str, external_path: str) -> str:
+    def _fetch_detail(self, client: httpx.Client, base_url: str, external_path: str) -> tuple[str, str]:
+        """Returns (description, employment_type_raw). `jobPostingInfo.timeType`
+        (e.g. "Full time" / "Part time") is a genuine structured field on this
+        endpoint -- live-verified against a real tenant, not guessed -- so it
+        is surfaced as employment_type_raw rather than left for text-only
+        fallback. A tenant/posting that omits the field yields "" here,
+        exactly like every other optional field on this provider."""
         if not external_path:
-            return ""
+            return "", ""
         try:
             resp = client.get(base_url + external_path)
             resp.raise_for_status()
             data = resp.json()
         except Exception:
             logger.warning("workday detail fetch failed for %s%s", base_url, external_path, exc_info=True)
-            return ""
+            return "", ""
         info = data.get("jobPostingInfo") or {}
-        return _strip_html(info.get("jobDescription", ""))
+        return _strip_html(info.get("jobDescription", "")), (info.get("timeType", "") or "")
 
     def _fetch_tenant(self, client: httpx.Client, base_url: str, max_jobs: int) -> list[RawJobPosting]:
         tenant = _tenant_name(base_url)
@@ -120,6 +129,7 @@ class WorkdayProvider(JobProvider):
             try:
                 external_path = item.get("externalPath", "") or ""
                 url = base_url.rstrip("/") + external_path if external_path else ""
+                description, time_type = self._fetch_detail(client, base_url, external_path)
                 results.append(RawJobPosting(
                     provider="workday",
                     external_job_id=str(item.get("jobPostingId") or item.get("bulletFields", [""])[0] or external_path),
@@ -127,7 +137,8 @@ class WorkdayProvider(JobProvider):
                     company=tenant.replace("-", " ").title(),
                     company_identifier=tenant,
                     location=item.get("locationsText", "") or "",
-                    description=self._fetch_detail(client, base_url, external_path),
+                    description=description,
+                    employment_type_raw=time_type,
                     url=url,
                     source_url=url,
                     provider_metadata={"tenant": tenant, "base_url": base_url, "posted_on_raw": item.get("postedOn")},

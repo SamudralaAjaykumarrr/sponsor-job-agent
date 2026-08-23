@@ -502,6 +502,32 @@ RESUME_OPTIMIZATION_BATCH_SIZE = _env_int("RESUME_OPTIMIZATION_BATCH_SIZE", 5)
 # number controls both unless an operator deliberately sets them differently.
 AGENT_INTERVAL_MINUTES = _env_int("AGENT_INTERVAL_MINUTES", DISCOVERY_INTERVAL_MINUTES)
 
+# Production-v2 watchdog: how stale agent_run_state.heartbeat_at may get
+# while actual_state == RUNNING before the dashboard/doctor treat it as a
+# possible stuck cycle (never auto-killed -- see app/agent/doctor.py; a
+# passive warning only, since forcibly cancelling an in-flight sync stage
+# mid-network-call is not something Python can do safely).
+AGENT_HEARTBEAT_STALE_SECONDS = _env_int("AGENT_HEARTBEAT_STALE_SECONDS", 300)
+
+# Sponsorship policy (CLAUDE.md production-v2 section 12). Neither value ever
+# redefines LIKELY_SPONSOR as confirmed, and neither ever changes the
+# executor's own CONFIRMED_SPONSOR-only auto-submit gate (app.applications.
+# eligibility already hard-codes auto_submit_eligible = CONFIRMED_SPONSOR
+# only, independent of this flag). This setting only controls whether the
+# orchestrator's auto-prepare stage (resume + application package
+# generation) also runs for LIKELY_SPONSOR jobs:
+#   CONFIRMED_OR_LIKELY_WITH_REVIEW (default): auto-prepare runs for both
+#     CONFIRMED_SPONSOR and LIKELY_SPONSOR -- this is the existing,
+#     already-tested Phase 14/15 behavior (LIKELY jobs land on
+#     REVIEW_REQUIRED, package generated for human review, never
+#     auto-submitted), kept as the default rather than silently narrowed.
+#   CONFIRMED_ONLY: the orchestrator's auto-prepare stage skips
+#     LIKELY_SPONSOR jobs entirely (manual Regenerate Resume still works).
+SPONSORSHIP_POLICY = (
+    os.getenv("SPONSORSHIP_POLICY", "CONFIRMED_OR_LIKELY_WITH_REVIEW").strip().upper()
+    or "CONFIRMED_OR_LIKELY_WITH_REVIEW"
+)
+
 # Every automatically-generated job-specific resume must render as exactly
 # one PDF page. True by default -- this is a hard output contract, not an
 # optional nicety (see docs/one-page-resume-contract.md).

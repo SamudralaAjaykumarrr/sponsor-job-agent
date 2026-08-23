@@ -42,63 +42,64 @@ def compute_pipeline_summary(all_jobs: list[Job]) -> dict:
         full_time_eligible = _count_full_time(all_jobs)
 
         sponsor_confirmed = conn.execute(
-            "SELECT COUNT(*) AS c FROM jobs WHERE sponsorship_status = 'CONFIRMED_SPONSOR'"
+            "SELECT COUNT(*) AS c FROM jobs WHERE sponsorship_status = 'CONFIRMED_SPONSOR' AND is_test_fixture = 0"
         ).fetchone()["c"]
 
         high_alignment = conn.execute(
             """SELECT COUNT(*) AS c FROM resume_quality_reports qr
                JOIN resume_variants rv ON rv.variant_id = qr.variant_id
-               WHERE rv.current = 1 AND qr.alignment_label = 'STRONG'"""
+               JOIN jobs j ON j.id = rv.job_id
+               WHERE rv.current = 1 AND qr.alignment_label = 'STRONG' AND j.is_test_fixture = 0"""
         ).fetchone()["c"]
 
         resume_ready = conn.execute(
-            "SELECT COUNT(*) AS c FROM resume_variants WHERE current = 1 AND status = 'READY'"
+            """SELECT COUNT(*) AS c FROM resume_variants rv JOIN jobs j ON j.id = rv.job_id
+               WHERE rv.current = 1 AND rv.status = 'READY' AND j.is_test_fixture = 0"""
         ).fetchone()["c"]
 
         application_ready = conn.execute(
-            "SELECT COUNT(*) AS c FROM jobs WHERE application_state = 'READY_TO_APPLY'"
+            "SELECT COUNT(*) AS c FROM jobs WHERE application_state = 'READY_TO_APPLY' AND is_test_fixture = 0"
         ).fetchone()["c"]
 
         applied = conn.execute(
-            "SELECT COUNT(*) AS c FROM jobs WHERE application_state IN ('APPLIED', 'INTERVIEW')"
+            "SELECT COUNT(*) AS c FROM jobs WHERE application_state IN ('APPLIED', 'INTERVIEW') AND is_test_fixture = 0"
         ).fetchone()["c"]
 
-        needs_action_execs = conn.execute(
-            "SELECT COUNT(*) AS c FROM application_executions WHERE active = 1 AND status = ?",
-            (ExecutionStatus.NEEDS_USER_ACTION.value,),
-        ).fetchone()["c"]
-        needs_action_sessions = conn.execute(
-            "SELECT COUNT(*) AS c FROM browser_assist_sessions WHERE active = 1 AND needs_user_action = 1"
-        ).fetchone()["c"]
+        needs_user_action = _count_needs_action(conn)
 
         ready_for_final_submit = conn.execute(
-            "SELECT COUNT(*) AS c FROM browser_assist_sessions WHERE active = 1 AND status IN (?, ?)",
+            """SELECT COUNT(*) AS c FROM browser_assist_sessions s JOIN jobs j ON j.id = s.job_id
+               WHERE s.active = 1 AND s.status IN (?, ?) AND j.is_test_fixture = 0""",
             (BrowserSessionStatus.READY_FOR_FINAL_SUBMIT.value, BrowserSessionStatus.AWAITING_USER_SUBMIT.value),
         ).fetchone()["c"]
 
         failed_attention = conn.execute(
-            """SELECT COUNT(*) AS c FROM application_executions WHERE active = 1 AND status IN (?, ?, ?)""",
+            """SELECT COUNT(*) AS c FROM application_executions e JOIN jobs j ON j.id = e.job_id
+               WHERE e.active = 1 AND e.status IN (?, ?, ?) AND j.is_test_fixture = 0""",
             (ExecutionStatus.SUBMISSION_FAILED.value, ExecutionStatus.PERMANENT_SUBMISSION_FAILURE.value,
              ExecutionStatus.SUBMISSION_STATUS_UNKNOWN.value),
         ).fetchone()["c"]
         claim_failed = conn.execute(
-            "SELECT COUNT(*) AS c FROM jobs WHERE application_state = 'CLAIM_VALIDATION_FAILED'"
+            "SELECT COUNT(*) AS c FROM jobs WHERE application_state = 'CLAIM_VALIDATION_FAILED' AND is_test_fixture = 0"
         ).fetchone()["c"]
 
         # --- one-click-agent dashboard cards (section 23) --------------------
         one_page_ready = conn.execute(
-            "SELECT COUNT(*) AS c FROM resume_variants WHERE current = 1 AND status = 'READY' AND page_count = 1"
+            """SELECT COUNT(*) AS c FROM resume_variants rv JOIN jobs j ON j.id = rv.job_id
+               WHERE rv.current = 1 AND rv.status = 'READY' AND rv.page_count = 1 AND j.is_test_fixture = 0"""
         ).fetchone()["c"]
         applying = conn.execute(
-            "SELECT COUNT(*) AS c FROM application_executions WHERE active = 1 AND status IN ('SUBMITTING', 'SUBMITTED')"
+            """SELECT COUNT(*) AS c FROM application_executions e JOIN jobs j ON j.id = e.job_id
+               WHERE e.active = 1 AND e.status IN ('SUBMITTING', 'SUBMITTED') AND j.is_test_fixture = 0"""
         ).fetchone()["c"]
         today_prefix = datetime.now(timezone.utc).date().isoformat()
         applied_today = conn.execute(
-            "SELECT COUNT(*) AS c FROM application_executions WHERE status = 'APPLIED' AND finished_at LIKE ?",
+            """SELECT COUNT(*) AS c FROM application_executions e JOIN jobs j ON j.id = e.job_id
+               WHERE e.status = 'APPLIED' AND e.finished_at LIKE ? AND j.is_test_fixture = 0""",
             (f"{today_prefix}%",),
         ).fetchone()["c"]
         skipped = conn.execute(
-            "SELECT COUNT(*) AS c FROM jobs WHERE application_state LIKE 'SKIPPED%'"
+            "SELECT COUNT(*) AS c FROM jobs WHERE application_state LIKE 'SKIPPED%' AND is_test_fixture = 0"
         ).fetchone()["c"]
 
     return {
@@ -111,7 +112,7 @@ def compute_pipeline_summary(all_jobs: list[Job]) -> dict:
         "one_page_ready": one_page_ready,
         "application_ready": application_ready,
         "applying": applying,
-        "needs_user_action": needs_action_execs + needs_action_sessions,
+        "needs_user_action": needs_user_action,
         "ready_for_final_submit": ready_for_final_submit,
         "applied": applied,
         "applied_today": applied_today,
@@ -120,103 +121,126 @@ def compute_pipeline_summary(all_jobs: list[Job]) -> dict:
     }
 
 
+# CLAUDE.md production-v2 dashboard defect 2: "Needs your action" card showed
+# 0 while the section below it showed 5, because the summary card counted
+# only 2 of the 4 sources that make up the actual queue. This module is now
+# the ONE authoritative definition -- _NEEDS_ACTION_QUERIES is the single
+# source of truth both compute_pipeline_summary()'s count and
+# build_needs_action_queue()'s list are built from, so they can never
+# disagree again (CLAUDE.md section 32). Every query excludes test-fixture
+# jobs by default, matching every other real-mode dashboard query.
+_NEEDS_ACTION_QUERIES: list[dict] = [
+    {
+        "kind": "execution",
+        "sql": """SELECT j.id AS job_id, j.company, j.title, e.status, e.user_action_reason
+                  FROM application_executions e JOIN jobs j ON j.id = e.job_id
+                  WHERE e.active = 1 AND e.requires_user_action = 1 AND j.is_test_fixture = 0
+                  ORDER BY e.updated_at DESC""",
+        "completed": "Application prepared through form discovery/fill/validation.",
+        "action": "Review and continue on the job detail page.",
+    },
+    {
+        "kind": "browser_session",
+        "sql": """SELECT j.id AS job_id, j.company, j.title, s.status, s.user_action_reason
+                  FROM browser_assist_sessions s JOIN jobs j ON j.id = s.job_id
+                  WHERE s.active = 1 AND s.needs_user_action = 1 AND j.is_test_fixture = 0
+                  ORDER BY s.updated_at DESC""",
+        "completed": "Browser-assist session navigated to the application form.",
+        "action": "Resolve the blocker in-browser, then Continue.",
+    },
+    {
+        "kind": "review_required",
+        "sql": """SELECT id AS job_id, company, title, 'LIKELY_SPONSOR' AS status,
+                         'Historical sponsorship signal only -- verify before applying.' AS user_action_reason
+                  FROM jobs
+                  WHERE sponsorship_status = 'LIKELY_SPONSOR' AND application_state = 'REVIEW_REQUIRED'
+                        AND is_test_fixture = 0
+                  ORDER BY updated_at DESC""",
+        "completed": "Resume and application package generated for review.",
+        "action": "Confirm sponsorship, then apply manually or mark Ready.",
+    },
+    {
+        "kind": "resume_overflow",
+        "sql": """SELECT rv.job_id AS job_id, j.company, j.title, 'RESUME_REVIEW_REQUIRED' AS status,
+                         'One page could not be safely achieved within the compression bounds.' AS user_action_reason
+                  FROM resume_variants rv JOIN jobs j ON j.id = rv.job_id
+                  WHERE rv.current = 1 AND rv.status = 'REVIEW_REQUIRED' AND j.is_test_fixture = 0
+                  ORDER BY rv.updated_at DESC""",
+        "completed": "Tailored resume content generated; claim check and ATS parse passed.",
+        "action": "Trim the candidate profile or manually review the resume.",
+    },
+]
+
+
+def count_needs_action() -> int:
+    """The authoritative total -- used for the dashboard card, the API, and
+    metrics. Always the true count (never truncated by a display limit)."""
+    with db_session() as conn:
+        return _count_needs_action(conn)
+
+
+def _count_needs_action(conn) -> int:
+    total = 0
+    for source in _NEEDS_ACTION_QUERIES:
+        row = conn.execute(f"SELECT COUNT(*) AS c FROM ({source['sql']}) t").fetchone()
+        total += row["c"]
+    return total
+
+
 def build_needs_action_queue(limit: int = 25) -> list[dict]:
     """CLAUDE.md one-click-agent section 20: centralized 'Needs Your Action'
     queue -- each item shows company/role/reason/current stage/what the
     agent already completed/the exact action required, and links to the job
     detail page's existing Continue-equivalent controls (retry preparation,
-    reconcile, resume browser session). Sourced entirely from
-    already-indexed columns, one bounded query per source -- never a
-    per-job N+1 scan."""
+    reconcile, resume browser session). Built from the SAME _NEEDS_ACTION_QUERIES
+    source list count_needs_action() uses, so the displayed list and the
+    summary card can never disagree (CLAUDE.md section 32)."""
     items: list[dict] = []
     with db_session() as conn:
-        exec_rows = conn.execute(
-            """SELECT j.id AS job_id, j.company, j.title, e.execution_id, e.status, e.user_action_reason
-               FROM application_executions e JOIN jobs j ON j.id = e.job_id
-               WHERE e.active = 1 AND e.requires_user_action = 1
-               ORDER BY e.updated_at DESC LIMIT ?""",
-            (limit,),
-        ).fetchall()
-        for r in exec_rows:
-            items.append({
-                "job_id": r["job_id"], "company": r["company"], "role": r["title"],
-                "stage": r["status"], "reason": r["user_action_reason"] or "action required",
-                "completed": "Application prepared through form discovery/fill/validation.",
-                "action": "Review and continue on the job detail page.",
-                "kind": "execution",
-            })
-
-        session_rows = conn.execute(
-            """SELECT j.id AS job_id, j.company, j.title, s.session_id, s.status, s.user_action_reason
-               FROM browser_assist_sessions s JOIN jobs j ON j.id = s.job_id
-               WHERE s.active = 1 AND s.needs_user_action = 1
-               ORDER BY s.updated_at DESC LIMIT ?""",
-            (limit,),
-        ).fetchall()
-        for r in session_rows:
-            items.append({
-                "job_id": r["job_id"], "company": r["company"], "role": r["title"],
-                "stage": r["status"], "reason": r["user_action_reason"] or "action required",
-                "completed": "Browser-assist session navigated to the application form.",
-                "action": "Resolve the blocker in-browser, then Continue.",
-                "kind": "browser_session",
-            })
-
-        review_rows = conn.execute(
-            """SELECT id AS job_id, company, title FROM jobs
-               WHERE sponsorship_status = 'LIKELY_SPONSOR' AND application_state = 'REVIEW_REQUIRED'
-               ORDER BY updated_at DESC LIMIT ?""",
-            (limit,),
-        ).fetchall()
-        for r in review_rows:
-            items.append({
-                "job_id": r["job_id"], "company": r["company"], "role": r["title"],
-                "stage": "LIKELY_SPONSOR", "reason": "Historical sponsorship signal only -- verify before applying.",
-                "completed": "Resume and application package generated for review.",
-                "action": "Confirm sponsorship, then apply manually or mark Ready.",
-                "kind": "review_required",
-            })
-
-        overflow_rows = conn.execute(
-            """SELECT rv.job_id AS job_id, j.company, j.title FROM resume_variants rv
-               JOIN jobs j ON j.id = rv.job_id
-               WHERE rv.current = 1 AND rv.status = 'REVIEW_REQUIRED'
-               ORDER BY rv.updated_at DESC LIMIT ?""",
-            (limit,),
-        ).fetchall()
-        for r in overflow_rows:
-            items.append({
-                "job_id": r["job_id"], "company": r["company"], "role": r["title"],
-                "stage": "RESUME_REVIEW_REQUIRED",
-                "reason": "One page could not be safely achieved within the compression bounds.",
-                "completed": "Tailored resume content generated; claim check and ATS parse passed.",
-                "action": "Trim the candidate profile or manually review the resume.",
-                "kind": "resume_overflow",
-            })
-
+        for source in _NEEDS_ACTION_QUERIES:
+            for r in conn.execute(source["sql"]).fetchall():
+                items.append({
+                    "job_id": r["job_id"], "company": r["company"], "role": r["title"],
+                    "stage": r["status"], "reason": r["user_action_reason"] or "action required",
+                    "completed": source["completed"], "action": source["action"], "kind": source["kind"],
+                })
     return items[:limit]
 
 
 def build_recent_activity(limit: int = 20) -> list[dict]:
-    """CLAUDE.md one-click-agent section 24: no PII values -- company/title
-    are already-public job-posting metadata (same standard this project's
-    job_identity_verifications table already uses), never JD text, resume
-    content, or candidate profile fields."""
+    """CLAUDE.md one-click-agent section 24 / production-v2 dashboard defect
+    7: no PII values -- company/title are already-public job-posting
+    metadata (same standard this project's job_identity_verifications table
+    already uses), never JD text, resume content, or candidate profile
+    fields. Merges job-level state/audit rows with the orchestrator's own
+    agent-level lifecycle events (app.agent.run_state.list_recent_activity)
+    so the feed reflects real current-cycle activity ('Discovery cycle
+    started', 'Found N jobs', ...) instead of looking stale whenever a cycle
+    hasn't yet produced a job-level event."""
+    from app.agent import run_state as agent_run_state
+
     with db_session() as conn:
         state_rows = conn.execute(
             """SELECT h.changed_at AS ts, j.company, j.title, h.to_state AS detail, 'state' AS kind
                FROM application_state_history h JOIN jobs j ON j.id = h.job_id
+               WHERE j.is_test_fixture = 0
                ORDER BY h.id DESC LIMIT ?""",
             (limit,),
         ).fetchall()
         audit_rows = conn.execute(
             """SELECT a.created_at AS ts, j.company, j.title, a.event_type AS detail, 'execution' AS kind
                FROM application_audit_log a JOIN jobs j ON j.id = a.job_id
+               WHERE j.is_test_fixture = 0
                ORDER BY a.id DESC LIMIT ?""",
             (limit,),
         ).fetchall()
 
-    combined = [dict(r) for r in state_rows] + [dict(r) for r in audit_rows]
+    agent_rows = [
+        {"ts": r["ts"], "company": None, "title": None, "detail": r["event"], "kind": "agent", "extra": r["detail"]}
+        for r in agent_run_state.list_recent_activity(limit=limit)
+    ]
+
+    combined = [dict(r) for r in state_rows] + [dict(r) for r in audit_rows] + agent_rows
     combined.sort(key=lambda r: r["ts"] or "", reverse=True)
     return [
         {"ts": r["ts"], "company": r["company"], "role": r["title"], "text": _activity_text(r)}
@@ -251,10 +275,27 @@ _AUDIT_ACTIVITY_TEXT = {
     "failed": "Application attempt failed.",
 }
 
+_AGENT_ACTIVITY_TEXT = {
+    "agent_started": "Agent started.",
+    "agent_stopped": "Agent stopped.",
+    "cycle_started": "Discovery cycle started.",
+    "discovery_completed": "Discovery: {extra}",
+    "resumes_generated": "Resumes: {extra}",
+    "applications_prepared": "Applications prepared: {extra}",
+    "applications_applied": "Applications applied: {extra}",
+    "needs_user_action": "Needs user action: {extra}",
+    "cycle_finished": "Cycle finished ({extra}).",
+    "error": "Error: {extra}",
+    "recovered": "Recovered: {extra}",
+}
+
 
 def _activity_text(row: dict) -> str:
     if row["kind"] == "state":
         return _STATE_ACTIVITY_TEXT.get(row["detail"], f"State changed to {row['detail']}.")
+    if row["kind"] == "agent":
+        template = _AGENT_ACTIVITY_TEXT.get(row["detail"], (row["detail"] or "Agent activity") + ": {extra}")
+        return template.format(extra=row.get("extra") or "")
     return _AUDIT_ACTIVITY_TEXT.get(row["detail"], row["detail"] or "Activity recorded.")
 
 

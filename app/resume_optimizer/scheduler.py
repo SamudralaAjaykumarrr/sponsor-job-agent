@@ -25,20 +25,31 @@ _ELIGIBLE_STATES = ("ANALYZED", "REVIEW_REQUIRED", "READY_TO_APPLY")
 _ELIGIBLE_SPONSORSHIP = ("CONFIRMED_SPONSOR", "LIKELY_SPONSOR")
 
 
+def _eligible_sponsorship_statuses() -> tuple:
+    """CLAUDE.md production-v2 section 12 (SPONSORSHIP_POLICY): read at call
+    time (not module import time) so a config change takes effect on the
+    orchestrator's very next cycle without a restart, matching every other
+    config-gated call site in this project."""
+    if config.SPONSORSHIP_POLICY == "CONFIRMED_ONLY":
+        return ("CONFIRMED_SPONSOR",)
+    return _ELIGIBLE_SPONSORSHIP
+
+
 def _find_jobs_needing_optimization(batch_size: int) -> list[int]:
     """A job needs (re)optimization when it has no current READY variant at
     all, or its current variant is STALE -- never when it already has a
     fresh READY one (CLAUDE.md section 58 idempotency)."""
+    eligible_sponsorship = _eligible_sponsorship_statuses()
     with db_session() as conn:
         rows = conn.execute(
             f"""SELECT j.id FROM jobs j
                 LEFT JOIN resume_variants rv ON rv.job_id = j.id AND rv.current = 1
                 WHERE j.application_state IN ({",".join("?" for _ in _ELIGIBLE_STATES)})
-                  AND j.sponsorship_status IN ({",".join("?" for _ in _ELIGIBLE_SPONSORSHIP)})
+                  AND j.sponsorship_status IN ({",".join("?" for _ in eligible_sponsorship)})
                   AND (rv.variant_id IS NULL OR rv.status IN ('STALE', 'GENERATING'))
                 ORDER BY j.priority_score DESC
                 LIMIT ?""",
-            [*_ELIGIBLE_STATES, *_ELIGIBLE_SPONSORSHIP, batch_size],
+            [*_ELIGIBLE_STATES, *eligible_sponsorship, batch_size],
         ).fetchall()
         return [r["id"] for r in rows]
 

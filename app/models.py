@@ -206,6 +206,14 @@ class Job(BaseModel):
 
     notes: str = ""
 
+    # CLAUDE.md production-v2 "CURRENT REAL DASHBOARD DEFECTS" item 6: a
+    # synthetic/test-only row (TEST MODE's mock_ats fixture; any future
+    # deliberately-seeded demo/benchmark job) is marked explicitly at ingest
+    # time so the real-mode dashboard/summary/needs-action queries can
+    # exclude it by default without guessing from provider-name string
+    # matching scattered across call sites -- see app.pipeline_dashboard.
+    is_test_fixture: bool = False
+
     # Phase 6 (CLAUDE.md section 36): correlation id propagated from the
     # poll_attempts row that discovered this job (its attempt_id already
     # uniquely ties one worker's one attempt at one portal together, so it

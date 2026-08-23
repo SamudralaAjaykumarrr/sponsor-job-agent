@@ -23,7 +23,7 @@ _COLUMNS = [
     "resume_docx_path", "resume_pdf_path", "resume_txt_path", "resume_jd_fingerprint",
     "promoted_resume_variant_id",
     "job_analysis_path", "application_answers_path", "cover_letter_path",
-    "notes", "correlation_id", "created_at", "updated_at",
+    "notes", "correlation_id", "created_at", "updated_at", "is_test_fixture",
 ]
 
 
@@ -147,6 +147,13 @@ def list_jobs(filters: Optional[dict] = None) -> list[Job]:
             "WHERE esp.historical_strength = ?)"
         )
         params.append(filters["historical_strength"])
+
+    if not filters.get("include_test_fixtures"):
+        # CLAUDE.md production-v2 dashboard defect 6: synthetic/test rows
+        # (TEST MODE's mock_ats fixture) are excluded from every normal
+        # query by default -- opt in explicitly via include_test_fixtures
+        # for the test/audit view, never on by default.
+        clauses.append("is_test_fixture = 0")
 
     if clauses:
         query += " WHERE " + " AND ".join(clauses)

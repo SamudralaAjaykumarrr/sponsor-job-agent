@@ -32,6 +32,22 @@ The standalone worker processes above remain fully supported and safe to run alo
 agent (or instead of it, for a real multi-machine deployment) -- both claim from the same
 leased queues, so nothing double-processes.
 
+**Production-v2 hardening (this build):** START now begins the first discovery cycle within
+seconds (previously the dashboard could show `RUNNING` with `Last cycle: never` for the
+full interval -- fixed by having the orchestrator persist its own
+`last_cycle_started_at`/`heartbeat_at`/`current_stage`/`next_cycle_at` directly, instead of
+relying on the separate legacy scheduler's bookkeeping, which it never wrote to). The
+dashboard's "Needs your action" summary card and its list are now built from one shared
+function (`app.pipeline_dashboard.count_needs_action`/`build_needs_action_queue`) so they
+can never disagree again; a doctor check (`agent.needs_action_count_mismatch`) guards this
+as a live regression check. The legacy discovery-only toggle (`/agent/toggle`) is collapsed
+behind an "Advanced / legacy diagnostics" disclosure on the dashboard and no longer gets
+silently turned on as a side effect of starting the one-click agent -- turning both on at
+once now surfaces an explicit warning (doctor check `agent.duplicate_discovery_loops`).
+TEST MODE's `mock_ats` fixture job (and any future synthetic job marked
+`jobs.is_test_fixture`) is excluded from the default dashboard/summary/needs-action queries
+-- append `?include_test_data=true` to `/` for the audit view.
+
 ## Workers
 
 - Discovery fleet: `docs/distributed-workers.md`, `docs/fleet-operations.md`. Status via

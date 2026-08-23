@@ -143,6 +143,15 @@ def check_fresh_sqlite_migration(report: AcceptanceReport) -> None:
             conn = sqlite3.connect(str(db_path))
             conn.row_factory = sqlite3.Row
             conn.executescript(db.SCHEMA)
+            # Mirrors app.db.init_sqlite_db() exactly: the legacy pre-numbered
+            # additive-column migrations (app.db._migrate_jobs_table /
+            # _migrate_phase5_lease_columns) run BEFORE the versioned
+            # migrations.run_pending() -- some numbered migrations (e.g. one
+            # touching jobs.provider) depend on columns those legacy helpers
+            # add. A real fresh init_db() always runs both in this order; this
+            # check must simulate the same order to be a meaningful check.
+            db._migrate_jobs_table(conn)
+            db._migrate_phase5_lease_columns(conn)
             migrations.run_pending(conn, backend="sqlite")
             conn.commit()
             version = migrations.current_db_version(conn)

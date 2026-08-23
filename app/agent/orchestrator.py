@@ -33,10 +33,9 @@ as before, and this module calls into them, never around them."""
 import asyncio
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from app import config
-from app.agent import state as agent_state
 from app.agent.run_state import AgentRunState, CycleCounters
 from app.agent import run_state as run_state_mod
 from app.agent.cycle import run_discovery_cycle
@@ -96,15 +95,30 @@ class AgentOrchestrator:
             except asyncio.TimeoutError:
                 logger.warning("orchestrator did not stop within the grace period -- cancelling")
                 self._task.cancel()
-        agent_state.set_enabled(False)
         self._restore_config_overrides()
         run_state_mod.set_actual_state(AgentRunState.STOPPED)
         return {"stopped": True}
 
     def status(self) -> dict:
+        """CLAUDE.md production-v2 dashboard defect 1: every field the
+        dashboard needs to show real in-progress status (never a misleading
+        blank 'Last cycle: never' / 'Next cycle: pending' while genuinely
+        RUNNING) is read directly from agent_run_state -- the orchestrator's
+        own durable state -- never from app.agent.state (the separate, older
+        legacy scheduler's bookkeeping, which this orchestrator never writes
+        to)."""
         run_state = run_state_mod.get_run_state()
         latest = run_state_mod.latest_cycle()
         totals_24h = run_state_mod.totals_since(hours=24)
+        heartbeat_age = run_state_mod.heartbeat_age_seconds()
+        cycle_in_progress = (
+            run_state["actual_state"] == AgentRunState.RUNNING.value
+            and run_state.get("last_cycle_started_at")
+            and (
+                not run_state.get("last_cycle_finished_at")
+                or run_state["last_cycle_finished_at"] < run_state["last_cycle_started_at"]
+            )
+        )
         return {
             "desired_state": run_state["desired_state"],
             "actual_state": run_state["actual_state"],
@@ -112,10 +126,25 @@ class AgentOrchestrator:
             "last_error": run_state["last_error"],
             "started_at": run_state["started_at"],
             "stopped_at": run_state["stopped_at"],
+            "run_id": run_state.get("run_id") or "",
+            "cycle_number": run_state.get("cycle_number") or 0,
             "last_cycle": latest,
-            "next_cycle_at": agent_state.get_status().get("next_cycle_at"),
+            "last_cycle_started_at": run_state.get("last_cycle_started_at"),
+            "last_cycle_finished_at": run_state.get("last_cycle_finished_at"),
+            "cycle_in_progress": bool(cycle_in_progress),
+            "next_cycle_at": run_state.get("next_cycle_at"),
+            "heartbeat_at": run_state.get("heartbeat_at"),
+            "heartbeat_age_seconds": heartbeat_age,
+            "heartbeat_stale": bool(
+                run_state["actual_state"] == AgentRunState.RUNNING.value
+                and heartbeat_age is not None
+                and heartbeat_age > config.AGENT_HEARTBEAT_STALE_SECONDS
+            ),
+            "current_stage": run_state.get("current_stage") or "",
+            "current_job_label": run_state.get("current_job_label") or "",
             "totals_24h": totals_24h,
             "recent_cycles": run_state_mod.list_recent_cycles(limit=10),
+            "recent_activity": run_state_mod.list_recent_activity(limit=20),
         }
 
     # --- internal loop ------------------------------------------------------
@@ -123,29 +152,47 @@ class AgentOrchestrator:
     async def _loop(self) -> None:
         assert self._stop_event is not None
         run_state_mod.set_actual_state(AgentRunState.STARTING)
+        run_id = run_state_mod.new_run_id()
+        run_state_mod.begin_run(run_id)
         self._apply_config_overrides()
-        agent_state.set_enabled(True)
         run_state_mod.set_actual_state(AgentRunState.RUNNING)
+        test_mode_at_start = run_state_mod.is_test_mode()
+        run_state_mod.log_activity(
+            "agent_started", f"run_id={run_id} test_mode={test_mode_at_start}"
+        )
 
         while not self._stop_event.is_set():
             started = datetime.now(timezone.utc)
             test_mode = run_state_mod.is_test_mode()
+            cycle_number = run_state_mod.mark_cycle_start(started.isoformat())
+            run_state_mod.log_activity("cycle_started", f"cycle #{cycle_number}")
             try:
                 counters = await asyncio.to_thread(self._run_cycle_sync, started.isoformat(), test_mode)
             except Exception as exc:  # noqa: BLE001 -- one crashed cycle must never kill the loop or the app
                 logger.exception("orchestrator cycle crashed unexpectedly")
                 counters = CycleCounters(errors=1, detail={"crash": str(exc)})
                 run_state_mod.set_actual_state(AgentRunState.ERROR, last_error=str(exc)[:500])
+                run_state_mod.log_activity("error", f"cycle #{cycle_number} crashed: {exc}"[:500])
                 run_state_mod.set_actual_state(AgentRunState.RUNNING)  # self-healing: never permanently stuck in ERROR
+                run_state_mod.log_activity("recovered", f"cycle #{cycle_number}: resumed RUNNING after crash")
             finished = datetime.now(timezone.utc)
             run_state_mod.record_cycle(started.isoformat(), finished.isoformat(), test_mode=test_mode, counters=counters)
 
             interval_seconds = max(60, config.AGENT_INTERVAL_MINUTES * 60)
+            next_at = finished + timedelta(seconds=interval_seconds)
+            run_state_mod.mark_cycle_finish(finished.isoformat(), next_at.isoformat())
+            run_state_mod.log_activity(
+                "cycle_finished",
+                f"cycle #{cycle_number}: jobs={counters.jobs_processed} resumes={counters.resumes_generated} "
+                f"prepared={counters.applications_prepared} submitted={counters.applications_submitted} "
+                f"needs_action={counters.needs_user_action} skipped={counters.skipped} errors={counters.errors}",
+            )
+
             await self._wait(interval_seconds)
 
-        agent_state.set_enabled(False)
         self._restore_config_overrides()
         run_state_mod.set_actual_state(AgentRunState.STOPPED)
+        run_state_mod.log_activity("agent_stopped", f"run_id={run_id}")
 
     async def _wait(self, seconds: float) -> None:
         assert self._stop_event is not None
@@ -184,6 +231,7 @@ class AgentOrchestrator:
     def _run_cycle_sync(self, cycle_started_at: str, test_mode: bool) -> CycleCounters:
         counters = CycleCounters()
 
+        run_state_mod.heartbeat(stage="discovering")
         try:
             summary = run_discovery_cycle()
             counters.jobs_processed += summary.get("jobs_fetched", 0)
@@ -192,35 +240,56 @@ class AgentOrchestrator:
             counters.detail["discovery"] = {
                 k: summary.get(k) for k in ("jobs_new", "jobs_deduplicated", "confirmed_sponsors", "likely_sponsors")
             }
+            run_state_mod.log_activity(
+                "discovery_completed",
+                f"found {summary.get('jobs_fetched', 0)} jobs, "
+                f"{summary.get('jobs_new', 0)} new, {summary.get('hard_skips', 0)} hard-skipped",
+            )
         except Exception:  # noqa: BLE001 -- one stage failing must never abort the rest of the cycle
             logger.exception("discovery stage failed")
             counters.errors += 1
 
+        run_state_mod.heartbeat(stage="generating_resumes")
         try:
             resume_stats = self._run_resume_stage()
             counters.resumes_generated += resume_stats["generated"]
             counters.one_page_success += resume_stats["one_page_success"]
             counters.one_page_overflow += resume_stats["one_page_overflow"]
             counters.one_page_compression_events += resume_stats["compression_events"]
+            if resume_stats["generated"]:
+                run_state_mod.log_activity(
+                    "resumes_generated",
+                    f"{resume_stats['generated']} generated, {resume_stats['one_page_success']} one-page ready, "
+                    f"{resume_stats['one_page_overflow']} need review",
+                )
         except Exception:  # noqa: BLE001
             logger.exception("resume optimization stage failed")
             counters.errors += 1
 
+        run_state_mod.heartbeat(stage="preparing_applications")
         try:
             prepared = self._run_auto_prepare_stage()
             counters.applications_prepared += prepared
+            if prepared:
+                run_state_mod.log_activity("applications_prepared", f"{prepared} queued for execution")
         except Exception:  # noqa: BLE001
             logger.exception("application auto-prepare stage failed")
             counters.errors += 1
 
+        run_state_mod.heartbeat(stage="executing_applications")
         try:
             exec_stats = self._run_application_worker_cycle(cycle_started_at)
             counters.applications_submitted += exec_stats["applied"]
             counters.needs_user_action += exec_stats["needs_action"]
+            if exec_stats["applied"]:
+                run_state_mod.log_activity("applications_applied", f"{exec_stats['applied']} confirmed applied")
+            if exec_stats["needs_action"]:
+                run_state_mod.log_activity("needs_user_action", f"{exec_stats['needs_action']} job(s) need your action")
         except Exception:  # noqa: BLE001
             logger.exception("application execution stage failed")
             counters.errors += 1
 
+        run_state_mod.heartbeat(stage="idle")
         return counters
 
     def _run_resume_stage(self) -> dict:
@@ -347,6 +416,7 @@ class AgentOrchestrator:
             url=f"https://mock-ats.local/jobs/{_TEST_FIXTURE_EXTERNAL_ID}",
             provider_metadata=json.dumps({"mock_scenario": "simple"}),
             mode=ApplicationMode.ASSIST,
+            is_test_fixture=True,
         )
         ingest_and_process(job)
         logger.info("test-mode: seeded mock_ats fixture job external_job_id=%s", _TEST_FIXTURE_EXTERNAL_ID)

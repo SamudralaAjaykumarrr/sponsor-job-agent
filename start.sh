@@ -54,6 +54,25 @@ except Exception:
     print('unknown', 'unknown')
 " 2>/dev/null || echo "unknown unknown")"
 
+# CLAUDE.md production-v2 section 94: the one-click agent's own persisted
+# desired/actual state (not the legacy flag above), current interval, and
+# real-provider submission count -- best-effort, same "never block startup"
+# fallback as the schema-version query above.
+read -r AGENT_DESIRED_DISPLAY AGENT_ACTUAL_DISPLAY AGENT_SUBMIT_PROVIDERS_DISPLAY <<< "$(python -c "
+from app.db import init_db
+from app.agent.run_state import get_run_state
+try:
+    init_db()
+    run = get_run_state()
+    from app.applications.provider_registry import all_application_capabilities
+    caps = all_application_capabilities()
+    submit_count = sum(1 for c in caps if c.get('submission_supported') and c.get('provider') != 'mock_ats')
+    print(run['desired_state'], run['actual_state'], submit_count)
+except Exception:
+    print('unknown', 'unknown', 'unknown')
+" 2>/dev/null || echo "unknown unknown unknown")"
+AGENT_INTERVAL_DISPLAY="${AGENT_INTERVAL_MINUTES:-${DISCOVERY_INTERVAL_MINUTES:-15}}"
+
 echo "============================================================"
 echo " Sponsor Job Agent"
 echo "   Database backend:   ${DB_BACKEND}"
@@ -70,6 +89,9 @@ echo "   Browser mode:       ${BROWSER_MODE_DISPLAY}"
 echo "   Auto submit:        ${AUTO_SUBMIT_DISPLAY}"
 echo "   ATS canary:         ${ATS_CANARY_DISPLAY}"
 echo "   Job identity gate:  ${JOB_IDENTITY_GATE_DISPLAY}"
+echo "   Agent state:        desired=${AGENT_DESIRED_DISPLAY} actual=${AGENT_ACTUAL_DISPLAY} (persisted -- survives restart)"
+echo "   Agent interval:     ${AGENT_INTERVAL_DISPLAY}m"
+echo "   Real ATS providers with auto-submit: ${AGENT_SUBMIT_PROVIDERS_DISPLAY} (mock_ats/test-only excluded)"
 echo "   Worker mode:         run distributed workers separately via"
 echo "                        'python -m app.workers.cli run' (see docs/fleet-operations.md)"
 echo "   One-click agent:      click START AGENT on the dashboard, or POST /agent/start"
