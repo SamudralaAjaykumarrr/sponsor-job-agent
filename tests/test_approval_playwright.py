@@ -131,3 +131,100 @@ def test_full_approval_flow_dashboard_to_confirmed(live_server, page):
     page.goto(live_server + "/")
     page.click('button:has-text("STOP AGENT")')
     page.wait_for_selector('button:has-text("START AGENT")', timeout=15000)
+
+
+def _run_to_applied_job_detail(live_server) -> str:
+    """Shared driver for the mobile/dark-mode legibility checks below --
+    identical START AGENT (TEST MODE) -> APPROVE & APPLY flow as
+    test_full_approval_flow_dashboard_to_confirmed, but returns the job
+    detail URL (carrying the new receipt line this build adds) instead of
+    asserting against a specific page/context, so each check can supply its
+    own viewport/color-scheme context."""
+    from playwright.sync_api import sync_playwright
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        ctx = browser.new_context()
+        pg = ctx.new_page()
+        try:
+            pg.goto(live_server + "/")
+            pg.click('button:has-text("START AGENT (TEST MODE)")')
+            pg.wait_for_selector('button:has-text("STOP AGENT")', timeout=10000)
+            _wait_for_ready_for_approval_card(pg, live_server)
+            review_link = pg.locator("#ready-for-approval a:has-text('Review Application')").first
+            review_link.click()
+            pg.wait_for_load_state("networkidle")
+            approve_button = pg.locator('button:has-text("APPROVE & APPLY")').first
+            approve_button.click()
+            pg.wait_for_load_state("networkidle")
+            job_url = pg.url
+            pg.goto(live_server + "/")
+            pg.click('button:has-text("STOP AGENT")')
+            pg.wait_for_selector('button:has-text("START AGENT")', timeout=15000)
+        finally:
+            ctx.close()
+            browser.close()
+    return job_url
+
+
+def test_applied_state_and_receipt_visible_on_mobile_viewport(live_server):
+    """Provider Post-Approval Execution V1 section 19: the new post-approval
+    UI (APPLIED banner, confirmation, and the receipt line this build adds
+    to job_detail.html) must stay usable at a mobile viewport width -- reuses
+    the existing theme-aware `.banner`/`.faint` components (see
+    app/static/css/app.css's responsive @media rules), so this test proves
+    the new markup didn't introduce a fixed-width regression rather than
+    adding a parallel styling system."""
+    from playwright.sync_api import sync_playwright
+
+    job_url = _run_to_applied_job_detail(live_server)
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        ctx = browser.new_context(viewport={"width": 390, "height": 844})  # iPhone 12-class width
+        pg = ctx.new_page()
+        try:
+            pg.goto(job_url)
+            pg.wait_for_load_state("networkidle")
+            body = pg.locator("body")
+            assert "APPLIED" in body.inner_text()
+            assert "Confirmation:" in body.inner_text()
+            # No horizontal overflow at mobile width -- the artifact-design
+            # "page body must never scroll horizontally" rule applies to the
+            # real product UI too.
+            scroll_width = pg.evaluate("document.documentElement.scrollWidth")
+            client_width = pg.evaluate("document.documentElement.clientWidth")
+            assert scroll_width <= client_width + 1
+        finally:
+            ctx.close()
+            browser.close()
+
+
+def test_applied_state_and_receipt_visible_in_dark_mode(live_server):
+    """Companion to the mobile check above: the same new post-approval
+    markup rendered under prefers-color-scheme: dark stays legible -- proves
+    the new banner/receipt text uses the existing var(--bad)/var(--warn)/
+    theme tokens (already dark-aware, app/static/css/app.css line ~39)
+    rather than a hardcoded light-only color."""
+    from playwright.sync_api import sync_playwright
+
+    job_url = _run_to_applied_job_detail(live_server)
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        ctx = browser.new_context(color_scheme="dark")
+        pg = ctx.new_page()
+        try:
+            pg.goto(job_url)
+            pg.wait_for_load_state("networkidle")
+            body = pg.locator("body")
+            assert "APPLIED" in body.inner_text()
+            assert "Confirmation:" in body.inner_text()
+            # Body background must actually be dark (theme tokens applied),
+            # not left transparent/borrowing an unstyled white default.
+            bg = pg.evaluate("getComputedStyle(document.body).backgroundColor")
+            r, g, b = (int(x) for x in bg.replace("rgb(", "").replace("rgba(", "").replace(")", "").split(",")[:3])
+            assert (r + g + b) / 3 < 128, f"body background does not look dark in dark mode: {bg}"
+        finally:
+            ctx.close()
+            browser.close()

@@ -204,8 +204,10 @@ def prepare_application(
 import hashlib
 import os
 
+from app.applications import approval as _approval
 from app.applications import browser_runtime
 from app.applications import checkpoints
+from app.applications import receipts as _receipts
 from app.applications import repo as _executions_repo
 from app.applications import spa_events
 from app.applications.apply_entry import EntryDetectionResult, EntryStage, StepConfidence, is_valid_stage_transition
@@ -765,6 +767,18 @@ def expire_stale_sessions() -> list[dict]:
     return expired
 
 
+def _record_receipt_best_effort(**kwargs) -> None:
+    """Mirrors app.applications.executor._record_receipt_best_effort -- a
+    receipt-recording failure must never turn an already-genuinely-confirmed
+    APPLIED execution into an error."""
+    try:
+        latest_approval = _approval.get_latest_approval(kwargs["execution_id"])
+        approval_id = latest_approval["approval_id"] if latest_approval else ""
+        _receipts.record_receipt(approval_id=approval_id, **kwargs)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def attempt_user_submit_reconciliation(session_id: str) -> dict:
     """CLAUDE.md Phase 10 sections 40-42: the candidate says they clicked the
     real submit button themselves in the visible window. Inspects the
@@ -827,6 +841,12 @@ def attempt_user_submit_reconciliation(session_id: str) -> dict:
             )
             _executions_repo.log_event(
                 execution["execution_id"], execution["job_id"], "confirmed", detail="browser_assist_manual_submit",
+            )
+            _record_receipt_best_effort(
+                execution_id=execution["execution_id"], job_id=execution["job_id"], provider=session.get("provider", ""),
+                submitted_via=f"browser_assist:{session.get('provider', '')}", confirmation_id=outcome.confirmation_id,
+                sanitized_url=outcome.current_url, evidence_strength=outcome.evidence_strength,
+                raw_message_fingerprint=outcome.confirmation_text_fingerprint, session_id=session_id,
             )
 
         updated = browser_session.update_session(

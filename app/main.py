@@ -342,6 +342,11 @@ def job_detail(request: Request, job_id: int):
     evidence_links = resume_optimizer_repo.list_evidence_links(current_variant["variant_id"]) if current_variant else []
     alignment_priority = compute_alignment_priority(job, quality_row["report"] if quality_row else None)
     approval_freshness = applications_approval.check_approval_freshness(job_id)
+    latest_receipt = None
+    if latest_execution is not None:
+        from app.applications import receipts as applications_receipts
+
+        latest_receipt = applications_receipts.get_latest_receipt_for_execution(latest_execution["execution_id"])
 
     return templates.TemplateResponse(
         request, "job_detail.html",
@@ -363,6 +368,7 @@ def job_detail(request: Request, job_id: int):
             "jd_current_fingerprint": jd_fingerprint,
             "valid_states": [s.value for s in valid_manual_transitions(job.application_state)],
             "approval_freshness": approval_freshness,
+            "latest_receipt": latest_receipt,
         },
     )
 
@@ -1325,6 +1331,25 @@ def api_provider_health():
     from app.applications import provider_health
 
     return JSONResponse(provider_health.list_health())
+
+
+@app.get("/applications/receipts", response_class=HTMLResponse)
+def application_receipts_page(request: Request, provider: str = ""):
+    """Provider Post-Approval Execution V1: durable submission-evidence
+    records, one row per genuinely confirmed APPLIED execution -- see
+    app.applications.receipts's module docstring."""
+    from app.applications import receipts as applications_receipts
+
+    return templates.TemplateResponse(
+        request, "application_receipts.html", {"rows": applications_receipts.list_receipts(provider=provider)},
+    )
+
+
+@app.get("/api/applications/receipts")
+def api_application_receipts(provider: str = "", limit: int = 200):
+    from app.applications import receipts as applications_receipts
+
+    return JSONResponse(applications_receipts.list_receipts(provider=provider, limit=limit))
 
 
 @app.get("/api/applications/job-identity")
