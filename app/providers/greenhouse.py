@@ -35,24 +35,58 @@ def _remote_status(location: str) -> Optional[str]:
     return None
 
 
+# Greenhouse's per-company custom `metadata` fields have no fixed schema --
+# a company can name a field anything. We only ever READ a field whose name
+# clearly signals employment type (never fabricate one); this is genuinely
+# exposed structured data on the tenants that define it, honestly absent
+# (employment_type_raw="") on the (majority of) tenants that don't.
+_EMPLOYMENT_TYPE_METADATA_SIGNALS = ("employment type", "employment status", "job type", "worker type")
+
+
+def _employment_type_from_metadata(metadata: list) -> str:
+    for field in metadata or []:
+        name = (field.get("name") or "").strip().lower()
+        if any(signal in name for signal in _EMPLOYMENT_TYPE_METADATA_SIGNALS):
+            value = field.get("value")
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return ""
+
+
 def _normalize(token: str, item: dict) -> RawJobPosting:
     location = ((item.get("location") or {}).get("name") or "").strip()
     departments = item.get("departments") or []
     department = (departments[0].get("name") if departments else None) or None
+    offices = item.get("offices") or []
+    office = (offices[0].get("name") if offices else None) or None
+    metadata = item.get("metadata") or []
+    provider_metadata = {"board_token": token}
+    requisition_id = item.get("requisition_id")
+    if requisition_id:
+        provider_metadata["requisition_id"] = requisition_id
+    internal_job_id = item.get("internal_job_id")
+    if internal_job_id:
+        provider_metadata["internal_job_id"] = internal_job_id
     return RawJobPosting(
         provider="greenhouse",
         external_job_id=str(item.get("id", "")),
         title=item.get("title", "") or "",
-        company=_display_company(token),
+        company=(item.get("company_name") or "").strip() or _display_company(token),
         company_identifier=token,
         location=location,
         remote_status=_remote_status(location),
         description=_strip_html(item.get("content", "")),
         url=item.get("absolute_url", "") or "",
         source_url=item.get("absolute_url", "") or "",
-        published_at=item.get("updated_at"),
+        employment_type_raw=_employment_type_from_metadata(metadata),
+        # `first_published` is the job's genuine original publish date;
+        # `updated_at` moves on every edit (a typo fix would otherwise look
+        # like a brand-new posting to the freshness ranking). Only fall back
+        # to `updated_at` when a tenant genuinely doesn't expose the former.
+        published_at=item.get("first_published") or item.get("updated_at"),
         department=department,
-        provider_metadata={"board_token": token},
+        office=office,
+        provider_metadata=provider_metadata,
     )
 
 
@@ -64,7 +98,7 @@ class GreenhouseProvider(JobProvider):
     name = "greenhouse"
     capabilities = ProviderCapabilities(
         provider_name="greenhouse",
-        provider_version="2.0.0",
+        provider_version="2.1.0",
         discovery_supported=True,
         detail_fetch_supported=False,
         structured_location_supported=True,
@@ -75,7 +109,15 @@ class GreenhouseProvider(JobProvider):
         requires_credentials=False,
         submission_supported=False,
         support_level=SupportLevel.FULL,
-        notes="Single unauthenticated request per board token; no pagination needed (API returns full job list).",
+        notes=(
+            "Single unauthenticated request per board token; no pagination needed (API returns full job "
+            "list). published_at uses the API's `first_published` (falls back to `updated_at` only when a "
+            "tenant doesn't expose it) so an edit no longer looks like a brand-new posting. company_name is "
+            "read directly from the API when present. employment_type_raw is a best-effort scan of the "
+            "tenant's own freeform `metadata` custom fields for one named like an employment-type question "
+            "(no fixed schema -- structured_employment_type_supported stays False since this is a heuristic, "
+            "not a structural API guarantee like Lever/Ashby's dedicated field)."
+        ),
     )
 
     def __init__(self, board_tokens: list[str], client: Optional[httpx.Client] = None, timeout: float = 10.0):

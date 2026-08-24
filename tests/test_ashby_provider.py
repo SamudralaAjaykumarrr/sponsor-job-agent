@@ -82,6 +82,61 @@ def test_ashby_respects_max_jobs():
     assert len(jobs) == 2
 
 
+def test_ashby_salary_picks_the_salary_component_not_the_first_component():
+    # Real-world shape (verified live against api.ashbyhq.com): summaryComponents
+    # commonly lists a non-salary component (equity/bonus, minValue=None) BEFORE
+    # the actual Salary component. Picking index [0] unconditionally used to
+    # silently report no salary even when one was genuinely posted.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"organizationName": "Acme", "jobs": [{
+            "id": "job-1", "title": "T", "location": "Remote",
+            "compensation": {"summaryComponents": [
+                {"compensationType": "EquityPercentage", "interval": "NONE", "currencyCode": None,
+                 "minValue": None, "maxValue": None},
+                {"compensationType": "Bonus", "interval": "1 YEAR", "currencyCode": "EUR",
+                 "minValue": None, "maxValue": None},
+                {"compensationType": "Salary", "interval": "1 YEAR", "currencyCode": "EUR",
+                 "minValue": 110000, "maxValue": 185000},
+            ]},
+        }]})
+
+    provider = AshbyProvider(["acme"], client=_client(handler))
+    job = provider.fetch_jobs(max_jobs=10)[0]
+    assert job.salary_min == 110000
+    assert job.salary_max == 185000
+    assert job.salary_currency == "EUR"
+    assert job.salary_period == "year"
+
+
+def test_ashby_salary_none_when_no_salary_component_present():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"organizationName": "Acme", "jobs": [{
+            "id": "job-1", "title": "T", "location": "Remote",
+            "compensation": {"summaryComponents": [
+                {"compensationType": "EquityPercentage", "interval": "NONE", "currencyCode": None,
+                 "minValue": None, "maxValue": None},
+            ]},
+        }]})
+
+    provider = AshbyProvider(["acme"], client=_client(handler))
+    job = provider.fetch_jobs(max_jobs=10)[0]
+    assert job.salary_min is None
+    assert job.salary_max is None
+
+
+def test_ashby_salary_none_when_compensation_missing_entirely():
+    # Schema-drift resilience: most Ashby tenants don't expose compensation at all.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"organizationName": "Acme", "jobs": [
+            {"id": "job-1", "title": "T", "location": "Remote"},
+        ]})
+
+    provider = AshbyProvider(["acme"], client=_client(handler))
+    job = provider.fetch_jobs(max_jobs=10)[0]
+    assert job.salary_min is None
+    assert job.salary_max is None
+
+
 def test_ashby_capabilities_are_full():
     assert AshbyProvider.capabilities.support_level.value == "FULL"
     assert AshbyProvider.capabilities.discovery_supported is True
