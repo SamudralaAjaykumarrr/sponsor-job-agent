@@ -1,102 +1,96 @@
-<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>Applications — Sponsor Job Agent</title>
-  <style>
-    body { font-family: -apple-system, Arial, sans-serif; margin: 2rem; background: #f7f7f9; color: #1a1a1a; }
-    table { width: 100%; border-collapse: collapse; background: white; }
-    th, td { padding: 8px 10px; border-bottom: 1px solid #eee; text-align: left; font-size: 0.85rem; }
-    th { background: #fafafa; }
-    .tag { padding: 2px 8px; border-radius: 10px; font-size: 0.75rem; font-weight: 600; }
-    .tag-applied { background: #d4edda; color: #155724; }
-    .tag-needs_action { background: #f8d7da; color: #721c24; }
-    .tag-ready { background: #d1ecf1; color: #0c5460; }
-    .tag-failed { background: #f8d7da; color: #721c24; }
-    .tag-default { background: #eee; color: #333; }
-    form.filters { display: flex; gap: 0.5rem; margin-bottom: 1rem; flex-wrap: wrap; }
-    .banner { padding: 0.75rem 1rem; border-radius: 6px; margin-bottom: 1rem; font-size: 0.9rem; }
-    .banner-off { background: #fff3cd; color: #856404; }
-    .banner-on { background: #d4edda; color: #155724; }
-    .metrics { display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 1rem; }
-    .metric { background: white; border: 1px solid #ddd; border-radius: 6px; padding: 0.5rem 0.75rem; font-size: 0.8rem; }
-    .metric b { display: block; font-size: 1.1rem; }
-  </style>
-</head>
-<body>
-  <p><a href="/">&larr; back to dashboard</a> · <a href="/applications/doctor">Application Doctor</a> ·
-     <a href="/application-workers">Application Workers</a> ·
-     <a href="/applications/capability-matrix">Provider Capability Matrix</a> ·
-     <a href="/applications/browser-sessions">Browser-Assist Sessions</a> ·
-     <a href="/applications/browser-capability-matrix">Browser-Assist Capability Matrix</a>
-     · <a href="/applications/provider-health">Provider Health</a></p>
-  <h1>Applications</h1>
-
-  <div class="banner {{ 'banner-on' if executor_enabled else 'banner-off' }}">
-    Application executor: <strong>{{ 'ON' if executor_enabled else 'OFF' }}</strong> ·
-    Auto-prepare: <strong>{{ 'ON' if auto_prepare_enabled else 'OFF' }}</strong> ·
-    Auto submit: <strong>{{ 'ON' if auto_submit_enabled else 'OFF' }}</strong>
-    {% if not executor_enabled %}— set APPLICATION_EXECUTOR_ENABLED=true to allow queuing applications.{% endif %}
+{% extends "base.html" %}
+{% block title %}Applications — Sponsor Job Agent{% endblock %}
+{% block content_width %}wide{% endblock %}
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1>Applications</h1>
+    <p class="subtitle">Every application execution the agent (or you) started, grouped by what needs to happen next.</p>
   </div>
+</div>
 
-  <div class="banner {{ 'banner-on' if browser_assist_enabled else 'banner-off' }}">
-    Browser assist: <strong>{{ 'ON' if browser_assist_enabled else 'OFF' }}</strong>
-    {% if browser_assist_enabled %}· Mode: <strong>{{ 'HEADLESS' if browser_headless else 'VISIBLE' }}</strong>{% endif %}
-    — <a href="/applications/browser-sessions">view sessions</a>
-  </div>
+<div class="banner {{ 'banner-good' if executor_enabled else 'banner-warn' }}">
+  Application executor: <strong>{{ 'ON' if executor_enabled else 'OFF' }}</strong> ·
+  Auto-prepare: <strong>{{ 'ON' if auto_prepare_enabled else 'OFF' }}</strong> ·
+  Auto submit: <strong>{{ 'ON' if auto_submit_enabled else 'OFF' }}</strong>
+  {% if not executor_enabled %}— set APPLICATION_EXECUTOR_ENABLED=true to allow queuing applications.{% endif %}
+</div>
 
-  <div class="metrics">
-    {% for key in ["applications_ready", "applications_queued", "applications_prepared", "applications_needs_user_action", "applications_submitted", "applications_confirmed", "applications_failed", "applications_duplicate_blocked", "submission_unknown"] %}
-    <div class="metric"><b>{{ metrics[key] }}</b>{{ key.replace('applications_', '').replace('_', ' ') }}</div>
-    {% endfor %}
-  </div>
+<div class="banner {{ 'banner-good' if browser_assist_enabled else 'banner-warn' }}">
+  Browser assist: <strong>{{ 'ON' if browser_assist_enabled else 'OFF' }}</strong>
+  {% if browser_assist_enabled %}· Mode: <strong>{{ 'HEADLESS' if browser_headless else 'VISIBLE' }}</strong>{% endif %}
+  — <a href="/applications/browser-sessions">view sessions</a>
+</div>
 
-  <h2>Fleet &amp; daily budget</h2>
-  <div class="metrics">
-    <div class="metric"><b>{{ fleet.application_workers_online }}</b>workers online</div>
-    <div class="metric"><b>{{ fleet.application_workers_draining }}</b>workers draining</div>
-    <div class="metric"><b>{{ fleet.application_queue_depth }}</b>queue depth</div>
-    <div class="metric"><b>{{ fleet.application_leases_active }}</b>leases active</div>
-    <div class="metric"><b>{{ budget.submitted_today }}</b>submitted today</div>
-    <div class="metric"><b>{{ budget.confirmed_today }}</b>confirmed today</div>
-    <div class="metric"><b>{{ budget.failed_today }}</b>failed today</div>
-    <div class="metric"><b>{{ budget.needs_user_action_today }}</b>needs user action today</div>
-    <div class="metric"><b>{{ budget.hourly_budget_remaining }}</b>hourly budget left</div>
-    <div class="metric"><b>{{ budget.daily_budget_remaining }}</b>daily budget left</div>
+<div class="stat-grid">
+  {% for key in ["applications_ready", "applications_queued", "applications_prepared", "applications_needs_user_action", "applications_submitted", "applications_confirmed", "applications_failed", "applications_duplicate_blocked", "submission_unknown"] %}
+  <div class="stat-card"><div class="num">{{ metrics[key] }}</div><div class="label">{{ key.replace('applications_', '').replace('_', ' ') }}</div></div>
+  {% endfor %}
+</div>
+
+<details style="margin-bottom:1rem;">
+  <summary class="faint" style="cursor:pointer;">Fleet &amp; daily budget</summary>
+  <div class="stat-grid">
+    <div class="stat-card"><div class="num">{{ fleet.application_workers_online }}</div><div class="label">workers online</div></div>
+    <div class="stat-card"><div class="num">{{ fleet.application_workers_draining }}</div><div class="label">workers draining</div></div>
+    <div class="stat-card"><div class="num">{{ fleet.application_queue_depth }}</div><div class="label">queue depth</div></div>
+    <div class="stat-card"><div class="num">{{ fleet.application_leases_active }}</div><div class="label">leases active</div></div>
+    <div class="stat-card"><div class="num">{{ budget.submitted_today }}</div><div class="label">submitted today</div></div>
+    <div class="stat-card"><div class="num">{{ budget.confirmed_today }}</div><div class="label">confirmed today</div></div>
+    <div class="stat-card"><div class="num">{{ budget.failed_today }}</div><div class="label">failed today</div></div>
+    <div class="stat-card"><div class="num">{{ budget.needs_user_action_today }}</div><div class="label">needs user action today</div></div>
+    <div class="stat-card"><div class="num">{{ budget.hourly_budget_remaining }}</div><div class="label">hourly budget left</div></div>
+    <div class="stat-card"><div class="num">{{ budget.daily_budget_remaining }}</div><div class="label">daily budget left</div></div>
     {% for provider, state in fleet.application_provider_circuit_state.items() %}
-    <div class="metric"><b>{{ state }}</b>circuit: {{ provider }}</div>
+    <div class="stat-card"><div class="num">{{ state }}</div><div class="label">circuit: {{ provider }}</div></div>
     {% endfor %}
   </div>
+</details>
 
-  <form class="filters" method="get" action="/applications">
-    <select name="bucket">
-      <option value="">All buckets</option>
-      {% for b in buckets %}
-      <option value="{{ b }}" {{ 'selected' if filters.bucket == b else '' }}>{{ b }}</option>
-      {% endfor %}
-    </select>
-    <input type="text" name="company" placeholder="Company" value="{{ filters.company }}">
-    <select name="provider">
+<nav class="tab-row" aria-label="Application status">
+  {% for value, label in tabs %}
+  <a href="/applications?bucket={{ value }}{% if filters.company %}&company={{ filters.company }}{% endif %}{% if filters.work_arrangement %}&work_arrangement={{ filters.work_arrangement }}{% endif %}{% if filters.sponsorship_status %}&sponsorship_status={{ filters.sponsorship_status }}{% endif %}"
+     {% if filters.bucket == value %}aria-current="page"{% endif %}>
+    {{ label }}<span class="count">{{ tab_counts.get(value, 0) }}</span>
+  </a>
+  {% endfor %}
+</nav>
+
+<form class="field-row" method="get" action="/applications" style="margin-bottom:1rem;">
+  <input type="hidden" name="bucket" value="{{ filters.bucket }}">
+  <div class="field" style="max-width:200px;"><label for="f-company">Company</label><input type="text" id="f-company" name="company" placeholder="Company" value="{{ filters.company }}"></div>
+  <div class="field" style="max-width:180px;">
+    <label for="f-provider">Provider</label>
+    <select id="f-provider" name="provider">
       <option value="">Any provider</option>
       {% for p in ["greenhouse", "lever", "mock_ats", "generic"] %}
       <option value="{{ p }}" {{ 'selected' if filters.provider == p else '' }}>{{ p }}</option>
       {% endfor %}
     </select>
-    <select name="work_arrangement">
+  </div>
+  <div class="field" style="max-width:180px;">
+    <label for="f-warr">Arrangement</label>
+    <select id="f-warr" name="work_arrangement">
       <option value="">Any arrangement</option>
       {% for w in ["REMOTE", "HYBRID", "ONSITE"] %}
       <option value="{{ w }}" {{ 'selected' if filters.work_arrangement == w else '' }}>{{ w }}</option>
       {% endfor %}
     </select>
-    <select name="sponsorship_status">
+  </div>
+  <div class="field" style="max-width:220px;">
+    <label for="f-spons">Sponsorship</label>
+    <select id="f-spons" name="sponsorship_status">
       <option value="">Any sponsorship</option>
       {% for s in ["CONFIRMED_SPONSOR", "LIKELY_SPONSOR", "UNKNOWN", "NO_SPONSORSHIP"] %}
       <option value="{{ s }}" {{ 'selected' if filters.sponsorship_status == s else '' }}>{{ s }}</option>
       {% endfor %}
     </select>
-    <button type="submit">Filter</button>
-  </form>
+  </div>
+  <div class="field" style="align-self:flex-end;"><button class="btn btn-primary" type="submit">Filter</button></div>
+</form>
 
+{% if rows %}
+<div class="table-wrap">
   <table>
     <thead>
       <tr>
@@ -110,7 +104,7 @@
         <td><a href="/jobs/{{ r.job_id }}">{{ r.job_title }}</a></td>
         <td>{{ r.job_company }}</td>
         <td>{{ r.provider }}</td>
-        <td><span class="tag tag-default">{{ r.status }}</span></td>
+        <td><span class="tag tag-neutral">{{ r.status }}</span></td>
         <td>{{ r.mode }}</td>
         <td>{{ r.job_sponsorship_status }}</td>
         <td>{{ r.started_at }}</td>
@@ -119,6 +113,11 @@
       {% endfor %}
     </tbody>
   </table>
-  {% if not rows %}<p>No application executions match these filters.</p>{% endif %}
-</body>
-</html>
+</div>
+{% else %}
+<div class="empty-state surface surface-pad">
+  <div class="icon">📄</div>
+  <p>No application executions match these filters.</p>
+</div>
+{% endif %}
+{% endblock %}

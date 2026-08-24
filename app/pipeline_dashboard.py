@@ -32,6 +32,15 @@ def _count_full_time(jobs: list[Job]) -> int:
     )
 
 
+def _count_fresh(jobs: list[Job]) -> int:
+    """'Fresh jobs' dashboard card: freshness_tier already computed and
+    stored per job by app.freshness.tracker at discovery/ingest time (never
+    recomputed here) -- MAXIMUM/VERY_HIGH/HIGH/MODERATE (<=24h, CLAUDE.md's
+    own freshness tiers); LOWER means older-than-24h or unknown timestamp,
+    so it is never counted as fresh."""
+    return sum(1 for j in jobs if j.freshness_tier.value != "LOWER")
+
+
 def compute_pipeline_summary(all_jobs: list[Job]) -> dict:
     """One grouped query per table -- never N+1, never a per-job DB query.
     `all_jobs` is the full (unfiltered) job list, already fetched once by
@@ -40,6 +49,7 @@ def compute_pipeline_summary(all_jobs: list[Job]) -> dict:
     with db_session() as conn:
         total_jobs = len(all_jobs)
         full_time_eligible = _count_full_time(all_jobs)
+        fresh_jobs = _count_fresh(all_jobs)
 
         sponsor_confirmed = conn.execute(
             "SELECT COUNT(*) AS c FROM jobs WHERE sponsorship_status = 'CONFIRMED_SPONSOR' AND is_test_fixture = 0"
@@ -104,6 +114,7 @@ def compute_pipeline_summary(all_jobs: list[Job]) -> dict:
 
     return {
         "jobs_discovered": total_jobs,
+        "fresh_jobs": fresh_jobs,
         "full_time_eligible": full_time_eligible,
         "sponsor_confirmed": sponsor_confirmed,
         "high_alignment_jobs": high_alignment,
@@ -316,3 +327,150 @@ def is_actionable(job: Job) -> bool:
     only a CONFIRMED non-full-time classification hides a job here."""
     classified = classify_employment_type(job.employment_type, job.title, job.description)
     return classified not in _NON_ACTIONABLE_EMPLOYMENT_TYPES
+
+
+def build_job_rows(
+    filters: dict, *, full_time_only: bool = True, resume_status: str = "",
+    needs_action_only: bool = False, row_cap: int | None = None, search: str = "",
+) -> dict:
+    """Shared row-building logic behind both the unified Dashboard (top
+    matches) and the dedicated Jobs page (full searchable/filterable list) --
+    CLAUDE.md's 'use current backend routes/services rather than creating
+    duplicate business logic' rule extended to the premium UI's own two
+    job-listing surfaces. Pulled out of the (until now) inline dashboard()
+    route body unchanged -- same filters dict shape (app.jobs_repo.list_jobs),
+    same is_actionable() gate, same resume_status/needs_action_only
+    post-filters, same priority-sorted row cap."""
+    from app.applications import repo as applications_repo
+    from app.jobs_repo import list_jobs
+    from app.resume_optimizer import repo as resume_optimizer_repo
+
+    jobs = list_jobs(filters)
+    if full_time_only:
+        jobs = [j for j in jobs if is_actionable(j)]
+    if search:
+        needle = search.strip().lower()
+        jobs = [
+            j for j in jobs
+            if needle in (j.title or "").lower() or needle in (j.company or "").lower()
+            or needle in (j.location or "").lower()
+        ]
+
+    job_ids = [j.id for j in jobs if j.id is not None]
+    quality_by_job = resume_optimizer_repo.get_quality_reports_for_jobs(job_ids)
+    variant_by_job = resume_optimizer_repo.get_current_variants_for_jobs(job_ids)
+    active_execution_by_job = applications_repo.get_active_executions_for_jobs(job_ids)
+
+    def resume_status_of(jid: int) -> str:
+        variant = variant_by_job.get(jid)
+        return variant["status"] if variant else "NOT_GENERATED"
+
+    if resume_status:
+        jobs = [j for j in jobs if resume_status_of(j.id) == resume_status]
+    if needs_action_only:
+        jobs = [j for j in jobs if (active_execution_by_job.get(j.id) or {}).get("requires_user_action")]
+
+    total_matching = len(jobs)
+    if row_cap is not None and total_matching > row_cap:
+        jobs = jobs[:row_cap]
+
+    pipeline_rows = [
+        {
+            "job": j,
+            "quality_report": (quality_by_job.get(j.id) or {}).get("report"),
+            "resume_status": resume_status_of(j.id),
+            "page_count": (variant_by_job.get(j.id) or {}).get("page_count"),
+            "execution": active_execution_by_job.get(j.id),
+            "employment_classified": classify_employment_type(j.employment_type, j.title, j.description).value,
+        }
+        for j in jobs
+    ]
+    return {"jobs": jobs, "pipeline_rows": pipeline_rows, "total_matching": total_matching}
+
+
+# --- Tracker board (Applied / Assessment / Interview / Offer / Rejected /
+# Withdrawn) -------------------------------------------------------------
+
+TRACKER_LANES: list[tuple[str, str]] = [
+    ("APPLIED", "Applied"),
+    ("ASSESSMENT", "Assessment"),
+    ("INTERVIEW", "Interview"),
+    ("OFFER", "Offer"),
+    ("REJECTED", "Rejected"),
+    ("WITHDRAWN", "Withdrawn"),
+]
+
+
+def build_tracker_board(lane_limit: int = 50) -> list[dict]:
+    """One bounded, indexed query per lane (application_state is indexed --
+    see app.jobs_repo) -- never a full-table scan, matching this project's
+    existing 'every list/query is bounded' convention. Test fixtures are
+    excluded, matching every other real-mode dashboard query."""
+    with db_session() as conn:
+        lanes = []
+        for state_value, label in TRACKER_LANES:
+            rows = conn.execute(
+                """SELECT id, company, title, location, work_arrangement, sponsorship_status,
+                          updated_at, first_seen_at
+                   FROM jobs WHERE application_state = ? AND is_test_fixture = 0
+                   ORDER BY updated_at DESC LIMIT ?""",
+                (state_value, lane_limit),
+            ).fetchall()
+            total = conn.execute(
+                "SELECT COUNT(*) AS c FROM jobs WHERE application_state = ? AND is_test_fixture = 0",
+                (state_value,),
+            ).fetchone()["c"]
+            lanes.append({
+                "state": state_value, "label": label, "total": total,
+                "jobs": [dict(r) for r in rows],
+            })
+        return lanes
+
+
+def count_skipped_jobs() -> int:
+    with db_session() as conn:
+        return conn.execute(
+            "SELECT COUNT(*) AS c FROM jobs WHERE application_state LIKE 'SKIPPED%' AND is_test_fixture = 0"
+        ).fetchone()["c"]
+
+
+def list_skipped_job_rows(*, company: str = "", provider: str = "", work_arrangement: str = "",
+                           sponsorship_status: str = "", limit: int = 200) -> list[dict]:
+    """Premium UI Applications page's "Skipped" tab: skipped jobs never get
+    an application_executions row (the pipeline hard-skips them before
+    reaching the executor), so this reads app.jobs_repo's own table
+    directly and reshapes rows into the same shape
+    app.applications.repo.list_executions_with_jobs() already returns --
+    letting the Applications template render both with one identical table,
+    never a second parallel template."""
+    with db_session() as conn:
+        clauses = ["application_state LIKE 'SKIPPED%'", "is_test_fixture = 0"]
+        params: list = []
+        if company:
+            clauses.append("company LIKE ?")
+            params.append(f"%{company}%")
+        if provider:
+            clauses.append("provider = ?")
+            params.append(provider)
+        if work_arrangement:
+            clauses.append("work_arrangement = ?")
+            params.append(work_arrangement)
+        if sponsorship_status:
+            clauses.append("sponsorship_status = ?")
+            params.append(sponsorship_status)
+        query = (
+            "SELECT id, title, company, provider, application_state, sponsorship_status, "
+            "updated_at, notes FROM jobs WHERE " + " AND ".join(clauses) +
+            " ORDER BY updated_at DESC LIMIT ?"
+        )
+        params.append(limit)
+        rows = conn.execute(query, params).fetchall()
+    return [
+        {
+            "job_id": r["id"], "job_title": r["title"], "job_company": r["company"],
+            "provider": r["provider"], "status": r["application_state"],
+            "mode": "", "job_sponsorship_status": r["sponsorship_status"],
+            "started_at": r["updated_at"], "user_action_reason": r["notes"] or "",
+        }
+        for r in rows
+    ]

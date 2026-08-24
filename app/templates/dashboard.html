@@ -1,255 +1,194 @@
-<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>Sponsor Job Agent</title>
-  <style>
-    body { font-family: -apple-system, Arial, sans-serif; margin: 2rem; background: #f7f7f9; color: #1a1a1a; }
-    h1 { margin-bottom: 0.25rem; }
-    .subtitle { color: #666; margin-top: 0; }
-    .warning { background: #fff3cd; border: 1px solid #ffe08a; padding: 0.75rem 1rem; border-radius: 6px; margin: 1rem 0; }
-    .agent-bar { background: white; border: 1px solid #ddd; border-radius: 8px; padding: 0.75rem 1rem; margin-bottom: 1rem; display: flex; align-items: center; gap: 1.5rem; flex-wrap: wrap; font-size: 0.85rem; }
-    .agent-bar .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; }
-    .dot-on { background: #28a745; }
-    .dot-off { background: #999; }
-    .agent-bar form { display: inline; }
-    .agent-bar button { padding: 4px 10px; border-radius: 6px; border: 1px solid #ccc; background: #f0f0f0; }
-    form.ingest { background: white; border: 1px solid #ddd; border-radius: 8px; padding: 1rem; margin-bottom: 1.5rem; }
-    form.ingest textarea { width: 100%; min-height: 120px; }
-    form.ingest input[type=text] { width: 100%; padding: 4px; }
-    .row { display: flex; gap: 1rem; margin-bottom: 0.5rem; }
-    .row > div { flex: 1; }
-    .filters { margin-bottom: 1rem; }
-    .filters a { margin-right: 0.75rem; padding: 4px 10px; border-radius: 14px; background: #eee; text-decoration: none; color: #333; font-size: 0.85rem; }
-    .filters a.active { background: #333; color: white; }
-    table { width: 100%; border-collapse: collapse; background: white; }
-    th, td { padding: 8px 10px; border-bottom: 1px solid #eee; text-align: left; font-size: 0.9rem; }
-    th { background: #fafafa; }
-    .tag { padding: 2px 8px; border-radius: 10px; font-size: 0.75rem; font-weight: 600; }
-    .tag-confirmed { background: #d4edda; color: #155724; }
-    .tag-likely { background: #fff3cd; color: #856404; }
-    .tag-unknown { background: #eee; color: #555; }
-    .tag-no { background: #f8d7da; color: #721c24; }
-    .tag-remote { background: #d1ecf1; color: #0c5460; }
-    .tag-hybrid { background: #e2d9f3; color: #4a2e8a; }
-    .tag-onsite { background: #eee; color: #555; }
-    .tag-ready { background: #d4edda; color: #155724; }
-    .tag-stale { background: #fff3cd; color: #856404; }
-    .tag-notgen { background: #eee; color: #555; }
-    .tag-failed { background: #f8d7da; color: #721c24; }
-    button { cursor: pointer; }
-    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 0.6rem; margin-bottom: 1rem; }
-    .card { background: white; border: 1px solid #ddd; border-radius: 8px; padding: 0.75rem 1rem; }
-    .card .num { font-size: 1.5rem; font-weight: 700; }
-    .card .label { font-size: 0.75rem; color: #666; }
-    .agent-hero { background: white; border: 1px solid #ddd; border-radius: 10px; padding: 1rem 1.25rem; margin-bottom: 1rem; }
-    .agent-hero .top-row { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
-    .state-pill { padding: 4px 12px; border-radius: 14px; font-weight: 700; font-size: 0.85rem; }
-    .state-STOPPED { background: #eee; color: #555; }
-    .state-STARTING, .state-STOPPING { background: #fff3cd; color: #856404; }
-    .state-RUNNING { background: #d4edda; color: #155724; }
-    .state-PAUSED { background: #e2d9f3; color: #4a2e8a; }
-    .state-ERROR { background: #f8d7da; color: #721c24; }
-    .agent-hero button.start { background: #155724; color: white; border: none; padding: 8px 18px; border-radius: 6px; font-weight: 600; }
-    .agent-hero button.stop { background: #721c24; color: white; border: none; padding: 8px 18px; border-radius: 6px; font-weight: 600; }
-    .agent-hero button.test { background: #4a2e8a; color: white; border: none; padding: 8px 14px; border-radius: 6px; font-size: 0.85rem; }
-    .agent-hero .meta { font-size: 0.8rem; color: #666; margin-top: 0.5rem; }
-    .queue-item { border-bottom: 1px solid #eee; padding: 0.5rem 0; font-size: 0.85rem; }
-    .queue-item .co { font-weight: 600; }
-    .activity-item { font-size: 0.82rem; padding: 3px 0; color: #444; }
-    .activity-item .ts { color: #999; margin-right: 6px; }
-    .badge-1page { background: #d4edda; color: #155724; padding: 1px 6px; border-radius: 8px; font-size: 0.7rem; }
-    .badge-review { background: #f8d7da; color: #721c24; padding: 1px 6px; border-radius: 8px; font-size: 0.7rem; }
-  </style>
-</head>
-<body>
-  <h1>Sponsor Job Agent</h1>
-  <p class="subtitle">Autonomous agent · ASSIST by default -- nothing is auto-submitted unless a legitimate,
-    verified submission capability exists (see AUTO-SUBMIT status below).
-    · <a href="/providers">Providers</a> · <a href="/registry">Company registry</a>
-    · <a href="/applications">Applications</a>
-    · <a href="/fleet">Fleet</a> · <a href="/acquisition">Acquisition</a>
-    · <a href="/companies">Sponsorship companies</a> · <a href="/sponsorship/review-queue">Review queue</a>
-    · <a href="/sponsorship/doctor">Sponsorship doctor</a> · <a href="/sponsorship/identity-review">Identity review</a>
-    · <a href="/resume-optimizer/doctor">Resume optimizer doctor</a>
-    · <a href="/applications/capability-matrix">ATS capability matrix</a></p>
+{% extends "base.html" %}
+{% from "_job_card.html" import job_card %}
+{% block title %}Dashboard — Sponsor Job Agent{% endblock %}
+{% block content %}
+{% set o = orchestrator %}
 
-  <div class="agent-hero">
-    <div class="top-row">
-      <span>Agent Status: <span class="state-pill state-{{ orchestrator.actual_state }}">{{ orchestrator.actual_state }}</span>
-        {% if orchestrator.test_mode %}<span class="state-pill" style="background:#e2d9f3;color:#4a2e8a;">TEST MODE</span> <a href="/?include_test_data=true" style="font-size:0.75rem;">view test job &rarr;</a>{% endif %}
-      </span>
-      {% if orchestrator.actual_state in ('RUNNING', 'STARTING', 'STOPPING') %}
-      <form method="post" action="/agent/stop"><button class="stop" type="submit">STOP AGENT</button></form>
+<div class="page-header">
+  <div>
+    <h1>Dashboard</h1>
+    <p class="subtitle">Autonomous agent · ASSIST by default — nothing is auto-submitted unless a genuine,
+      verified submission capability exists for that provider (see Settings).</p>
+  </div>
+  <a class="btn btn-primary" href="/jobs#add-job">+ Add a job</a>
+</div>
+
+<section class="agent-hero" data-live-agent aria-label="Agent status">
+  <div class="hero-top">
+    <span>Agent Status: <span class="state-pill state-{{ o.actual_state }}">{{ o.actual_state }}</span></span>
+    {% if o.test_mode %}<span class="state-pill" style="background:var(--info-bg);color:var(--info);">TEST MODE</span>
+      <a href="/?include_test_data=true" class="faint">view test job &rarr;</a>{% endif %}
+    <span class="topbar-spacer"></span>
+    <span class="btn-row">
+      {% if o.actual_state in ('RUNNING', 'STARTING', 'STOPPING') %}
+      <form method="post" action="/agent/stop"><button class="btn btn-stop" type="submit">STOP AGENT</button></form>
       {% else %}
-      <form method="post" action="/agent/start"><button class="start" type="submit">START AGENT</button></form>
+      <form method="post" action="/agent/start"><button class="btn btn-primary" type="submit">START AGENT</button></form>
       <form method="post" action="/agent/start">
         <input type="hidden" name="test_mode" value="true">
-        <button class="test" type="submit">START AGENT (TEST MODE)</button>
+        <button class="btn btn-test" type="submit">START AGENT (TEST MODE)</button>
       </form>
       {% endif %}
-      <span class="meta">Interval: {{ agent_config.interval_minutes }}m ·
-        Providers: {{ agent_config.enabled_providers | join(', ') }} ·
-        Application executor: {{ 'ON' if agent_config.application_executor_enabled or orchestrator.actual_state == 'RUNNING' else 'OFF' }} ·
-        Auto-submit: {{ 'ON' if agent_config.auto_submit_enabled else 'OFF (safe default)' }} ·
-        Sponsorship policy: {{ agent_config.sponsorship_policy }}</span>
-    </div>
-    {% if orchestrator.actual_state == 'RUNNING' %}
-    <div class="meta" style="font-weight:600;color:#155724;">
-      {% if orchestrator.cycle_in_progress %}
-        Current: {{ {'discovering': 'Discovering fresh jobs', 'generating_resumes': 'Generating one-page resumes', 'preparing_applications': 'Preparing applications', 'executing_applications': 'Filling/submitting applications', 'starting': 'Starting up'}.get(orchestrator.current_stage, orchestrator.current_stage or 'Working') }}
-        {% if orchestrator.current_job_label %} — {{ orchestrator.current_job_label }}{% endif %}
-        (cycle #{{ orchestrator.cycle_number }})
+    </span>
+  </div>
+
+  <div class="hero-meta">
+    <span>Interval: <strong>{{ agent_config.interval_minutes }}m</strong></span>
+    <span>Providers: <strong>{{ agent_config.enabled_providers | join(', ') }}</strong></span>
+    <span>Executor: <strong>{{ 'ON' if agent_config.application_executor_enabled or o.actual_state == 'RUNNING' else 'OFF' }}</strong></span>
+    <span>Auto-submit: <strong>{{ 'ON' if agent_config.auto_submit_enabled else 'OFF (safe default)' }}</strong></span>
+    <span>Sponsorship policy: <strong>{{ agent_config.sponsorship_policy }}</strong></span>
+  </div>
+
+  {% if o.actual_state == 'RUNNING' %}
+  <div class="hero-activity" id="live-current-activity-wrap">
+    Current activity: <span id="live-current-activity">
+      {% if o.cycle_in_progress %}
+        {{ {'discovering': 'Discovering fresh jobs', 'generating_resumes': 'Generating one-page resumes', 'preparing_applications': 'Preparing applications', 'executing_applications': 'Filling/submitting applications', 'starting': 'Starting up'}.get(o.current_stage, o.current_stage or 'Working') }}
+        {% if o.current_job_label %} — {{ o.current_job_label }}{% endif %}
       {% else %}
         Waiting until next cycle.
       {% endif %}
-      {% if orchestrator.heartbeat_stale %}<span style="color:#a94442;"> · ⚠ heartbeat stale ({{ "%.0f"|format(orchestrator.heartbeat_age_seconds) }}s) -- possible stuck cycle, see doctor</span>{% endif %}
-    </div>
-    {% endif %}
-    <div class="meta">
-      Last cycle started: {{ orchestrator.last_cycle_started_at or 'never (first cycle begins within seconds of START)' }} ·
-      Last cycle finished: {{ orchestrator.last_cycle_finished_at or ('in progress' if orchestrator.cycle_in_progress else 'never') }} ·
-      Next cycle: {{ orchestrator.next_cycle_at or ('in progress' if orchestrator.cycle_in_progress else 'pending') }}
-      {% if orchestrator.last_error %} · <span style="color:#a94442;">Last error: {{ orchestrator.last_error }}</span>{% endif %}
-    </div>
-    {% if orchestrator.last_cycle %}
-    <div class="meta">
-      Last cycle counters — jobs processed {{ orchestrator.last_cycle.jobs_processed }},
-      resumes generated {{ orchestrator.last_cycle.resumes_generated }}
-      (one-page {{ orchestrator.last_cycle.one_page_success }}, overflow {{ orchestrator.last_cycle.one_page_overflow }}),
-      applications prepared {{ orchestrator.last_cycle.applications_prepared }},
-      submitted {{ orchestrator.last_cycle.applications_submitted }},
-      needs action {{ orchestrator.last_cycle.needs_user_action }},
-      skipped {{ orchestrator.last_cycle.skipped }}, errors {{ orchestrator.last_cycle.errors }}
-    </div>
-    {% endif %}
-    <details style="margin-top:0.4rem;">
-      <summary style="font-size:0.8rem;color:#666;">Advanced / legacy diagnostics: standalone discovery-only scheduler (not the primary control -- use START/STOP AGENT above)</summary>
-      <div class="agent-bar" style="margin-top:0.5rem;">
-        <span><span class="dot {{ 'dot-on' if agent.enabled else 'dot-off' }}"></span>
-          Legacy discovery-only scheduler: <strong>{{ 'ON' if agent.enabled else 'OFF' }}</strong>{{ ' (running)' if agent.running else '' }}</span>
-        <form method="post" action="/agent/toggle">
-          <input type="hidden" name="enabled" value="{{ 'false' if agent.enabled else 'true' }}">
-          <button type="submit">{{ 'Turn OFF' if agent.enabled else 'Turn ON' }}</button>
-        </form>
-        {% if agent.enabled and orchestrator.actual_state == 'RUNNING' %}
-        <p style="color:#a94442;font-size:0.75rem;">⚠ Both this legacy toggle and the one-click agent are ON -- two independent discovery cycles are running. Turn this OFF; the one-click agent above already covers discovery.</p>
-        {% endif %}
-      </div>
-    </details>
-  </div>
-
-  <div class="cards">
-    <div class="card"><div class="num">{{ summary.jobs_discovered }}</div><div class="label">Jobs found</div></div>
-    <div class="card"><div class="num">{{ summary.full_time_eligible }}</div><div class="label">Full-time eligible</div></div>
-    <div class="card"><div class="num">{{ summary.sponsor_confirmed }}</div><div class="label">Confirmed sponsor</div></div>
-    <div class="card"><div class="num">{{ summary.strong_matches }}</div><div class="label">Strong matches</div></div>
-    <div class="card"><div class="num">{{ summary.one_page_ready }}</div><div class="label">One-page resumes ready</div></div>
-    <div class="card"><div class="num">{{ summary.application_ready }}</div><div class="label">Applications prepared</div></div>
-    <div class="card"><div class="num">{{ summary.applying }}</div><div class="label">Applying</div></div>
-    <div class="card"><div class="num">{{ summary.needs_user_action }}</div><div class="label">Needs your action</div></div>
-    <div class="card"><div class="num">{{ summary.applied_today }}</div><div class="label">Applied today</div></div>
-    <div class="card"><div class="num">{{ summary.skipped }}</div><div class="label">Skipped</div></div>
-  </div>
-
-  {% if needs_action_queue %}
-  <div class="card" style="margin-bottom:1rem;">
-    <h3>Needs Your Action: {{ summary.needs_user_action }}</h3>
-    {% if summary.needs_user_action > needs_action_queue | length %}
-    <p style="font-size:0.75rem;color:#666;">Showing top {{ needs_action_queue | length }} of {{ summary.needs_user_action }}.</p>
-    {% endif %}
-    {% for item in needs_action_queue %}
-    <div class="queue-item">
-      <span class="co">{{ item.company }}</span> — {{ item.role }}
-      <br>Stage: {{ item.stage }} · Reason: {{ item.reason }}
-      <br><em>Already completed:</em> {{ item.completed }} <em>Action needed:</em> {{ item.action }}
-      <a href="/jobs/{{ item.job_id }}">Continue &rarr;</a>
-    </div>
-    {% endfor %}
+    </span>
+    {% if o.cycle_in_progress %}<span class="faint">(cycle #{{ o.cycle_number }})</span>{% endif %}
+    · Heartbeat: <span id="live-heartbeat" class="{{ 'stale' if o.heartbeat_stale else '' }}">{{ 'stale (%.0fs)'|format(o.heartbeat_age_seconds or 0) if o.heartbeat_stale else 'ok' }}</span>
   </div>
   {% endif %}
 
-  {% if recent_activity %}
-  <div class="card" style="margin-bottom:1rem;">
-    <h3>Live Activity</h3>
-    {% for a in recent_activity %}
-    <div class="activity-item"><span class="ts">{{ a.ts }}</span>{% if a.company %}{{ a.company }} — {{ a.role }}: {% endif %}{{ a.text }}</div>
-    {% endfor %}
+  <div class="hero-meta">
+    <span>Last cycle started: <strong>{{ o.last_cycle_started_at or 'never' }}</strong></span>
+    <span>Last cycle finished: <strong id="live-last-cycle">{{ o.last_cycle_finished_at or ('in progress' if o.cycle_in_progress else 'never') }}</strong></span>
+    <span>Next cycle: <strong id="live-next-cycle">{{ o.next_cycle_at or ('in progress' if o.cycle_in_progress else 'pending') }}</strong></span>
+    {% if o.last_error %}<span style="color:var(--bad);">Last error: {{ o.last_error }}</span>{% endif %}
+  </div>
+  {% if o.last_cycle %}
+  <div class="hero-meta">
+    <span>Last cycle — processed <strong>{{ o.last_cycle.jobs_processed }}</strong>,
+      resumes <strong>{{ o.last_cycle.resumes_generated }}</strong>
+      (1-page {{ o.last_cycle.one_page_success }}, overflow {{ o.last_cycle.one_page_overflow }}),
+      prepared <strong>{{ o.last_cycle.applications_prepared }}</strong>,
+      submitted <strong>{{ o.last_cycle.applications_submitted }}</strong>,
+      needs action <strong>{{ o.last_cycle.needs_user_action }}</strong>,
+      skipped <strong>{{ o.last_cycle.skipped }}</strong>, errors <strong>{{ o.last_cycle.errors }}</strong></span>
   </div>
   {% endif %}
 
-  {% if missing_profile_count > 0 %}
-  <div class="warning">
-    <strong>Candidate profile incomplete:</strong> {{ missing_profile_count }} field(s) still need input
-    (e.g. {{ missing_profile_fields | join(", ") }}). Edit <code>candidate_data/profile.json</code>.
-    Resume generation for a job will be blocked until required facts are filled in.
-  </div>
+  <details style="margin-top:0.5rem;">
+    <summary class="faint" style="cursor:pointer;">Advanced: legacy discovery-only scheduler (not the primary control)</summary>
+    <div class="btn-row" style="margin-top:0.5rem;align-items:center;">
+      <span class="chip {{ 'is-active' if agent.enabled else '' }}">Legacy scheduler: {{ 'ON' if agent.enabled else 'OFF' }}{{ ' (running)' if agent.running else '' }}</span>
+      <form method="post" action="/agent/toggle">
+        <input type="hidden" name="enabled" value="{{ 'false' if agent.enabled else 'true' }}">
+        <button class="btn btn-sm btn-ghost" type="submit">{{ 'Turn OFF' if agent.enabled else 'Turn ON' }}</button>
+      </form>
+      {% if agent.enabled and o.actual_state == 'RUNNING' %}
+      <span class="faint" style="color:var(--bad);">⚠ Both this legacy toggle and the one-click agent are ON — turn this off.</span>
+      {% endif %}
+    </div>
+  </details>
+</section>
+
+<div class="pipeline-strip" aria-label="Pipeline stages">
+  <div class="pipeline-step"><div class="step-no">01 · FIND</div><div class="step-title">Discover</div>
+    <div class="step-metric"><b>{{ summary.jobs_discovered }}</b> jobs found · <b>{{ summary.fresh_jobs }}</b> fresh</div></div>
+  <div class="pipeline-step"><div class="step-no">02 · PREP</div><div class="step-title">Prepare</div>
+    <div class="step-metric"><b>{{ summary.one_page_ready }}</b> one-page resumes ready</div></div>
+  <div class="pipeline-step"><div class="step-no">03 · APPLY</div><div class="step-title">Apply</div>
+    <div class="step-metric"><b>{{ summary.applying }}</b> applying · <b>{{ summary.needs_user_action }}</b> need you</div></div>
+  <div class="pipeline-step"><div class="step-no">04 · TRACK</div><div class="step-title">Track</div>
+    <div class="step-metric"><b>{{ summary.applied_today }}</b> applied today</div></div>
+</div>
+
+<div class="stat-grid" data-live-summary aria-label="Pipeline summary">
+  <div class="stat-card"><div class="num" id="stat-jobs_discovered">{{ summary.jobs_discovered }}</div><div class="label">Jobs found</div></div>
+  <div class="stat-card"><div class="num" id="stat-fresh_jobs">{{ summary.fresh_jobs }}</div><div class="label">Fresh jobs</div></div>
+  <div class="stat-card"><div class="num" id="stat-full_time_eligible">{{ summary.full_time_eligible }}</div><div class="label">Full-time eligible</div></div>
+  <div class="stat-card"><div class="num" id="stat-sponsor_confirmed">{{ summary.sponsor_confirmed }}</div><div class="label">Confirmed sponsor</div></div>
+  <div class="stat-card"><div class="num" id="stat-strong_matches">{{ summary.strong_matches }}</div><div class="label">Strong matches</div></div>
+  <div class="stat-card"><div class="num" id="stat-one_page_ready">{{ summary.one_page_ready }}</div><div class="label">One-page resumes ready</div></div>
+  <div class="stat-card"><div class="num" id="stat-application_ready">{{ summary.application_ready }}</div><div class="label">Applications prepared</div></div>
+  <div class="stat-card"><div class="num" id="stat-applying">{{ summary.applying }}</div><div class="label">Applying</div></div>
+  <div class="stat-card accent {{ 'warn-if-nonzero' if summary.needs_user_action else '' }} {{ 'is-nonzero' if summary.needs_user_action else '' }}"><div class="num" id="stat-needs_user_action">{{ summary.needs_user_action }}</div><div class="label">Needs your action</div></div>
+  <div class="stat-card"><div class="num" id="stat-applied_today">{{ summary.applied_today }}</div><div class="label">Applied today</div></div>
+  <div class="stat-card"><div class="num" id="stat-skipped">{{ summary.skipped }}</div><div class="label">Skipped</div></div>
+</div>
+
+{% if needs_action_queue %}
+<section class="surface surface-pad" style="margin-bottom:1rem;">
+  <h2>Needs Your Action <span class="faint">({{ summary.needs_user_action }})</span></h2>
+  {% if summary.needs_user_action > needs_action_queue | length %}
+  <p class="faint">Showing top {{ needs_action_queue | length }} of {{ summary.needs_user_action }}.</p>
   {% endif %}
-
-  <form class="ingest" method="post" action="/jobs/ingest">
-    <h3>Ingest a job description</h3>
-    <div class="row">
-      <div><label>Title</label><input type="text" name="title" required></div>
-      <div><label>Company</label><input type="text" name="company" required></div>
-    </div>
-    <div class="row">
-      <div><label>Location</label><input type="text" name="location"></div>
-      <div><label>URL</label><input type="text" name="url"></div>
-      <div><label>Published at (ISO, optional)</label><input type="text" name="published_at" placeholder="2026-08-21T12:00:00Z"></div>
-    </div>
-    <label>Job description</label>
-    <textarea name="description" required></textarea>
-    <div class="row">
-      <div>
-        <label>Mode</label>
-        <select name="mode">
-          <option value="ASSIST" selected>ASSIST</option>
-          <option value="ANALYZE">ANALYZE</option>
-        </select>
-      </div>
-    </div>
-    <button type="submit">Ingest &amp; Process</button>
-  </form>
-
-  <div class="filters">
-    <a href="/" class="{{ 'active' if not filters.work_arrangement and not filters.sponsorship_status and not filters.application_state and not filters.fresh_under_1hr and not filters.fresh_under_6hr and not filters.high_priority else '' }}">All</a>
-    <a href="/?fresh_under_1hr=true">Fresh &lt; 1hr</a>
-    <a href="/?fresh_under_6hr=true">Fresh &lt; 6hr</a>
-    <a href="/?work_arrangement=REMOTE">Remote</a>
-    <a href="/?work_arrangement=HYBRID">Hybrid</a>
-    <a href="/?work_arrangement=ONSITE">Onsite</a>
-    <a href="/?sponsorship_status=CONFIRMED_SPONSOR">Confirmed Sponsor</a>
-    <a href="/?sponsorship_status=LIKELY_SPONSOR">Likely Sponsor</a>
-    <a href="/?high_priority=true">High Priority</a>
-    <a href="/?application_state=READY_TO_APPLY">Ready To Apply</a>
-    <a href="/?application_state=REVIEW_REQUIRED">Review Required</a>
-    <a href="/?application_state=APPLIED">Applied</a>
-    <a href="/?application_state=INTERVIEW">Interview</a>
+  {% for item in needs_action_queue %}
+  <div class="action-item">
+    <span class="co">{{ item.company }}</span> — {{ item.role }}
+    <br>Stage: {{ item.stage }} · Reason: {{ item.reason }}
+    <br><span class="faint">Already completed: {{ item.completed }}</span>
+    <br><a href="/jobs/{{ item.job_id }}">Continue &rarr;</a>
   </div>
-  <div class="filters">
-    <span style="font-size:0.8rem;color:#666;margin-right:0.5rem;">Historical sponsor strength (never overrides current-role status):</span>
-    <a href="/?historical_strength=STRONG_RECENT">Recent strong history</a>
-    <a href="/?historical_strength=SOME">Some history</a>
-    <a href="/?historical_strength=OLD">Old history</a>
-    <a href="/?historical_strength=NONE">No known history</a>
-  </div>
-  <div class="filters">
-    <span style="font-size:0.8rem;color:#666;margin-right:0.5rem;">Resume state:</span>
-    <a href="/?resume_status=READY">Ready</a>
-    <a href="/?resume_status=STALE">Stale</a>
-    <a href="/?resume_status=NOT_GENERATED">Not generated</a>
-    <a href="/?resume_status=CLAIM_CHECK_FAILED">Claim check failed</a>
-    <a href="/?needs_action_only=true">Needs user action</a>
-    <a href="/?full_time_only=false">Include non-full-time (audit)</a>
-  </div>
+  {% endfor %}
+</section>
+{% endif %}
 
-  {% if total_matching is defined and total_matching > pipeline_rows|length %}
-  <p style="font-size:0.85rem;color:#666;">
-    Showing top {{ pipeline_rows|length }} of {{ total_matching }} matching jobs (sorted by priority) --
-    use filters above to narrow further.
-  </p>
-  {% endif %}
+{% if pipeline_rows %}
+<section style="margin-bottom:1.25rem;">
+  <h2>Top matches</h2>
+  <div class="job-grid">
+    {% for row in pipeline_rows[:6] %}{{ job_card(row) }}{% endfor %}
+  </div>
+  {% if pipeline_rows | length > 6 %}<p class="faint" style="margin-top:0.6rem;"><a href="/jobs">See all matching jobs &rarr;</a></p>{% endif %}
+</section>
+{% endif %}
 
+{% if missing_profile_count > 0 %}
+<div class="banner banner-warn">
+  <strong>Candidate profile incomplete:</strong> {{ missing_profile_count }} field(s) still need input
+  (e.g. {{ missing_profile_fields | join(", ") }}). See <a href="/profile">Profile</a> — edit
+  <code>candidate_data/profile.json</code> to fill them in.
+  Resume generation for a job will be blocked until required facts are filled in.
+</div>
+{% endif %}
+
+<div class="field-row" style="margin-bottom:0.75rem;">
+  <div class="chip-row" style="margin-bottom:0;">
+    <span class="chip-label">Filter:</span>
+    <a class="chip {{ 'is-active' if not filters.work_arrangement and not filters.sponsorship_status and not filters.application_state and not filters.fresh_under_1hr and not filters.fresh_under_6hr and not filters.high_priority else '' }}" href="/">All</a>
+    <a class="chip" href="/?fresh_under_1hr=true">Fresh &lt; 1hr</a>
+    <a class="chip" href="/?fresh_under_6hr=true">Fresh &lt; 6hr</a>
+    <a class="chip" href="/?work_arrangement=REMOTE">Remote</a>
+    <a class="chip" href="/?work_arrangement=HYBRID">Hybrid</a>
+    <a class="chip" href="/?work_arrangement=ONSITE">Onsite</a>
+    <a class="chip" href="/?sponsorship_status=CONFIRMED_SPONSOR">Confirmed Sponsor</a>
+    <a class="chip" href="/?sponsorship_status=LIKELY_SPONSOR">Likely Sponsor</a>
+    <a class="chip" href="/?high_priority=true">High Priority</a>
+    <a class="chip" href="/?application_state=READY_TO_APPLY">Ready To Apply</a>
+    <a class="chip" href="/?application_state=REVIEW_REQUIRED">Review Required</a>
+    <a class="chip" href="/?application_state=APPLIED">Applied</a>
+    <a class="chip" href="/?application_state=INTERVIEW">Interview</a>
+  </div>
+</div>
+<div class="chip-row">
+  <span class="chip-label">Historical sponsor strength (never overrides current-role status):</span>
+  <a class="chip" href="/?historical_strength=STRONG_RECENT">Recent strong history</a>
+  <a class="chip" href="/?historical_strength=SOME">Some history</a>
+  <a class="chip" href="/?historical_strength=OLD">Old history</a>
+  <a class="chip" href="/?historical_strength=NONE">No known history</a>
+</div>
+<div class="chip-row">
+  <span class="chip-label">Resume state:</span>
+  <a class="chip" href="/?resume_status=READY">Ready</a>
+  <a class="chip" href="/?resume_status=STALE">Stale</a>
+  <a class="chip" href="/?resume_status=NOT_GENERATED">Not generated</a>
+  <a class="chip" href="/?resume_status=CLAIM_CHECK_FAILED">Claim check failed</a>
+  <a class="chip" href="/?needs_action_only=true">Needs user action</a>
+  <a class="chip" href="/?full_time_only=false">Include non-full-time (audit)</a>
+</div>
+
+{% if total_matching is defined and total_matching > pipeline_rows|length %}
+<p class="faint">Showing top {{ pipeline_rows|length }} of {{ total_matching }} matching jobs (sorted by priority) — use filters above to narrow further, or open the full <a href="/jobs">Jobs</a> browser.</p>
+{% endif %}
+
+<div class="table-wrap">
   <table>
     <thead>
       <tr>
@@ -262,12 +201,12 @@
       {% for row in pipeline_rows %}
       {% set job = row.job %}
       <tr>
-        <td>{{ job.company }}{% if job.is_test_fixture %} <span class="tag" style="background:#e2d9f3;color:#4a2e8a;">TEST</span>{% endif %}</td>
+        <td>{{ job.company }}{% if job.is_test_fixture %} <span class="tag tag-test">TEST</span>{% endif %}</td>
         <td>{{ job.title }}</td>
         <td>{{ job.freshness_tier.value }}{% if job.freshness_minutes is not none %} (~{{ "%.0f"|format(job.freshness_minutes) }}m){% endif %}</td>
         <td><span class="tag tag-{{ job.work_arrangement.value.lower() }}">{{ job.work_arrangement.value }}</span></td>
-        <td><span class="tag {{ 'tag-confirmed' if row.employment_classified == 'FULL_TIME' else ('tag-no' if row.employment_classified not in ('FULL_TIME', 'UNKNOWN') else 'tag-unknown') }}">{{ row.employment_classified }}</span>
-          {% if job.employment_type %}<br><span style="font-size:0.7rem;color:#999;">raw: {{ job.employment_type }}</span>{% endif %}</td>
+        <td><span class="tag {{ 'tag-good' if row.employment_classified == 'FULL_TIME' else ('tag-bad' if row.employment_classified not in ('FULL_TIME', 'UNKNOWN') else 'tag-neutral') }}">{{ row.employment_classified }}</span>
+          {% if job.employment_type %}<br><span class="faint">raw: {{ job.employment_type }}</span>{% endif %}</td>
         <td>
           {% set s = job.sponsorship_status.value %}
           <span class="tag {{ 'tag-confirmed' if s == 'CONFIRMED_SPONSOR' else ('tag-likely' if s == 'LIKELY_SPONSOR' else ('tag-no' if s == 'NO_SPONSORSHIP' else 'tag-unknown')) }}">{{ s }}</span>
@@ -282,17 +221,33 @@
           {% endif %}
         </td>
         <td><span class="tag {{ 'tag-ready' if row.resume_status == 'READY' else ('tag-stale' if row.resume_status == 'STALE' else ('tag-failed' if 'FAILED' in row.resume_status else 'tag-notgen')) }}">{{ row.resume_status }}</span>
-          {% if row.page_count == 1 %}<span class="badge-1page">1 PAGE ✓</span>{% elif row.resume_status == 'REVIEW_REQUIRED' %}<span class="badge-review">REVIEW_REQUIRED</span>{% endif %}</td>
+          {% if row.page_count == 1 %}<span class="badge-1page">1 PAGE ✓</span>{% elif row.resume_status == 'REVIEW_REQUIRED' %}<span class="badge-overflow">REVIEW_REQUIRED</span>{% endif %}</td>
         <td>{% if row.quality_report %}{{ row.quality_report.ats_parseability.overall }}{% endif %} {{ job.provider }}</td>
         <td>{{ row.execution.status if row.execution else job.application_state.value }}</td>
-        <td>{% if row.execution and row.execution.requires_user_action %}<strong style="color:#a94442;">{{ row.execution.user_action_reason or 'action needed' }}</strong>{% else %}—{% endif %}</td>
+        <td>{% if row.execution and row.execution.requires_user_action %}<strong style="color:var(--bad);">{{ row.execution.user_action_reason or 'action needed' }}</strong>{% else %}—{% endif %}</td>
         <td>{{ job.priority_tier.value }} ({{ job.priority_score }})</td>
         <td><a href="/jobs/{{ job.id }}">View</a></td>
       </tr>
       {% else %}
-      <tr><td colspan="13">No jobs ingested yet.</td></tr>
+      <tr><td colspan="13">
+        <div class="empty-state">
+          <div class="icon">📭</div>
+          <p>No jobs match these filters yet.</p>
+          <a class="btn btn-primary" href="/jobs#add-job">+ Add a job</a>
+        </div>
+      </td></tr>
       {% endfor %}
     </tbody>
   </table>
-</body>
-</html>
+</div>
+
+{% if recent_activity %}
+<section class="surface surface-pad" style="margin-top:1.25rem;">
+  <h2>Live Activity</h2>
+  {% for a in recent_activity %}
+  <div class="activity-item"><span class="ts">{{ a.ts }}</span>{% if a.company %}{{ a.company }} — {{ a.role }}: {% endif %}{{ a.text }}</div>
+  {% endfor %}
+  <p class="faint" style="margin-top:0.5rem;"><a href="/activity">See full activity &rarr;</a></p>
+</section>
+{% endif %}
+{% endblock %}

@@ -1368,6 +1368,23 @@ def _m052_workday_tenant_dynamic_validation_column(conn, backend: str) -> None:
     ])
 
 
+def _m053_app_settings_table(conn, backend: str) -> None:
+    """Premium UI Settings page: a small, allowlisted key/value override
+    store for runtime-mutable, non-dangerous tuning knobs.
+
+    Safety-relevant flags such as application execution, auto-submit, and
+    browser-assist enablement remain environment-controlled and are not
+    stored here.
+    """
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS app_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )"""
+    )
+
+
 MIGRATIONS: list[tuple[int, str, Callable]] = [
     (2, "phase6_worker_identity_columns", _m002_worker_identity_columns),
     (3, "phase6_schema_drift_table", _m003_schema_drift_table),
@@ -1420,6 +1437,7 @@ MIGRATIONS: list[tuple[int, str, Callable]] = [
     (50, "agent_activity_log_table", _m050_agent_activity_log_table),
     (51, "agent_run_state_lease_columns", _m051_agent_run_state_lease_columns),
     (52, "workday_tenant_dynamic_validation_column", _m052_workday_tenant_dynamic_validation_column),
+    (53, "app_settings_table", _m053_app_settings_table),
 ]
 
 # Version 1 is the implicit Phase 1-5 baseline schema, applied by

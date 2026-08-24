@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Sponsor Job Agent{% endblock %}</title>
+  <link rel="stylesheet" href="/static/css/app.css">
+  {% block extra_head %}{% endblock %}
+</head>
+<body>
+  <a class="skip-link" href="#main-content">Skip to main content</a>
+  <div class="app-shell">
+    <header class="topbar">
+      <a class="brand" href="/">
+        <span class="mark" aria-hidden="true">SJ</span>
+        <span>Sponsor Job Agent</span>
+      </a>
+
+      <nav class="primary-nav" aria-label="Primary">
+        {% set nav_items = [
+          ("/", "Dashboard"), ("/jobs", "Jobs"), ("/applications", "Applications"),
+          ("/tracker", "Tracker"), ("/activity", "Activity"), ("/profile", "Profile"),
+          ("/settings", "Settings"),
+        ] %}
+        {% for href, label in nav_items %}
+        <a href="{{ href }}" {% if request.url.path == href %}aria-current="page"{% endif %}>{{ label }}</a>
+        {% endfor %}
+      </nav>
+
+      <span class="topbar-spacer"></span>
+
+      <span class="agent-chip {{ 'is-running' if orchestrator_state == 'RUNNING' else ('is-error' if orchestrator_state == 'ERROR' else '') }}"
+            data-agent-chip title="Agent status">
+        <span class="dot" aria-hidden="true"></span>{{ orchestrator_state or 'STOPPED' }}
+      </span>
+
+      <details class="nav-toggle">
+        <summary aria-label="Open navigation menu">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M4 6h16M4 12h16M4 18h16" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          </svg>
+        </summary>
+        <nav class="primary-nav-mobile" aria-label="Primary (mobile)">
+          {% for href, label in nav_items %}
+          <a href="{{ href }}" {% if request.url.path == href %}aria-current="page"{% endif %}>{{ label }}</a>
+          {% endfor %}
+        </nav>
+      </details>
+    </header>
+
+    <main id="main-content" class="content {% block content_width %}{% endblock %}">
+      {% block content %}{% endblock %}
+    </main>
+
+    <footer class="app-footer">
+      <div class="links">
+        <span>Advanced &amp; diagnostics:</span>
+        <a href="/providers">Providers</a>
+        <a href="/registry">Company registry</a>
+        <a href="/fleet">Fleet</a>
+        <a href="/acquisition">Acquisition</a>
+        <a href="/companies">Sponsorship companies</a>
+        <a href="/sponsorship/review-queue">Sponsorship review queue</a>
+        <a href="/sponsorship/doctor">Sponsorship doctor</a>
+        <a href="/sponsorship/identity-review">Identity review</a>
+        <a href="/resume-optimizer/doctor">Resume optimizer doctor</a>
+        <a href="/applications/doctor">Application doctor</a>
+        <a href="/applications/capability-matrix">ATS capability matrix</a>
+        <a href="/applications/browser-capability-matrix">Browser-assist matrix</a>
+        <a href="/applications/provider-health">Provider health</a>
+        <a href="/application-workers">Application workers</a>
+        <a href="/registry/doctor">Registry doctor</a>
+      </div>
+      <div>Local, single-user ASSIST-by-default agent. Nothing is submitted automatically unless a genuine,
+        tested submission capability exists for that specific provider -- see Settings for the current safety flags.</div>
+    </footer>
+  </div>
+
+  <script src="/static/js/app.js"></script>
+  {% block extra_scripts %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,38 @@
+{% macro job_card(row) %}
+{% set job = row.job %}
+<article class="job-card">
+  <div class="jc-top">
+    <div>
+      <div class="jc-role">{{ job.title }}</div>
+      <div class="jc-company">{{ job.company }}{% if job.is_test_fixture %} <span class="tag tag-test">TEST</span>{% endif %}</div>
+      <div class="jc-loc">{{ job.location or 'Location not specified' }}
+        · {{ job.freshness_tier.value }}{% if job.freshness_minutes is not none %} (~{{ "%.0f"|format(job.freshness_minutes) }}m){% endif %}</div>
+    </div>
+    <a class="btn btn-sm btn-ghost" href="/jobs/{{ job.id }}">View</a>
+  </div>
+
+  <div class="jc-badges">
+    <span class="tag tag-{{ job.work_arrangement.value.lower() }}">{{ job.work_arrangement.value }}</span>
+    <span class="tag {{ 'tag-good' if row.employment_classified == 'FULL_TIME' else ('tag-bad' if row.employment_classified not in ('FULL_TIME', 'UNKNOWN') else 'tag-neutral') }}">{{ row.employment_classified }}</span>
+    {% set s = job.sponsorship_status.value %}
+    <span class="tag {{ 'tag-confirmed' if s == 'CONFIRMED_SPONSOR' else ('tag-likely' if s == 'LIKELY_SPONSOR' else ('tag-no' if s == 'NO_SPONSORSHIP' else 'tag-unknown')) }}">{{ s }}</span>
+    <span class="tag {{ 'tag-ready' if row.resume_status == 'READY' else ('tag-stale' if row.resume_status == 'STALE' else ('tag-failed' if 'FAILED' in row.resume_status else 'tag-notgen')) }}">resume: {{ row.resume_status }}</span>
+    {% if row.page_count == 1 %}<span class="badge-1page">1 PAGE</span>{% elif row.resume_status == 'REVIEW_REQUIRED' %}<span class="badge-overflow">REVIEW</span>{% endif %}
+  </div>
+
+  <div class="jc-diag">
+    {% if row.quality_report %}
+      {% set rc = row.quality_report.required_skill_coverage %}
+      Match diagnostics: required {{ rc.directly_verified }}+{{ rc.transferable }}/{{ rc.total }} ·
+      {{ row.quality_report.alignment_label }} (not an ATS score)
+    {% else %}
+      Match diagnostics: not analyzed yet
+    {% endif %}
+  </div>
+
+  <div class="jc-footer">
+    <span class="tag tag-neutral">{{ row.execution.status if row.execution else job.application_state.value }}</span>
+    <span class="faint">{{ job.priority_tier.value }} ({{ job.priority_score }})</span>
+  </div>
+</article>
+{% endmacro %}

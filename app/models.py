@@ -49,7 +49,9 @@ class ApplicationState(str, Enum):
     CLAIM_VALIDATION_FAILED = "CLAIM_VALIDATION_FAILED"
     READY_TO_APPLY = "READY_TO_APPLY"
     APPLIED = "APPLIED"
+    ASSESSMENT = "ASSESSMENT"                  # premium-ui tracker: manual-only, see app.applications.tracker
     INTERVIEW = "INTERVIEW"
+    OFFER = "OFFER"                            # premium-ui tracker: manual-only, see app.applications.tracker
     REJECTED = "REJECTED"
 
     # --- Phase 8 (CLAUDE.md Phase 8 section 4): coarse, dashboard-facing

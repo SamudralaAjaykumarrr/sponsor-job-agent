@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Tracker — Sponsor Job Agent{% endblock %}
+{% block content_width %}wide{% endblock %}
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1>Tracker</h1>
+    <p class="subtitle">Your application pipeline, stage by stage. Move a job between stages from its
+      job detail page (Update state) once you know what actually happened.</p>
+  </div>
+</div>
+
+<div class="tracker-board">
+  {% for lane in lanes %}
+  <div class="tracker-lane" aria-label="{{ lane.label }} lane">
+    <h3>{{ lane.label }} <span class="count">{{ lane.total }}</span></h3>
+    {% for j in lane.jobs %}
+    <a class="tracker-card" href="/jobs/{{ j.id }}" style="display:block;color:inherit;text-decoration:none;">
+      <span class="co">{{ j.company }}</span>
+      <span class="role">{{ j.title }}</span>
+      <span class="faint">{{ j.location or '' }}{% if j.location and j.work_arrangement %} · {% endif %}{{ j.work_arrangement }}</span>
+    </a>
+    {% else %}
+    <p class="faint">No jobs here yet.</p>
+    {% endfor %}
+    {% if lane.total > lane.jobs | length %}
+    <p class="faint">+{{ lane.total - lane.jobs | length }} more</p>
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>
+{% endblock %}
