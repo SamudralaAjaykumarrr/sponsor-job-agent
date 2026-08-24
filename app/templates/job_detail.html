@@ -239,6 +239,15 @@
       <strong>Approved.</strong> This provider has no verified automatic final-submission capability --
       final submission requires supported browser assist or manual completion. Never marked Applied
       without real confirmation.
+      {% if active_browser_session %}
+      <br>Browser assist was started automatically for this approval — status
+      <strong>{{ active_browser_session.status }}</strong>. <a href="/applications/browser-sessions/{{ active_browser_session.session_id }}">Continue in the browser-assist session &rarr;</a>
+      {% elif browser_assist_enabled %}
+      <br>Browser assist will open automatically on approval; use the Browser assist section below if it hasn't yet.
+      {% else %}
+      <br>Browser assist is OFF (<code>BROWSER_ASSIST_ENABLED=false</code>) — approved, but application
+      is prepared for manual/browser completion only.
+      {% endif %}
       {% if not approval_freshness.valid %}
       <br><span style="color:var(--bad);">Content changed since approval ({{ approval_freshness.reasons | join(', ') }}) -- re-review before completing.</span>
       {% endif %}
@@ -252,6 +261,11 @@
     {% if active_execution.confirmation_id %}
     <p>Confirmation: {{ active_execution.confirmation_id }}
        {% if active_execution.confirmation_url %}(<a href="{{ active_execution.confirmation_url }}" target="_blank" rel="noopener">receipt</a>){% endif %}</p>
+    {% endif %}
+    {% if latest_receipt %}
+    <p class="faint">Receipt <a href="/applications/receipts">{{ latest_receipt.receipt_id }}</a>
+       via {{ latest_receipt.submitted_via }} · evidence: {{ latest_receipt.evidence_strength }} ·
+       recorded {{ latest_receipt.created_at }}</p>
     {% endif %}
     <div class="btn-row">
       <form method="post" action="/jobs/{{ job.id }}/applications/retry"><button class="btn" type="submit">Retry Preparation</button></form>

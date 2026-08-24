@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Optional
 
 from app import config
-from app.applications import approval, duplicate, rate_limit, repo
+from app.applications import approval, duplicate, rate_limit, receipts, repo
 from app.applications.eligibility import evaluate_executor_eligibility
 from app.applications.fingerprint import check_and_record_baseline
 from app.applications.models import AutomationPolicy, ExecutionMode, ExecutionStatus, PolicyReason
@@ -443,4 +443,24 @@ def process_execution(execution_id: str, *, allow_submission: bool = True, appro
                            confirmation_text_fingerprint=confirmation.confirmation_text_fingerprint)
     repo.log_event(execution_id, job_id, "confirmed", detail=confirmation.confirmation_id,
                     correlation_id=correlation_id)
+    _record_receipt_best_effort(
+        execution_id=execution_id, job_id=job_id, provider=provider.name,
+        submitted_via=f"headless_provider:{provider.name}", confirmation_id=confirmation.confirmation_id,
+        sanitized_url=confirmation.confirmation_url,
+        evidence_strength="STRONG" if confirmation.confirmation_id else "MODERATE",
+        raw_message_fingerprint=confirmation.confirmation_text_fingerprint,
+    )
     return repo.get_execution(execution_id)
+
+
+def _record_receipt_best_effort(**kwargs) -> None:
+    """Receipts are durable evidence, never a gate -- a failure recording one
+    must never turn an already-genuinely-confirmed APPLIED execution into an
+    error (mirrors app.applications.checkpoints/spa_events' own
+    best-effort-observability contract)."""
+    try:
+        latest_approval = approval.get_latest_approval(kwargs["execution_id"])
+        approval_id = latest_approval["approval_id"] if latest_approval else ""
+        receipts.record_receipt(approval_id=approval_id, **kwargs)
+    except Exception:  # noqa: BLE001
+        pass

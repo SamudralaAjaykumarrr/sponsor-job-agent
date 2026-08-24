@@ -105,6 +105,10 @@ def run_doctor() -> DoctorReport:
         _check_approved_status_without_approval_record(conn, report)
         _check_approval_submitted_for_unsupported_provider(conn, report)
         _check_ready_for_approval_flagged_as_needs_action(conn, report)
+        # --- Provider Post-Approval Execution V1 ---
+        _check_applied_execution_missing_receipt(conn, report)
+        _check_receipt_without_applied_execution(conn, report)
+        _check_named_real_provider_capability_inflated(report)
     return report
 
 
@@ -939,3 +943,71 @@ def _check_validation_blocked_sessions_surfaced(conn, report: DoctorReport) -> N
         report.issues.append(Issue("warning", "validation_blocked",
                                     f"session {r['session_id']} could not advance past a step -- inline "
                                     f"validation appears to be blocking it ({r['detail']}) at {r['created_at']}"))
+
+
+# =============================================================================
+# Provider Post-Approval Execution V1
+# =============================================================================
+
+def _check_applied_execution_missing_receipt(conn, report: DoctorReport) -> None:
+    """Every APPLIED execution should have a durable application_receipts
+    row (app.applications.receipts) recorded by whichever confirmation path
+    actually reached it. Receipt recording is deliberately best-effort
+    (never a gate that could block a genuine confirmation -- see
+    receipts.py's own module docstring), so a gap here is a WARNING to
+    investigate, never a SERIOUS integrity violation the way
+    _check_applied_without_confirmation's underlying evidence gap is."""
+    rows = conn.execute(
+        "SELECT execution_id, job_id FROM application_executions e "
+        "WHERE status = 'APPLIED' AND NOT EXISTS "
+        "(SELECT 1 FROM application_receipts r WHERE r.execution_id = e.execution_id)"
+    ).fetchall()
+    for r in rows:
+        report.issues.append(Issue(
+            "warning", "applied_execution_missing_receipt",
+            f"execution {r['execution_id']} (job {r['job_id']}) is APPLIED with no application_receipts row",
+        ))
+
+
+def _check_receipt_without_applied_execution(conn, report: DoctorReport) -> None:
+    """A receipt is only ever recorded immediately after an execution is
+    genuinely marked APPLIED (see the two call sites in
+    app.applications.executor/browser_assist) -- since APPLIED is a
+    terminal status (application_executions.active flips to 0 and never
+    changes again), a receipt whose linked execution is NOT APPLIED means
+    something wrote a receipt outside the two sanctioned call sites, or an
+    execution's status was corrupted after the fact. Either way, SERIOUS."""
+    rows = conn.execute(
+        "SELECT r.receipt_id, r.execution_id, e.status FROM application_receipts r "
+        "JOIN application_executions e ON e.execution_id = r.execution_id "
+        "WHERE e.status != 'APPLIED'"
+    ).fetchall()
+    for r in rows:
+        report.issues.append(Issue(
+            "serious", "receipt_without_applied_execution",
+            f"receipt {r['receipt_id']} references execution {r['execution_id']} whose status is "
+            f"'{r['status']}', not APPLIED",
+        ))
+
+
+def _check_named_real_provider_capability_inflated(report: DoctorReport) -> None:
+    """Provider Post-Approval Execution V1's own central truthfulness
+    guardrail: none of the six named real providers this build covers
+    (Greenhouse/Lever/Ashby/Workday/SmartRecruiters/Workable) may ever claim
+    `submission_supported=True` -- no real provider in this project has a
+    genuinely tested, legitimate, verified final-submission interface (see
+    docs/provider-post-approval-execution-v1.md section 1), and
+    app.applications.browser_runtime is structurally prevented (see
+    `_check_no_browser_auto_submit_capability` below) from ever clicking a
+    final submit action for a real provider. Only the deterministic
+    `mock_ats` test fixture may set this flag. A static, DB-free check --
+    catches a future regression the moment a provider adapter's own
+    `ApplicationCapabilities` is edited, not just at runtime."""
+    named_real_providers = {"greenhouse", "lever", "ashby", "workday", "smartrecruiters", "workable"}
+    for cap in all_application_capabilities():
+        if cap["provider"] in named_real_providers and cap["submission_supported"]:
+            report.issues.append(Issue(
+                "serious", "named_real_provider_capability_inflated",
+                f"provider '{cap['provider']}' declares submission_supported=True -- no real ATS in this "
+                f"project has a genuinely verified final-submission interface; only mock_ats may set this",
+            ))

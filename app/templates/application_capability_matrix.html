@@ -14,7 +14,9 @@
   </style>
 </head>
 <body>
-  <p><a href="/">&larr; back to dashboard</a> · <a href="/applications">Applications</a></p>
+  <p><a href="/">&larr; back to dashboard</a> · <a href="/applications">Applications</a> ·
+     <a href="/applications/browser-capability-matrix">Browser-Assist Capability Matrix</a> ·
+     <a href="/applications/receipts">Application Receipts</a></p>
   <h1>Application Provider Capability Matrix</h1>
   <p>Truthful, code-derived matrix -- every cell is exactly what each provider's
      <code>ApplicationCapabilities</code> declaration says, never inferred from discoverability alone.</p>
@@ -40,7 +42,15 @@
         <td class="{{ 'yes' if r.live_validated else 'no' }}">{{ r.live_validated }}</td>
         <td>{{ r.support_level }}</td>
         <td>{{ r.automation_policy }}</td>
-        <td class="notes">{{ r.notes }}</td>
+        <td class="notes">
+          {{ r.notes }}
+          {% if r.covers_provider_names %}
+          <br><em>Covers real providers: {{ r.covers_provider_names | join(', ') }} -- each currently shares
+          this identical ASSIST_ONLY profile at the headless application layer (see the per-provider
+          <a href="/applications/browser-capability-matrix">Browser-Assist Capability Matrix</a> for
+          distinct, tenant-aware browser-assist status).</em>
+          {% endif %}
+        </td>
       </tr>
       {% endfor %}
     </tbody>

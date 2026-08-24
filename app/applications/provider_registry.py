@@ -26,7 +26,24 @@ def get_application_provider(job: Job) -> ApplicationProvider:
     return _GENERIC
 
 
+def generic_provider_names() -> list[str]:
+    """Provider Post-Approval Execution V1: every discovery-side provider
+    name (app.providers.registry.all_provider_names(), e.g. ashby/workday/
+    smartrecruiters/workable/bamboohr/breezy/recruitee/comeet) that does NOT
+    have a dedicated app-layer ApplicationProvider and therefore falls
+    through to GenericAssistOnlyProvider in get_application_provider() above
+    -- purely derived from the two existing registries (no new data), so the
+    application-capability-matrix UI can honestly say WHICH real providers
+    the single 'generic' row actually covers instead of leaving a reader to
+    guess. mock_ats is not a discovery provider, so it's naturally excluded."""
+    from app.providers.registry import all_provider_names
+
+    return sorted(name for name in all_provider_names() if name not in _PROVIDERS)
+
+
 def all_application_capabilities() -> list[dict]:
     caps = [p.get_capabilities().as_dict() for p in _PROVIDERS.values()]
-    caps.append(_GENERIC.get_capabilities().as_dict())
+    generic = _GENERIC.get_capabilities().as_dict()
+    generic["covers_provider_names"] = generic_provider_names()
+    caps.append(generic)
     return caps

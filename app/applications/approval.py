@@ -36,7 +36,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
 
-from app.applications import repo
+from app.applications import post_approval, repo
 from app.applications.models import ExecutionStatus
 from app.applications.provider_registry import get_application_provider
 from app.db import db_session
@@ -77,11 +77,17 @@ class ApprovalResult:
     execution: Optional[dict]
     reason: str = ""
     already: bool = False
+    # Provider Post-Approval Execution V1: best-effort report of whether the
+    # browser-assist session bridge (app.applications.post_approval) was
+    # attempted/started for this approval -- None when the execution didn't
+    # land on APPROVED (nothing to bridge), never a claim of submission.
+    browser_assist: Optional[dict] = None
 
     def as_dict(self) -> dict:
         return {
             "ok": self.ok, "execution_id": self.execution_id, "approval_id": self.approval_id,
             "execution": self.execution, "reason": self.reason, "already": self.already,
+            "browser_assist": self.browser_assist,
         }
 
 
@@ -282,7 +288,23 @@ def approve_and_apply(job_id: int) -> ApprovalResult:
     repo.log_event(execution["execution_id"], job_id, "approved", detail=f"approval_id={approval_id}")
 
     updated = process_execution(execution["execution_id"], approved=True)
-    return ApprovalResult(True, execution["execution_id"], approval_id, updated, "approved")
+
+    # Provider Post-Approval Execution V1: if the pipeline landed on APPROVED
+    # (a real provider with no verified automated final-submission
+    # capability), immediately try to open/resume the browser-assist session
+    # for THIS job -- see app.applications.post_approval's module docstring
+    # for why this never bypasses any existing gate and never touches any
+    # other job. Best-effort: never turns an already-successful approval
+    # into a failure.
+    bridge_result = None
+    if updated is not None and updated.get("status") == ExecutionStatus.APPROVED.value:
+        bridge_result = post_approval.advance_after_approval(execution["execution_id"])
+        refreshed = repo.get_execution(execution["execution_id"])
+        if refreshed is not None:
+            updated = refreshed
+
+    return ApprovalResult(True, execution["execution_id"], approval_id, updated, "approved",
+                           browser_assist=bridge_result)
 
 
 @dataclass

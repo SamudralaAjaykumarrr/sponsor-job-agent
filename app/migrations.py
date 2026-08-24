@@ -1425,6 +1425,50 @@ def _m054_application_approvals_table(conn, backend: str) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_application_approvals_job ON application_approvals (job_id)")
 
 
+def _m055_application_receipts_table(conn, backend: str) -> None:
+    """Provider Post-Approval Execution V1: a durable, append-only receipt
+    row recorded the moment (and only when) genuine confirmation evidence
+    marks an execution APPLIED -- from either confirmation path this project
+    has (`app.applications.executor.process_execution`'s headless
+    provider.submit()+verify_confirmation() path, today only reachable for
+    the deterministic `mock_ats` fixture; or
+    `app.applications.browser_assist.attempt_user_submit_reconciliation`'s
+    browser-observed manual-submit path). Distinct from the existing
+    confirmation_id/confirmation_url/confirmation_text_fingerprint columns
+    already on application_executions/browser_assist_sessions (those are the
+    single CURRENT confirmation state for one row) -- this table is the
+    durable, provider-labeled evidence record itself, the actual "receipt"
+    the build brief asks for, safe to list/export independent of whatever
+    happens to either source row later. Never stores a raw cookie/token, and
+    `sanitized_url`/`raw_message_fingerprint` are exactly what the source
+    already sanitized/fingerprinted -- this table adds no new sensitive
+    surface. One append-only row per confirmed submission; a re-confirmation
+    (should one ever legitimately happen for the same execution) is a new
+    row, never an UPDATE, matching this project's sponsorship_decisions/
+    capability_evidence/application_approvals append-only convention."""
+    id_column = "id BIGSERIAL PRIMARY KEY" if backend == "postgres" else "id INTEGER PRIMARY KEY AUTOINCREMENT"
+    conn.execute(
+        f"""CREATE TABLE IF NOT EXISTS application_receipts (
+            {id_column},
+            receipt_id TEXT NOT NULL UNIQUE,
+            execution_id TEXT NOT NULL,
+            job_id INTEGER NOT NULL,
+            provider TEXT NOT NULL DEFAULT '',
+            submitted_via TEXT NOT NULL DEFAULT '',
+            confirmation_id TEXT DEFAULT '',
+            sanitized_url TEXT DEFAULT '',
+            evidence_strength TEXT NOT NULL DEFAULT 'NONE',
+            raw_message_fingerprint TEXT DEFAULT '',
+            session_id TEXT DEFAULT '',
+            approval_id TEXT DEFAULT '',
+            created_at TEXT NOT NULL
+        )"""
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_application_receipts_execution ON application_receipts (execution_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_application_receipts_job ON application_receipts (job_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_application_receipts_provider ON application_receipts (provider)")
+
+
 MIGRATIONS: list[tuple[int, str, Callable]] = [
     (2, "phase6_worker_identity_columns", _m002_worker_identity_columns),
     (3, "phase6_schema_drift_table", _m003_schema_drift_table),
@@ -1479,6 +1523,7 @@ MIGRATIONS: list[tuple[int, str, Callable]] = [
     (52, "workday_tenant_dynamic_validation_column", _m052_workday_tenant_dynamic_validation_column),
     (53, "app_settings_table", _m053_app_settings_table),
     (54, "application_approvals_table", _m054_application_approvals_table),
+    (55, "application_receipts_table", _m055_application_receipts_table),
 ]
 
 # Version 1 is the implicit Phase 1-5 baseline schema, applied by

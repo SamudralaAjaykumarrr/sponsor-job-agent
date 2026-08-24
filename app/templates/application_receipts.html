@@ -1,0 +1,53 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Application Receipts — Sponsor Job Agent</title>
+  <style>
+    body { font-family: -apple-system, Arial, sans-serif; margin: 2rem; background: #f7f7f9; color: #1a1a1a; }
+    table { width: 100%; border-collapse: collapse; background: white; }
+    th, td { padding: 8px 10px; border-bottom: 1px solid #eee; text-align: left; font-size: 0.8rem; vertical-align: top; word-break: break-word; }
+    th { background: #fafafa; }
+    .s-STRONG { background: #d4edda; color: #155724; padding: 2px 8px; border-radius: 10px; font-weight: 600; }
+    .s-MODERATE { background: #fff3cd; color: #856404; padding: 2px 8px; border-radius: 10px; font-weight: 600; }
+    .s-WEAK, .s-NONE { background: #e2e3e5; color: #383d41; padding: 2px 8px; border-radius: 10px; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <p><a href="/">&larr; back to dashboard</a> · <a href="/applications/capability-matrix">Application Capability Matrix</a>
+     · <a href="/applications/browser-capability-matrix">Browser-Assist Capability Matrix</a>
+     · <a href="/applications/provider-health">Provider Health</a></p>
+  <h1>Application Receipts</h1>
+  <p>Durable, append-only evidence recorded the moment (and only when) genuine confirmation evidence marked an
+     execution APPLIED -- via either the deterministic mock ATS's headless confirm path, or a candidate's own
+     browser-assist manual submission. This is evidence of what happened for THIS application, never a claim that
+     any real provider supports automated final submission -- see the capability matrices above for that truthful
+     per-provider answer.</p>
+  {% if not rows %}
+  <p><em>No receipts recorded yet.</em></p>
+  {% else %}
+  <table>
+    <thead>
+      <tr>
+        <th>Receipt</th><th>Job</th><th>Provider</th><th>Submitted via</th><th>Confirmation id</th>
+        <th>Evidence strength</th><th>URL</th><th>Recorded at</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in rows %}
+      <tr>
+        <td>{{ r.receipt_id }}</td>
+        <td><a href="/jobs/{{ r.job_id }}">{{ r.job_id }}</a></td>
+        <td>{{ r.provider }}</td>
+        <td>{{ r.submitted_via }}</td>
+        <td>{{ r.confirmation_id or '—' }}</td>
+        <td><span class="s-{{ r.evidence_strength }}">{{ r.evidence_strength }}</span></td>
+        <td>{% if r.sanitized_url %}<a href="{{ r.sanitized_url }}" target="_blank" rel="noopener">open</a>{% else %}—{% endif %}</td>
+        <td>{{ r.created_at }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</body>
+</html>
