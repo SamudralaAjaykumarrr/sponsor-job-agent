@@ -119,9 +119,21 @@ def test_full_approval_flow_dashboard_to_confirmed(live_server, page):
     assert "Claim check" in body_text
     assert "No submission has happened yet" in body_text
 
-    # APPROVE & APPLY.
+    # APPROVE & APPLY. application-action-experience-v1: this button is now
+    # JS-enhanced (disable immediately -> AJAX POST -> poll -> reload to the
+    # canonical result) rather than a plain form navigation, so the actual
+    # page reload happens asynchronously after the click resolves --
+    # wait_for_load_state("networkidle") called immediately after click can
+    # race ahead of that reload starting. wait_for_function polls the live
+    # DOM until the real result lands, matching how a real user would wait.
+    # Wait for "Confirmation:" specifically, not just "APPLIED" -- the CTA
+    # button's own label updates to "APPLIED (check)" client-side as soon as
+    # the JSON response lands (before the eventual full-page reload), so
+    # waiting on "APPLIED" alone can resolve before the canonical
+    # server-rendered confirmation section has actually loaded.
     approve_button = page.locator('button:has-text("APPROVE & APPLY")').first
     approve_button.click()
+    page.wait_for_function("document.body.innerText.includes('Confirmation:')", timeout=15000)
     page.wait_for_load_state("networkidle")
 
     body_text = page.locator("body").inner_text()
@@ -156,6 +168,7 @@ def _run_to_applied_job_detail(live_server) -> str:
             pg.wait_for_load_state("networkidle")
             approve_button = pg.locator('button:has-text("APPROVE & APPLY")').first
             approve_button.click()
+            pg.wait_for_function("document.body.innerText.includes('Confirmation:')", timeout=15000)
             pg.wait_for_load_state("networkidle")
             job_url = pg.url
             pg.goto(live_server + "/")

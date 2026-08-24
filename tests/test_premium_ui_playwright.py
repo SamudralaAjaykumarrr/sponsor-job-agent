@@ -236,7 +236,7 @@ def test_settings_save_button_actually_saves(live_server, page):
 
 def test_applications_tabs_are_clickable(live_server, page):
     page.goto(live_server + "/applications")
-    for label in ("All", "In flight", "Needs you", "Applied", "Failed", "Skipped"):
+    for label in ("All", "Ready to Apply", "Needs Action", "Applying", "Applied", "Failed", "Skipped"):
         assert label in page.content()
     page.click('.tab-row a:has-text("Skipped")')
     page.wait_for_load_state("networkidle")

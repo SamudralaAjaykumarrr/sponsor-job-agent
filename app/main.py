@@ -13,6 +13,7 @@ from app.agent import run_state as agent_run_state
 from app.agent.orchestrator import orchestrator as agent_orchestrator
 from app.agent.scheduler import scheduler
 from app.applications import approval as applications_approval
+from app.applications.cta import compute_apply_cta
 from app.applications import doctor as applications_doctor
 from app.applications import metrics as applications_metrics
 from app.applications import repo as applications_repo
@@ -348,6 +349,11 @@ def job_detail(request: Request, job_id: int):
 
         latest_receipt = applications_receipts.get_latest_receipt_for_execution(latest_execution["execution_id"])
 
+    job_cta = compute_apply_cta(
+        job_id, job.application_state.value,
+        execution=active_execution, browser_session=active_browser_session,
+    ).as_dict()
+
     return templates.TemplateResponse(
         request, "job_detail.html",
         {
@@ -356,6 +362,7 @@ def job_detail(request: Request, job_id: int):
             "latest_decision": latest_decision, "decision_history": decision_history,
             "executions": executions, "active_execution": active_execution,
             "latest_execution": latest_execution, "eligibility": eligibility,
+            "job_cta": job_cta,
             "executor_enabled": config.APPLICATION_EXECUTOR_ENABLED,
             "auto_submit_enabled": config.AUTO_SUBMIT_ENABLED,
             "active_browser_session": active_browser_session,
@@ -928,8 +935,8 @@ def api_resume_optimizer_metrics():
 # --- Phase 8: safe ATS application executor ---------------------------------
 
 _APPLICATIONS_TABS = [
-    ("", "All"), ("in_flight", "In flight"), ("needs_action", "Needs you"),
-    ("applied", "Applied"), ("failed", "Failed"), ("skipped", "Skipped"),
+    ("", "All"), ("ready", "Ready to Apply"), ("needs_action", "Needs Action"),
+    ("submitting", "Applying"), ("applied", "Applied"), ("failed", "Failed"), ("skipped", "Skipped"),
 ]
 
 
@@ -950,7 +957,24 @@ def applications_page(
         )
     tab_counts = applications_repo.bucket_counts()
     tab_counts["skipped"] = pipeline_dashboard.count_skipped_jobs()
-    tab_counts[""] = sum(tab_counts.get(b, 0) for b, _ in _APPLICATIONS_TABS if b != "")
+    # "All" must equal the true total of every execution status exactly
+    # once -- summed over the non-overlapping leaf buckets (never the
+    # "in_flight" convenience union, which would double-count against
+    # "ready"/"submitting" etc).
+    tab_counts[""] = sum(
+        tab_counts.get(b, 0) for b in ("ready", "approved", "queued", "preparing", "submitting", "needs_action", "applied", "failed")
+    ) + tab_counts["skipped"]
+
+    job_ids = [r["job_id"] for r in rows if r.get("job_id") is not None]
+    session_by_job = browser_session.get_active_sessions_for_jobs(job_ids)
+    for r in rows:
+        if bucket == "skipped":
+            r["cta"] = compute_apply_cta(r["job_id"], r["status"]).as_dict()
+        else:
+            r["cta"] = compute_apply_cta(
+                r["job_id"], None, execution=r, browser_session=session_by_job.get(r["job_id"]),
+            ).as_dict()
+
     return templates.TemplateResponse(
         request, "applications.html",
         {
@@ -1130,17 +1154,53 @@ def application_retry(job_id: int):
 
 
 @app.post("/jobs/{job_id}/applications/approve")
-def application_approve(job_id: int):
+def application_approve(job_id: int, request: Request):
     """APPROVE & APPLY (approval-gated-autonomy-v1 spec section 6) -- the
     ONE normal human gate this feature exists to implement. Records a
     durable, fingerprint-bound approval, then synchronously continues the
     application exactly as far as a genuinely verified provider capability
     (and every other existing safety gate) allows -- never a UI redirect
-    that merely implies approval happened."""
+    that merely implies approval happened.
+
+    application-action-experience-v1: when called via the JS-enhanced CTA
+    button (Accept: application/json), returns the resulting CTA/execution
+    as JSON instead of redirecting, so the button can update in place
+    (disable -> "Applying..." -> live result) without a full navigation.
+    The plain-form fallback (JS disabled) is unchanged."""
+    wants_json = "application/json" in (request.headers.get("accept") or "")
     result = applications_approval.approve_and_apply(job_id)
     if not result.ok:
+        if wants_json:
+            return JSONResponse({"ok": False, "reason": result.reason}, status_code=400)
         raise HTTPException(400, result.reason)
+    if wants_json:
+        job = get_job(job_id)
+        session = browser_session.get_active_session_for_job(job_id) if job else None
+        cta = compute_apply_cta(
+            job_id, job.application_state.value if job else None,
+            execution=result.execution, browser_session=session,
+        )
+        return JSONResponse({"ok": True, "execution": result.execution, "cta": cta.as_dict()})
     return RedirectResponse(url=f"/jobs/{job_id}", status_code=303)
+
+
+@app.get("/api/jobs/{job_id}/apply-status")
+def api_apply_status(job_id: int):
+    """Polling endpoint for the Apply CTA (application-action-experience-v1
+    section 12/6): the current authoritative CTA for one job, used by the
+    JS-enhanced APPROVE & APPLY button to live-update after a click without
+    a full page reload, and safe to poll from any page showing that job's
+    CTA. Never mutates anything -- read-only, same as every other /api/*
+    endpoint in this file."""
+    job = get_job(job_id)
+    if job is None:
+        raise HTTPException(404, "job not found")
+    execution = applications_repo.get_active_execution_for_job(job_id)
+    session = browser_session.get_active_session_for_job(job_id)
+    cta = compute_apply_cta(job_id, job.application_state.value, execution=execution, browser_session=session)
+    return JSONResponse({
+        "cta": cta.as_dict(), "execution": execution, "application_state": job.application_state.value,
+    })
 
 
 @app.post("/applications/approve-bulk")

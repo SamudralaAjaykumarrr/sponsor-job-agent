@@ -280,7 +280,7 @@ def test_applications_page_shows_tabs_with_counts(tmp_env, sample_profile):
     client = TestClient(app)
     resp = client.get("/applications")
     assert resp.status_code == 200
-    for label in ("All", "In flight", "Needs you", "Applied", "Failed", "Skipped"):
+    for label in ("All", "Ready to Apply", "Needs Action", "Applying", "Applied", "Failed", "Skipped"):
         assert label in resp.text
 
 

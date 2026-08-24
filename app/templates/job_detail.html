@@ -1,19 +1,24 @@
 {% extends "base.html" %}
+{% from "_apply_cta.html" import apply_cta %}
 {% block title %}{{ job.title }} — {{ job.company }} — Sponsor Job Agent{% endblock %}
 {% block content %}
 <p><a href="/jobs">&larr; back to jobs</a></p>
-<div class="page-header">
+<div class="page-header" data-job-hero data-job-id="{{ job.id }}">
   <div>
     <h1>{{ job.title }}</h1>
     <p class="subtitle">{{ job.company }} · {{ job.location }}</p>
   </div>
-  <div class="jc-badges">
+  <div class="jc-badges" style="align-items:center;">
     <span class="tag tag-{{ job.work_arrangement.value.lower() }}">{{ job.work_arrangement.value }}</span>
     {% set s = job.sponsorship_status.value %}
     <span class="tag {{ 'tag-confirmed' if s == 'CONFIRMED_SPONSOR' else ('tag-likely' if s == 'LIKELY_SPONSOR' else ('tag-no' if s == 'NO_SPONSORSHIP' else 'tag-unknown')) }}">{{ s }}</span>
     <span class="tag tag-neutral">{{ job.application_state.value }}</span>
+    <span data-job-cta>{{ apply_cta(job_cta, label_override='VIEW RECEIPT' if job_cta.style == 'success' else '') }}</span>
   </div>
 </div>
+{% if job_cta.reason and job_cta.style != 'none' %}
+<p class="faint" style="margin-top:-0.6rem;margin-bottom:0.75rem;">{{ job_cta.reason }}</p>
+{% endif %}
 
 <div class="stack">
   <section class="surface surface-pad">
@@ -208,7 +213,7 @@
        · Title/description are also scanned for explicit language (never inferred from silence).</p>
   </section>
 
-  <section class="surface surface-pad">
+  <section class="surface surface-pad" id="application-execution">
     <h2>Application execution</h2>
     <p>Executor: <strong>{{ 'ON' if executor_enabled else 'OFF' }}</strong> ·
        Auto submit: <strong>{{ 'ON' if auto_submit_enabled else 'OFF' }}</strong> ·
@@ -229,8 +234,8 @@
       {% endif %}
     </div>
     <div class="btn-row" style="margin-top:0.5rem;">
-      <form method="post" action="/jobs/{{ job.id }}/applications/approve">
-        <button class="btn btn-primary" type="submit">APPROVE &amp; APPLY</button>
+      <form method="post" action="/jobs/{{ job.id }}/applications/approve" class="apply-cta-form" data-approve-form data-job-id="{{ job.id }}">
+        <button class="btn btn-cta btn-cta-primary" type="submit" data-cta-button>APPROVE &amp; APPLY</button>
       </form>
       <form method="post" action="/jobs/{{ job.id }}/applications/retry"><button class="btn btn-ghost" type="submit">Re-run preparation</button></form>
     </div>

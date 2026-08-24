@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% from "_job_card.html" import job_card %}
+{% from "_apply_cta.html" import apply_cta %}
 {% block title %}Dashboard — Sponsor Job Agent{% endblock %}
 {% block content %}
 {% set o = orchestrator %}
@@ -146,8 +147,8 @@
       <div class="btn-row" style="margin-top:0.5rem;">
         <a class="btn btn-ghost btn-sm" href="/jobs/{{ item.job_id }}/resume/download/pdf">Preview Resume</a>
         <a class="btn btn-ghost btn-sm" href="/jobs/{{ item.job_id }}">Review Application</a>
-        <form method="post" action="/jobs/{{ item.job_id }}/applications/approve">
-          <button class="btn btn-primary btn-sm" type="submit">APPROVE &amp; APPLY</button>
+        <form method="post" action="/jobs/{{ item.job_id }}/applications/approve" class="apply-cta-form" data-approve-form data-job-id="{{ item.job_id }}">
+          <button class="btn btn-cta btn-cta-primary btn-sm" type="submit" data-cta-button>APPROVE &amp; APPLY</button>
         </form>
       </div>
     </div>
@@ -191,12 +192,19 @@ window.updateApproveSelectedCount = function () {
 };
 window.submitBulkApprove = function (evt) {
   evt.preventDefault();
+  var submitBtn = evt.target.querySelector('button[type="submit"]');
+  if (submitBtn.disabled) return false; // never a double-submit
+  submitBtn.disabled = true;
+  submitBtn.textContent = 'Applying...';
   var ids = document.getElementById('bulk-approve-job-ids').value;
   fetch('/applications/approve-bulk', {
     method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: 'job_ids=' + encodeURIComponent(ids),
   }).then(function (r) { return r.json(); }).then(function (data) {
     document.getElementById('bulk-approve-result').innerText = JSON.stringify(data.results);
     setTimeout(function () { window.location.reload(); }, 800);
+  }).catch(function () {
+    submitBtn.disabled = false;
+    submitBtn.textContent = 'Confirm — APPROVE & APPLY SELECTED';
   });
   return false;
 };
@@ -316,7 +324,10 @@ window.submitBulkApprove = function (evt) {
         <td>{{ row.execution.status if row.execution else job.application_state.value }}</td>
         <td>{% if row.execution and row.execution.requires_user_action %}<strong style="color:var(--bad);">{{ row.execution.user_action_reason or 'action needed' }}</strong>{% else %}—{% endif %}</td>
         <td>{{ job.priority_tier.value }} ({{ job.priority_score }})</td>
-        <td><a href="/jobs/{{ job.id }}">View</a></td>
+        <td class="cta-cell">
+          {% if row.cta %}{{ apply_cta(row.cta, 'sm') }}{% endif %}
+          <a class="faint" href="/jobs/{{ job.id }}" style="margin-left:0.4rem;">View</a>
+        </td>
       </tr>
       {% else %}
       <tr><td colspan="13">

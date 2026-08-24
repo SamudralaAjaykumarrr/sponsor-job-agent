@@ -445,7 +445,9 @@ def build_job_rows(
     route body unchanged -- same filters dict shape (app.jobs_repo.list_jobs),
     same is_actionable() gate, same resume_status/needs_action_only
     post-filters, same priority-sorted row cap."""
+    from app.applications import browser_session as applications_browser_session
     from app.applications import repo as applications_repo
+    from app.applications.cta import compute_apply_cta
     from app.jobs_repo import list_jobs
     from app.resume_optimizer import repo as resume_optimizer_repo
 
@@ -464,6 +466,7 @@ def build_job_rows(
     quality_by_job = resume_optimizer_repo.get_quality_reports_for_jobs(job_ids)
     variant_by_job = resume_optimizer_repo.get_current_variants_for_jobs(job_ids)
     active_execution_by_job = applications_repo.get_active_executions_for_jobs(job_ids)
+    active_session_by_job = applications_browser_session.get_active_sessions_for_jobs(job_ids)
 
     def resume_status_of(jid: int) -> str:
         variant = variant_by_job.get(jid)
@@ -485,7 +488,13 @@ def build_job_rows(
             "resume_status": resume_status_of(j.id),
             "page_count": (variant_by_job.get(j.id) or {}).get("page_count"),
             "execution": active_execution_by_job.get(j.id),
+            "browser_session": active_session_by_job.get(j.id),
             "employment_classified": classify_employment_type(j.employment_type, j.title, j.description).value,
+            "cta": compute_apply_cta(
+                j.id, j.application_state.value,
+                execution=active_execution_by_job.get(j.id),
+                browser_session=active_session_by_job.get(j.id),
+            ).as_dict(),
         }
         for j in jobs
     ]

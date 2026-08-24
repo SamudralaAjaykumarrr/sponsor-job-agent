@@ -1,0 +1,18 @@
+{% macro apply_cta(cta, size='', label_override='') %}
+{% set btn_size = ' btn-sm' if size == 'sm' else '' %}
+{% if cta.style == 'primary' and cta.action.type == 'approve' %}
+<form method="post" action="{{ cta.action.href }}" class="apply-cta-form" data-approve-form data-job-id="{{ cta.action.job_id }}">
+  <button type="submit" class="btn btn-cta btn-cta-primary{{ btn_size }}" data-cta-button>{{ cta.label }}</button>
+</form>
+{% elif cta.style == 'success' %}
+<a class="btn btn-cta btn-cta-success{{ btn_size }}" href="{{ cta.action.href }}">{{ label_override or cta.label }}</a>
+{% elif cta.style == 'secondary' and cta.action.type == 'link' %}
+<a class="btn btn-cta btn-cta-secondary{{ btn_size }}" href="{{ cta.action.href }}">{{ cta.label }}</a>
+{% elif cta.style == 'progress' %}
+<span class="btn btn-cta btn-cta-progress{{ btn_size }}" aria-disabled="true" data-cta-live>{{ cta.label }}</span>
+{% elif cta.style == 'waiting' %}
+<span class="btn btn-cta btn-cta-waiting{{ btn_size }}" aria-disabled="true" data-cta-live>{{ cta.label }}</span>
+{% else %}
+<span class="faint apply-cta-reason">{{ cta.reason or 'No action available.' }}</span>
+{% endif %}
+{% endmacro %}

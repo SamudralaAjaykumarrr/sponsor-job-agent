@@ -211,6 +211,23 @@ footer.app-footer a:hover { color: var(--text-muted); }
 .btn-test { background: var(--info-bg); color: var(--info); }
 .btn-row { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; }
 
+/* ---------- Apply CTA (application-action-experience-v1) ---------- */
+/* Every eligible job/row exposes exactly one primary application action,
+   computed by app.applications.cta.compute_apply_cta -- these classes give
+   that one CTA a consistent, visually dominant hierarchy everywhere it
+   appears (Jobs cards, Dashboard pipeline table, Job detail hero,
+   Applications page rows). Primary > Secondary > Progress/Waiting > Success. */
+.btn-cta { font-weight: 800; letter-spacing: 0.01em; white-space: nowrap; }
+.btn-cta-primary { background: var(--accent); color: #fff; box-shadow: var(--shadow-sm); }
+.btn-cta-primary:hover { background: var(--accent-strong); }
+.btn-cta-secondary { background: var(--warn-bg); color: var(--warn); border-color: transparent; }
+.btn-cta-progress { background: var(--info-bg); color: var(--info); cursor: progress; opacity: 0.9; }
+.btn-cta-waiting { background: var(--neutral-bg, var(--bg-sunken)); color: var(--text-muted); cursor: default; font-weight: 600; }
+.btn-cta-success { background: var(--good-bg); color: var(--good-strong); }
+.apply-cta-form { display: inline-block; margin: 0; }
+.apply-cta-reason { display: inline-block; font-style: italic; }
+.cta-cell { white-space: nowrap; }
+
 .hero-meta { font-size: 0.83rem; color: var(--text-muted); margin-top: 0.55rem; display: flex; flex-wrap: wrap; gap: 0.3rem 1.2rem; }
 .hero-meta strong { color: var(--text); }
 .hero-activity { font-weight: 650; color: var(--good-strong); margin-top: 0.6rem; font-size: 0.87rem; }
@@ -226,7 +243,7 @@ footer.app-footer a:hover { color: var(--text-muted); }
 .job-card .jc-role { font-weight: 650; font-size: 1rem; }
 .job-card .jc-company { color: var(--text-muted); font-size: 0.85rem; }
 .job-card .jc-loc { color: var(--text-faint); font-size: 0.78rem; }
-.job-card .jc-badges { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+.jc-badges { display: flex; flex-wrap: wrap; gap: 0.35rem; }
 .job-card .jc-diag { font-size: 0.78rem; color: var(--text-muted); background: var(--bg-sunken); border-radius: 8px; padding: 0.5rem 0.6rem; }
 .job-card .jc-footer { display: flex; justify-content: space-between; align-items: center; margin-top: auto; gap: 0.5rem; flex-wrap: wrap; }
 
