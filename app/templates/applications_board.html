@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% from "_apply_cta.html" import apply_cta %}
+{% block title %}My Applications — Sponsor Job Agent{% endblock %}
+{% block content_width %}wide{% endblock %}
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1>My Applications</h1>
+    <p class="subtitle">Everything the agent is working on for you, in plain language. Leave this page any time —
+      progress continues in the background.</p>
+  </div>
+</div>
+
+<nav class="tab-row" aria-label="Application category">
+  {% for key in bucket_order %}
+  <a href="#board-{{ key }}">{{ bucket_labels[key] }}<span class="count">{{ counts.get(key, 0) }}</span></a>
+  {% endfor %}
+</nav>
+
+{% for key in bucket_order %}
+<section id="board-{{ key }}" style="margin-top:1.5rem;">
+  <h2>{{ bucket_labels[key] }} <span class="faint">({{ counts.get(key, 0) }})</span></h2>
+  {% if not buckets[key] %}
+  <p class="faint">Nothing here right now.</p>
+  {% else %}
+  <div class="job-grid">
+    {% for card in buckets[key] %}
+    <article class="job-card">
+      <div class="jc-top">
+        <div>
+          <div class="jc-role"><a href="/applications/{{ card.execution_id }}/detail">{{ card.title }}</a></div>
+          <div class="jc-company">{{ card.company }}</div>
+          <div class="jc-loc">{{ card.location }}</div>
+        </div>
+      </div>
+      <div class="jc-footer"><span class="tag tag-neutral">{{ card.stage_label }}</span></div>
+      {% if card.blocker %}
+      <div class="jc-diag">
+        <strong>{{ card.blocker.human_title }}</strong><br>{{ card.blocker.human_message }}
+      </div>
+      {% endif %}
+      <div class="jc-cta" style="margin-top:0.6rem; display:flex; gap:0.4rem; flex-wrap:wrap;">
+        {{ apply_cta(card.cta) }}
+        <a class="btn btn-sm" href="/applications/{{ card.execution_id }}/detail">View details</a>
+      </div>
+    </article>
+    {% endfor %}
+  </div>
+  {% endif %}
+</section>
+{% endfor %}
+{% endblock %}

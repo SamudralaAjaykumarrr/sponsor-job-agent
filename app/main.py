@@ -18,6 +18,7 @@ from app.applications import doctor as applications_doctor
 from app.applications import metrics as applications_metrics
 from app.applications import repo as applications_repo
 from app.applications.eligibility import evaluate_executor_eligibility
+from app.applications.product_state import compute_stage
 from app.applications.executor import (
     AutoSubmitDisabledError,
     ExecutorDisabledError,
@@ -38,6 +39,9 @@ from app.applications.background_scheduler import background_scheduler as applic
 from app.applications.worker_admin import request_drain as application_request_drain
 from app.applications.worker_admin import resume_from_drain as application_resume_from_drain
 from app.applications.worker_capabilities import WorkerCapability, has_capability as application_worker_has_capability
+from app.applications import blockers as applications_blockers
+from app.applications import board as applications_board
+from app.applications import demo as applications_demo
 from app.candidate.profile import load_profile, missing_fields
 from app.config import BASE_DIR
 from app.db import init_db
@@ -1076,6 +1080,91 @@ def application_reconcile_worker_run_once():
 def application_capability_matrix_page(request: Request):
     matrix = applications_capability_matrix.build_matrix()
     return templates.TemplateResponse(request, "application_capability_matrix.html", {"matrix": matrix})
+
+
+# --- Application-lifecycle-exception-resume-v1: consumer board/detail -------
+
+@app.get("/applications/board", response_class=HTMLResponse)
+def applications_board_page(request: Request):
+    buckets = applications_board.build_board()
+    return templates.TemplateResponse(
+        request, "applications_board.html",
+        {**_nav_ctx(), "buckets": buckets, "bucket_labels": applications_board.BUCKET_LABELS,
+         "bucket_order": [applications_board.BUCKET_NEEDS_ACTION, applications_board.BUCKET_READY_TO_APPLY,
+                          applications_board.BUCKET_IN_PROGRESS, applications_board.BUCKET_SUBMITTED,
+                          applications_board.BUCKET_ISSUES],
+         "counts": applications_board.bucket_counts(buckets)},
+    )
+
+
+@app.get("/applications/{execution_id}/detail", response_class=HTMLResponse)
+def application_detail_page(request: Request, execution_id: str):
+    execution = applications_repo.get_execution(execution_id)
+    if execution is None:
+        raise HTTPException(404, "application execution not found")
+    job = get_job(execution["job_id"])
+    if job is None:
+        raise HTTPException(404, "job not found")
+
+    from app.applications import receipts as applications_receipts
+
+    answers = applications_repo.list_answer_snapshot(execution_id)
+    blocker_history = applications_blockers.list_blockers_for_execution(execution_id)
+    audit_log = applications_repo.list_audit_log(execution_id=execution_id)
+    receipt = applications_receipts.get_latest_receipt_for_execution(execution_id)
+    approval_freshness = applications_approval.check_approval_freshness(job.id)
+
+    # Timeline: audit-log events and blocker raise/resolve events merged by
+    # time -- never fabricated, both are genuine durable records.
+    timeline: list[dict] = []
+    for e in audit_log:
+        timeline.append({"at": e["created_at"], "kind": "event", "label": e["event_type"], "detail": e["detail"]})
+    for b in blocker_history:
+        timeline.append({"at": b["created_at"], "kind": "blocker_raised", "label": b["human_title"],
+                          "detail": b["human_message"]})
+        if b["resolved_at"]:
+            timeline.append({"at": b["resolved_at"], "kind": "blocker_resolved", "label": f"Resolved: {b['human_title']}",
+                              "detail": b.get("resolution_note") or ""})
+    timeline.sort(key=lambda t: t["at"])
+
+    active_blocker = applications_blockers.get_active_blocker_for_execution(execution_id)
+    stage_info = compute_stage(execution)
+
+    return templates.TemplateResponse(
+        request, "application_detail.html",
+        {
+            **_nav_ctx(), "job": job, "execution": execution, "answers": answers, "timeline": timeline,
+            "receipt": receipt, "active_blocker": active_blocker, "approval_freshness": approval_freshness,
+            "stage_label": stage_info.label,
+        },
+    )
+
+
+# --- Application-lifecycle-exception-resume-v1: Demo / Test Mode -----------
+
+@app.get("/demo", response_class=HTMLResponse)
+def demo_page(request: Request):
+    return templates.TemplateResponse(
+        request, "demo.html", {**_nav_ctx(), "scenarios": applications_demo.list_demo_status()},
+    )
+
+
+@app.post("/demo/{scenario_key}/run")
+def demo_run(scenario_key: str):
+    try:
+        applications_demo.run_demo(scenario_key)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return RedirectResponse(url="/demo", status_code=303)
+
+
+@app.post("/demo/{scenario_key}/resolve")
+def demo_resolve(scenario_key: str):
+    try:
+        applications_demo.resolve_demo(scenario_key)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return RedirectResponse(url="/demo", status_code=303)
 
 
 @app.get("/api/applications/budget")

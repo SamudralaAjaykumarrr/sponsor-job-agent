@@ -115,3 +115,14 @@ class ApplicationProvider(ABC):
         returns None (the default -- 'not checkable') when it cannot, which
         must never be treated as 'inactive'."""
         return None
+
+    def classify_job_inactive_reason(self, job: Job) -> Optional[str]:
+        """Application-lifecycle-exception-resume-v1: OPTIONAL refinement of
+        `check_job_still_active()==False` -- one of 'EXPIRED'/'REMOVED'/
+        'CLOSED' when this provider genuinely knows which, else None (the
+        default for every real ATS adapter). Never guessed: a provider that
+        cannot genuinely distinguish the reason must return None and let the
+        caller fall back to a generic terminal blocker, matching this
+        project's existing 'genuine evidence or None' contract for optional
+        provider hooks."""
+        return None

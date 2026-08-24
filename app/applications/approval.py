@@ -180,6 +180,17 @@ def is_current_valid(job: Job, execution: dict, approval: dict) -> tuple[bool, l
     employment_type = classify_employment_type(job.employment_type, job.title, job.description)
     if employment_type.value != (approval.get("employment_type_at_approval") or ""):
         reasons.append("employment classification changed since approval")
+    # Application-lifecycle-exception-resume-v1: "provider capability" is
+    # the last item the spec's pre-resume revalidation list names that
+    # wasn't already compared here -- a provider capability downgrade
+    # between approval and resume (e.g. submission support later found to
+    # be unverified) must never let a stale approval keep authorizing
+    # submission.
+    current_provider = get_application_provider(job)
+    current_capability = "SUPPORTED" if current_provider.capabilities.submission_supported else "UNSUPPORTED"
+    approved_capability = approval.get("submission_capability") or ""
+    if approved_capability and current_capability != approved_capability:
+        reasons.append("provider submission capability changed since approval")
     return (len(reasons) == 0, reasons)
 
 

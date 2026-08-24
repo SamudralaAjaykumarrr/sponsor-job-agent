@@ -306,6 +306,8 @@ legend { font-weight: 650; padding: 0 0.4rem; }
 .banner-good { background: var(--good-bg); color: var(--good-strong); }
 .banner-bad { background: var(--bad-bg); color: var(--bad); }
 .banner-info { background: var(--info-bg); color: var(--info); }
+.timeline-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.5rem; }
+.timeline-list li { padding: 0.5rem 0.7rem; background: var(--bg-sunken); border-radius: var(--radius-md); font-size: 0.85rem; }
 
 /* ---------- Empty / loading states ---------- */
 .empty-state { text-align: center; padding: 2.5rem 1rem; color: var(--text-muted); }

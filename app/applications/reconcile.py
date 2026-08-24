@@ -5,7 +5,7 @@ automatic, matching the same philosophy as app.workers.dead_letter.requeue().
 
 from dataclasses import dataclass
 
-from app.applications import repo
+from app.applications import blockers, repo
 from app.applications.models import ExecutionStatus
 from app.jobs_repo import get_job
 
@@ -45,12 +45,15 @@ def reconcile_execution(execution_id: str, resolution: str, *, confirmation_id: 
                                confirmation_id=confirmation_id, confirmation_url=confirmation_url,
                                user_action_reason=note, requires_user_action=0)
         repo.log_event(execution_id, job_id, "confirmed", detail=f"reconciled:{resolution}")
+        blockers.resolve_blocker(execution_id, resolution_note=f"reconciled:{resolution}" + (f" -- {note}" if note else ""))
         return ReconcileResult(True, "marked APPLIED")
 
     if resolution == "confirmed_not_submitted":
         repo.update_execution(execution_id, job_id, ExecutionStatus.WITHDRAWN,
                                user_action_reason=note or "reconciled: not actually submitted", requires_user_action=0)
         repo.log_event(execution_id, job_id, "manually_applied", detail="reconciled:not_submitted")
+        blockers.resolve_blocker(execution_id, resolution_note="reconciled:confirmed_not_submitted" +
+                                  (f" -- {note}" if note else ""))
         return ReconcileResult(True, "marked WITHDRAWN -- job may be re-queued")
 
     return ReconcileResult(False, f"unknown resolution '{resolution}'")

@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+{% block title %}{{ job.title }} — Application — Sponsor Job Agent{% endblock %}
+{% block content_width %}wide{% endblock %}
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1>{{ job.title }}</h1>
+    <p class="subtitle">{{ job.company }} · {{ job.location }} · <strong>{{ stage_label }}</strong></p>
+  </div>
+  <a class="btn" href="/applications/board">Back to My Applications</a>
+</div>
+
+{% if active_blocker %}
+<div class="banner banner-warn">
+  <strong>{{ active_blocker.human_title }}</strong> — {{ active_blocker.human_message }}
+</div>
+{% endif %}
+
+{% if approval_freshness.has_approval and not approval_freshness.valid %}
+<div class="banner banner-warn">
+  Your prior approval is no longer current ({{ approval_freshness.reasons | join('; ') }}) — this application will
+  return to Ready to Apply for a fresh review before anything is submitted.
+</div>
+{% endif %}
+
+<nav class="tab-row" aria-label="Application detail">
+  <a href="#detail-job">Job</a>
+  <a href="#detail-resume">Resume</a>
+  <a href="#detail-cover-letter">Cover Letter</a>
+  <a href="#detail-answers">Answers</a>
+  <a href="#detail-timeline">Timeline</a>
+  <a href="#detail-receipt">Receipt</a>
+</nav>
+
+<section id="detail-job" style="margin-top:1.25rem;">
+  <h2>Job</h2>
+  <div class="table-wrap">
+    <table>
+      <tr><th>Title</th><td>{{ job.title }}</td></tr>
+      <tr><th>Company</th><td>{{ job.company }}</td></tr>
+      <tr><th>Location</th><td>{{ job.location }}</td></tr>
+      <tr><th>Work arrangement</th><td>{{ job.work_arrangement.value }}</td></tr>
+      <tr><th>Sponsorship</th><td>{{ job.sponsorship_status.value }}</td></tr>
+      <tr><th>View posting</th><td><a href="/jobs/{{ job.id }}">Open job detail</a></td></tr>
+    </table>
+  </div>
+</section>
+
+<section id="detail-resume" style="margin-top:1.5rem;">
+  <h2>Resume</h2>
+  {% if job.resume_pdf_path or job.resume_docx_path %}
+  <p>
+    {% if job.resume_pdf_path %}<a class="btn btn-sm" href="/jobs/{{ job.id }}/download/pdf">Download PDF</a>{% endif %}
+    {% if job.resume_docx_path %}<a class="btn btn-sm" href="/jobs/{{ job.id }}/download/docx">Download DOCX</a>{% endif %}
+  </p>
+  {% else %}
+  <p class="faint">Not generated yet.</p>
+  {% endif %}
+</section>
+
+<section id="detail-cover-letter" style="margin-top:1.5rem;">
+  <h2>Cover Letter</h2>
+  {% if job.cover_letter_path %}
+  <p><a class="btn btn-sm" href="/jobs/{{ job.id }}/download/cover_letter">Download cover letter</a></p>
+  {% else %}
+  <p class="faint">Not generated for this application.</p>
+  {% endif %}
+</section>
+
+<section id="detail-answers" style="margin-top:1.5rem;">
+  <h2>Answers</h2>
+  {% if not answers %}
+  <p class="faint">No application answers recorded yet.</p>
+  {% else %}
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Field</th><th>Value</th><th>Source</th></tr></thead>
+      <tbody>
+      {% for a in answers %}
+        <tr><td>{{ a.field_id }}</td><td>{{ a.value if not a.sensitive else '(sensitive — not shown)' }}</td><td>{{ a.source }}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+</section>
+
+<section id="detail-timeline" style="margin-top:1.5rem;">
+  <h2>Timeline</h2>
+  {% if not timeline %}
+  <p class="faint">No activity recorded yet.</p>
+  {% else %}
+  <ul class="timeline-list">
+    {% for t in timeline %}
+    <li><span class="faint">{{ t.at }}</span> — <strong>{{ t.label }}</strong>{% if t.detail %}: {{ t.detail }}{% endif %}</li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</section>
+
+<section id="detail-receipt" style="margin-top:1.5rem;">
+  <h2>Receipt</h2>
+  {% if receipt %}
+  <div class="table-wrap">
+    <table>
+      <tr><th>Provider</th><td>{{ receipt.provider }}</td></tr>
+      <tr><th>Confirmation</th><td>{{ receipt.confirmation_id or 'n/a' }}</td></tr>
+      <tr><th>Evidence strength</th><td>{{ receipt.evidence_strength }}</td></tr>
+      <tr><th>Recorded</th><td>{{ receipt.created_at }}</td></tr>
+      {% if receipt.sanitized_url %}<tr><th>Link</th><td><a href="{{ receipt.sanitized_url }}">{{ receipt.sanitized_url }}</a></td></tr>{% endif %}
+    </table>
+  </div>
+  {% else %}
+  <p class="faint">No receipt yet — this application hasn't been confirmed submitted.</p>
+  {% endif %}
+</section>
+{% endblock %}
