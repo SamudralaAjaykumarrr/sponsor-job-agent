@@ -3,6 +3,7 @@ id propagation from a poll attempt through to the stored job row."""
 
 import json
 import logging
+from datetime import datetime, timedelta, timezone
 
 import httpx
 
@@ -12,10 +13,12 @@ from app.registry import repo as registry_repo
 from app.workers import repo as workers_repo
 from app.workers.runner import Worker
 
+_RECENT = (datetime.now(timezone.utc) - timedelta(hours=6)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
 GREENHOUSE_OK = {"jobs": [
     {"id": 111, "title": "Backend Software Engineer", "location": {"name": "Remote - US"},
      "content": "We sponsor H-1B. Python FastAPI backend.",
-     "absolute_url": "https://boards.greenhouse.io/acme/jobs/111", "updated_at": "2026-08-21T10:00:00Z",
+     "absolute_url": "https://boards.greenhouse.io/acme/jobs/111", "updated_at": _RECENT,
      "departments": [{"name": "Engineering"}]},
 ]}
 

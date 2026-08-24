@@ -212,7 +212,16 @@ def test_settings_page_shows_current_values(tmp_env):
     assert "Max jobs fetched per cycle" in resp.text
 
 
-def test_settings_save_persists_and_applies_live(tmp_env):
+def test_settings_save_persists_and_applies_live(tmp_env, monkeypatch):
+    # save_settings() genuinely mutates the shared, process-global app.config
+    # module by design (see app/settings_store.py) -- snapshot-and-restore via
+    # monkeypatch so this test (which exercises that real live-apply behavior
+    # through the actual endpoint) can never leak AGENT_INTERVAL_MINUTES/
+    # MAX_JOBS_PER_CYCLE/FRESHNESS_MAX_DAYS into other tests in the same
+    # pytest session regardless of run order.
+    monkeypatch.setattr(config, "AGENT_INTERVAL_MINUTES", config.AGENT_INTERVAL_MINUTES)
+    monkeypatch.setattr(config, "MAX_JOBS_PER_CYCLE", config.MAX_JOBS_PER_CYCLE)
+    monkeypatch.setattr(config, "FRESHNESS_MAX_DAYS", config.FRESHNESS_MAX_DAYS)
     client = TestClient(app)
     resp = client.post("/settings", data={
         "agent_interval_minutes": "9", "max_jobs_per_cycle": "17", "freshness_max_days": "4",
@@ -233,7 +242,15 @@ def test_settings_save_persists_and_applies_live(tmp_env):
     assert 'value="9"' in confirm_resp.text
 
 
-def test_settings_save_rejects_out_of_range_value(tmp_env):
+def test_settings_save_rejects_out_of_range_value(tmp_env, monkeypatch):
+    # Only agent_interval_minutes is invalid here -- save_settings() still
+    # applies the OTHER valid keys in the same request (partial apply, see
+    # app/settings_store.py's docstring), so this test leaks
+    # MAX_JOBS_PER_CYCLE/FRESHNESS_MAX_DAYS into global config just like
+    # test_settings_save_persists_and_applies_live above unless restored.
+    monkeypatch.setattr(config, "AGENT_INTERVAL_MINUTES", config.AGENT_INTERVAL_MINUTES)
+    monkeypatch.setattr(config, "MAX_JOBS_PER_CYCLE", config.MAX_JOBS_PER_CYCLE)
+    monkeypatch.setattr(config, "FRESHNESS_MAX_DAYS", config.FRESHNESS_MAX_DAYS)
     client = TestClient(app)
     before = config.AGENT_INTERVAL_MINUTES
     resp = client.post("/settings", data={

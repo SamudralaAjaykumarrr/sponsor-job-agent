@@ -67,7 +67,21 @@ _INSERT_TABLE_RE = re.compile(r"^\s*INSERT\s+INTO\s+([A-Za-z_][A-Za-z0-9_]*)", r
 
 
 def _translate_paramstyle(sql: str) -> str:
-    return sql.replace("?", "%s")
+    """Translates `?` positional placeholders to psycopg's `%s`. A literal
+    `%` in the SQL text itself (e.g. a `LIKE 'SKIPPED%'` pattern -- several
+    call sites across app/pipeline_dashboard.py, app/agent/doctor.py,
+    app/applications/doctor.py, and app/applications/metrics.py use these)
+    is never a placeholder in this codebase's own `?`-only convention, but
+    psycopg's client-side binding always tries to parse ANY `%` in the query
+    text as the start of one -- doubling it to `%%` first (a real,
+    live-reproduced bug this phase's own release-QA pass caught: the
+    Applications and Dashboard pages both threw
+    `psycopg.ProgrammingError: only '%s', '%b', '%t' are allowed as
+    placeholders` under Postgres) tells psycopg it's a literal percent sign,
+    exactly like the standard %-style DB-API escaping convention. Must run
+    BEFORE the `?` -> `%s` replacement so the newly-inserted `%s` markers are
+    never themselves doubled."""
+    return sql.replace("%", "%%").replace("?", "%s")
 
 
 def _maybe_add_returning_id(sql: str) -> tuple[str, bool]:

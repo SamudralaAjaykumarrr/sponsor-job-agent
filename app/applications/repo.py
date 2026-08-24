@@ -252,7 +252,12 @@ def list_executions_with_jobs(*, bucket: str = "", company: str = "", provider: 
         "j.employment_type AS job_employment_type "
         "FROM application_executions e JOIN jobs j ON j.id = e.job_id"
     )
-    clauses, params = [], []
+    # CLAUDE.md one-click-agent section 68 / dashboard defect 6: a TEST MODE
+    # mock_ats execution must never masquerade as a real application on the
+    # primary Applications page, matching app.pipeline_dashboard's own
+    # is_test_fixture = 0 convention used everywhere else real-mode data is
+    # queried -- unconditional, not a user-selectable filter.
+    clauses, params = ["j.is_test_fixture = 0"], []
     if bucket and bucket in DASHBOARD_BUCKETS:
         statuses = DASHBOARD_BUCKETS[bucket]
         clauses.append(f"e.status IN ({', '.join('?' for _ in statuses)})")
@@ -284,9 +289,13 @@ def bucket_counts() -> dict[str, int]:
     bucket means (never a second, hand-maintained set of status tuples;
     matches this project's own 'one authoritative definition' convention
     for the Needs Your Action queue/card)."""
+    # Joined to jobs and filtered by is_test_fixture = 0 for the same reason
+    # list_executions_with_jobs() above is -- these tab counts must never be
+    # inflated by a TEST MODE mock_ats execution.
     with db_session() as conn:
         status_rows = conn.execute(
-            "SELECT status, COUNT(*) AS c FROM application_executions GROUP BY status"
+            "SELECT e.status AS status, COUNT(*) AS c FROM application_executions e "
+            "JOIN jobs j ON j.id = e.job_id WHERE j.is_test_fixture = 0 GROUP BY e.status"
         ).fetchall()
     counts_by_status = {r["status"]: r["c"] for r in status_rows}
     return {
