@@ -18,7 +18,7 @@ flag for anything that must survive a restart."""
 import json
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Optional
 
@@ -93,6 +93,62 @@ def set_actual_state(state: AgentRunState, *, last_error: str = "") -> None:
             fields.append("last_error = ?")
             params.append(last_error)
         conn.execute(f"UPDATE agent_run_state SET {', '.join(fields)} WHERE id = 1", params)
+
+
+# --- single-orchestrator-guarantee lease (autonomous-core-v3 hardening) ---
+# Defensive safety net, not a distributed control plane -- see
+# app/config.py's AGENT_ORCHESTRATOR_LEASE_SECONDS docstring. Same atomic
+# `UPDATE ... WHERE (unowned OR lease-expired OR already-mine)` claim idiom
+# as app.workers.leasing / app.applications.queue: correctness comes from
+# the database's own single-writer serialization (SQLite WAL + busy_timeout,
+# or Postgres MVCC), never an application-level lock, and a crashed lease
+# holder recovers purely by the lease expiring -- never a heartbeat-based
+# "is that process still alive" check.
+
+
+def new_instance_id() -> str:
+    return uuid.uuid4().hex[:12]
+
+
+def try_acquire_orchestrator_lease(instance_id: str, lease_seconds: int) -> bool:
+    """Atomically claims (or renews, if already owned by this instance_id)
+    the single agent_run_state row's lease. Returns True iff this instance
+    now holds it."""
+    now = utcnow()
+    expires = (datetime.now(timezone.utc) + timedelta(seconds=lease_seconds)).isoformat()
+    with db_session() as conn:
+        cur = conn.execute(
+            "UPDATE agent_run_state SET instance_id = ?, lease_expires_at = ?, updated_at = ? "
+            "WHERE id = 1 AND (lease_expires_at IS NULL OR lease_expires_at <= ? OR instance_id = ?)",
+            (instance_id, expires, now, now, instance_id),
+        )
+        return cur.rowcount == 1
+
+
+def renew_orchestrator_lease(instance_id: str, lease_seconds: int) -> bool:
+    """Heartbeat/renewal for an already-held lease -- returns False if the
+    lease was somehow already lost (expired and reclaimed by another
+    instance), so the caller can stop treating itself as the active
+    orchestrator rather than continuing to run cycles it no longer owns."""
+    expires = (datetime.now(timezone.utc) + timedelta(seconds=lease_seconds)).isoformat()
+    with db_session() as conn:
+        cur = conn.execute(
+            "UPDATE agent_run_state SET lease_expires_at = ?, updated_at = ? WHERE id = 1 AND instance_id = ?",
+            (expires, utcnow(), instance_id),
+        )
+        return cur.rowcount == 1
+
+
+def release_orchestrator_lease(instance_id: str) -> None:
+    """Best-effort early release on clean stop, guarded by instance_id so an
+    instance can never release a lease it no longer owns (e.g. its own lease
+    already expired and a different instance re-claimed it)."""
+    with db_session() as conn:
+        conn.execute(
+            "UPDATE agent_run_state SET instance_id = '', lease_expires_at = NULL, updated_at = ? "
+            "WHERE id = 1 AND instance_id = ?",
+            (utcnow(), instance_id),
+        )
 
 
 def is_running() -> bool:

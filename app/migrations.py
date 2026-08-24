@@ -1339,6 +1339,23 @@ def _m050_agent_activity_log_table(conn, backend: str) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_agent_activity_log_ts ON agent_activity_log (ts)")
 
 
+def _m051_agent_run_state_lease_columns(conn, backend: str) -> None:
+    """autonomous-core-v3 hardening: single-orchestrator-guarantee safety net
+    (see app/config.py's AGENT_ORCHESTRATOR_LEASE_SECONDS docstring). Adds an
+    owning instance_id and a lease expiry to the existing single-row
+    agent_run_state -- claimed with the same atomic `UPDATE ... WHERE
+    (unowned OR lease-expired OR already-mine)` pattern this project's
+    worker/application queues already use (app.workers.leasing /
+    app.applications.queue), so correctness comes from the database's own
+    single-writer serialization, never an application-level lock. A crashed
+    lease holder is recovered purely by the lease expiring, never a
+    heartbeat-based liveness check."""
+    add_columns_if_missing(conn, backend, "agent_run_state", [
+        ("instance_id", "TEXT DEFAULT ''"),
+        ("lease_expires_at", "TEXT"),
+    ])
+
+
 MIGRATIONS: list[tuple[int, str, Callable]] = [
     (2, "phase6_worker_identity_columns", _m002_worker_identity_columns),
     (3, "phase6_schema_drift_table", _m003_schema_drift_table),
@@ -1389,6 +1406,7 @@ MIGRATIONS: list[tuple[int, str, Callable]] = [
     (48, "agent_run_state_progress_columns", _m048_agent_run_state_progress_columns),
     (49, "jobs_test_fixture_column", _m049_jobs_test_fixture_column),
     (50, "agent_activity_log_table", _m050_agent_activity_log_table),
+    (51, "agent_run_state_lease_columns", _m051_agent_run_state_lease_columns),
 ]
 
 # Version 1 is the implicit Phase 1-5 baseline schema, applied by

@@ -509,6 +509,20 @@ AGENT_INTERVAL_MINUTES = _env_int("AGENT_INTERVAL_MINUTES", DISCOVERY_INTERVAL_M
 # mid-network-call is not something Python can do safely).
 AGENT_HEARTBEAT_STALE_SECONDS = _env_int("AGENT_HEARTBEAT_STALE_SECONDS", 300)
 
+# Single-orchestrator-guarantee safety net (autonomous-core-v3 hardening):
+# the orchestrator is designed to run as one lightweight single-process
+# asyncio loop per this project's existing scheduler convention (matching
+# app.applications.background_scheduler / app.resume_optimizer.scheduler --
+# deliberately NOT a distributed/leased worker capability). This lease is a
+# defensive guard against the operational mistake of accidentally starting a
+# second process against the same database, not a distributed-control-plane
+# feature: only the instance holding the lease ever runs cycle stages,
+# renewed on every heartbeat, self-healing via plain expiry (never a
+# heartbeat-based "is the other process alive" check) if the lease holder
+# crashes without releasing it. STOP AGENT only stops the loop in the
+# process that receives the request -- see docs/one-click-agent.md.
+AGENT_ORCHESTRATOR_LEASE_SECONDS = _env_int("AGENT_ORCHESTRATOR_LEASE_SECONDS", 120)
+
 # Sponsorship policy (CLAUDE.md production-v2 section 12). Neither value ever
 # redefines LIKELY_SPONSOR as confirmed, and neither ever changes the
 # executor's own CONFIRMED_SPONSOR-only auto-submit gate (app.applications.
