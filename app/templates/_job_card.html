@@ -1,3 +1,4 @@
+{% from "_apply_cta.html" import apply_cta %}
 {% macro job_card(row) %}
 {% set job = row.job %}
 <article class="job-card">
@@ -34,5 +35,11 @@
     <span class="tag tag-neutral">{{ row.execution.status if row.execution else job.application_state.value }}</span>
     <span class="faint">{{ job.priority_tier.value }} ({{ job.priority_score }})</span>
   </div>
+
+  {% if row.cta %}
+  <div class="jc-cta" style="margin-top:0.6rem;">
+    {{ apply_cta(row.cta) }}
+  </div>
+  {% endif %}
 </article>
 {% endmacro %}

@@ -181,6 +181,22 @@ def get_active_session_for_job(job_id: int) -> Optional[dict]:
         return dict(row) if row else None
 
 
+def get_active_sessions_for_jobs(job_ids: list[int]) -> dict[int, dict]:
+    """Batched version of get_active_session_for_job for dashboard/CTA list
+    rendering -- one query for N jobs, never N queries, matching
+    app.applications.repo.get_active_executions_for_jobs's existing pattern
+    (application-action-experience-v1: the Apply CTA needs a job's active
+    browser-assist session, when one exists, without an N+1 query per row)."""
+    if not job_ids:
+        return {}
+    placeholders = ",".join("?" for _ in job_ids)
+    with db_session() as conn:
+        rows = conn.execute(
+            f"SELECT * FROM browser_assist_sessions WHERE job_id IN ({placeholders}) AND active = 1", job_ids
+        ).fetchall()
+        return {r["job_id"]: dict(r) for r in rows}
+
+
 def list_sessions(*, status: Optional[str] = None, limit: int = 200) -> list[dict]:
     query = "SELECT * FROM browser_assist_sessions"
     params: list = []

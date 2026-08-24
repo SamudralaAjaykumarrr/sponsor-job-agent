@@ -105,4 +105,83 @@
       }, 450);
     });
   }
+
+  /* ---------- APPROVE & APPLY CTA (application-action-experience-v1) ----
+     Every "APPROVE & APPLY" button on every page (Jobs cards, Dashboard
+     pipeline table, Job detail hero, Applications page rows) is a plain
+     <form data-approve-form> around a <button data-cta-button> -- fully
+     functional with JS off (a normal POST + redirect, see
+     app.main.application_approve). With JS on: disable immediately (never
+     a double-submit), POST via fetch asking for the JSON variant of the
+     same endpoint, then poll the read-only per-job CTA endpoint a few
+     times so an async in-flight state ("APPLYING...") updates live before
+     the page reloads to the canonical server-rendered result. */
+
+  function applyCtaStyleClass(style) {
+    return "btn-cta-" + (style || "waiting");
+  }
+
+  function renderCtaOnto(el, cta) {
+    if (!el || !cta) return;
+    el.className = el.className.replace(/\bbtn-cta-\w+\b/g, "").trim();
+    el.classList.add("btn-cta", applyCtaStyleClass(cta.style));
+    el.textContent = cta.label || el.textContent;
+  }
+
+  function pollApplyStatus(jobId, btn, attemptsLeft) {
+    fetch("/api/jobs/" + jobId + "/apply-status", { headers: { Accept: "application/json" } })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (body) {
+        if (!body || !body.cta) { window.location.reload(); return; }
+        renderCtaOnto(btn, body.cta);
+        var stillWorking = body.cta.style === "progress" || body.cta.style === "waiting";
+        if (stillWorking && attemptsLeft > 0) {
+          setTimeout(function () { pollApplyStatus(jobId, btn, attemptsLeft - 1); }, 1500);
+        } else {
+          setTimeout(function () { window.location.reload(); }, 500);
+        }
+      })
+      .catch(function () { window.location.reload(); });
+  }
+
+  document.addEventListener("submit", function (evt) {
+    var form = evt.target.closest("[data-approve-form]");
+    if (!form) return;
+    var btn = form.querySelector("[data-cta-button]");
+    if (!btn || btn.disabled) { evt.preventDefault(); return; } // never a double-submit
+    evt.preventDefault();
+    var jobId = form.getAttribute("data-job-id");
+    var originalText = btn.textContent;
+    btn.disabled = true;
+    btn.setAttribute("aria-busy", "true");
+    btn.classList.remove("btn-cta-primary");
+    btn.classList.add("btn-cta-progress");
+    btn.textContent = "Applying...";
+
+    fetch(form.getAttribute("action"), {
+      method: "POST",
+      headers: { Accept: "application/json" },
+    })
+      .then(function (r) { return r.json().then(function (body) { return { status: r.status, body: body }; }); })
+      .then(function (result) {
+        if (!result.body || result.body.ok === false) {
+          btn.disabled = false;
+          btn.removeAttribute("aria-busy");
+          btn.classList.remove("btn-cta-progress");
+          btn.classList.add("btn-cta-primary");
+          btn.textContent = originalText;
+          return;
+        }
+        if (result.body.cta) renderCtaOnto(btn, result.body.cta);
+        pollApplyStatus(jobId, btn, 6);
+      })
+      .catch(function () {
+        // Best-effort: JS-level failure never strands the user -- fall
+        // back to a real, non-AJAX form submit (still safe: the button is
+        // already disabled, so this can't double-submit).
+        btn.disabled = false;
+        form.removeAttribute("data-approve-form");
+        form.requestSubmit ? form.requestSubmit() : form.submit();
+      });
+  });
 })();

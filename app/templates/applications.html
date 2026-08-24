@@ -1,11 +1,13 @@
 {% extends "base.html" %}
+{% from "_apply_cta.html" import apply_cta %}
 {% block title %}Applications — Sponsor Job Agent{% endblock %}
 {% block content_width %}wide{% endblock %}
 {% block content %}
 <div class="page-header">
   <div>
     <h1>Applications</h1>
-    <p class="subtitle">Every application execution the agent (or you) started, grouped by what needs to happen next.</p>
+    <p class="subtitle">Every application execution the agent (or you) started, grouped by what needs to happen next.
+      <strong>Ready to Apply</strong> is your primary inbox.</p>
   </div>
 </div>
 
@@ -95,7 +97,7 @@
     <thead>
       <tr>
         <th>Job</th><th>Company</th><th>Provider</th><th>Status</th><th>Mode</th>
-        <th>Sponsorship</th><th>Started</th><th>Action needed</th>
+        <th>Sponsorship</th><th>Started</th><th>Action needed</th><th>Apply</th>
       </tr>
     </thead>
     <tbody>
@@ -109,6 +111,10 @@
         <td>{{ r.job_sponsorship_status }}</td>
         <td>{{ r.started_at }}</td>
         <td>{{ r.user_action_reason or '' }}</td>
+        <td class="cta-cell">
+          <a class="faint" href="/jobs/{{ r.job_id }}" style="margin-right:0.5rem;">Review</a>
+          {% if r.cta %}{{ apply_cta(r.cta, 'sm') }}{% endif %}
+        </td>
       </tr>
       {% endfor %}
     </tbody>
