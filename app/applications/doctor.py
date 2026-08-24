@@ -101,7 +101,70 @@ def run_doctor() -> DoctorReport:
         _check_job_identity_unverified_not_surfaced(conn, report)
         # --- Workday/SmartRecruiters/Workable browser-assist hardening (2026-08-22) ---
         _check_validation_blocked_sessions_surfaced(conn, report)
+        # --- Approval-gated-autonomy-v1 ---
+        _check_approved_status_without_approval_record(conn, report)
+        _check_approval_submitted_for_unsupported_provider(conn, report)
+        _check_ready_for_approval_flagged_as_needs_action(conn, report)
     return report
+
+
+def _check_approved_status_without_approval_record(conn, report: DoctorReport) -> None:
+    """Approval-gated-autonomy-v1: ExecutionStatus.APPROVED is set ONLY by
+    app.applications.executor.process_execution(approved=True), which is
+    called ONLY by app.applications.approval.approve_and_apply() immediately
+    after recording a durable application_approvals row -- it must never be
+    reachable without one."""
+    rows = conn.execute(
+        "SELECT e.execution_id, e.job_id FROM application_executions e "
+        "WHERE e.status = 'APPROVED' AND NOT EXISTS "
+        "(SELECT 1 FROM application_approvals a WHERE a.execution_id = e.execution_id)"
+    ).fetchall()
+    for r in rows:
+        report.issues.append(Issue(
+            "serious", "approved_status_without_approval_record",
+            f"execution {r['execution_id']} (job {r['job_id']}) is APPROVED with no application_approvals row",
+        ))
+
+
+def _check_approval_submitted_for_unsupported_provider(conn, report: DoctorReport) -> None:
+    """No execution with a recorded approval may ever have progressed to
+    SUBMITTING/SUBMITTED/APPLIED for a provider whose capability was
+    UNSUPPORTED at approval time -- app.applications.executor.
+    _approved_submit_permitted must always have blocked it (spec section 9:
+    never infer/force a submission capability that doesn't genuinely
+    exist)."""
+    rows = conn.execute(
+        "SELECT DISTINCT e.execution_id, e.job_id, e.provider FROM application_executions e "
+        "JOIN application_approvals a ON a.execution_id = e.execution_id "
+        "WHERE e.status IN ('SUBMITTING', 'SUBMITTED', 'SUBMISSION_CONFIRMED', 'APPLIED') "
+        "AND a.submission_capability = 'UNSUPPORTED'"
+    ).fetchall()
+    for r in rows:
+        report.issues.append(Issue(
+            "serious", "approval_submitted_for_unsupported_provider",
+            f"execution {r['execution_id']} (job {r['job_id']}, provider={r['provider']}) reached "
+            f"the submit stage despite an UNSUPPORTED approval record",
+        ))
+
+
+def _check_ready_for_approval_flagged_as_needs_action(conn, report: DoctorReport) -> None:
+    """Spec section 15: a plain SUBMISSION_READY (READY_FOR_APPROVAL) item
+    must never appear in the Needs Action queue's own defining query set --
+    that queue is for genuine blockers only. Regression guard for the exact
+    bug this feature fixed (app.pipeline_dashboard._NEEDS_ACTION_QUERIES
+    used to key off e.requires_user_action=1, which SUBMISSION_READY also
+    sets)."""
+    from app.pipeline_dashboard import _NEEDS_ACTION_QUERIES
+
+    execution_query = next((q for q in _NEEDS_ACTION_QUERIES if q["kind"] == "execution"), None)
+    if execution_query is None:
+        return
+    rows = conn.execute(f"SELECT job_id FROM ({execution_query['sql']}) t WHERE t.status = 'SUBMISSION_READY'").fetchall()
+    for r in rows:
+        report.issues.append(Issue(
+            "serious", "ready_for_approval_flagged_as_needs_action",
+            f"job {r['job_id']}'s SUBMISSION_READY execution appears in the Needs Action query",
+        ))
 
 
 def _check_applied_without_confirmation(conn, report: DoctorReport) -> None:

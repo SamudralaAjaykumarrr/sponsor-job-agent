@@ -12,15 +12,23 @@ It deliberately does NOT reimplement any of those stages -- it only decides
 WHEN they run and, for the two stages that are independently gated by a
 static (`.env`-only) config flag, temporarily raises that flag for the
 duration the agent is RUNNING (restored to whatever the operator's `.env`
-actually says the moment the agent stops). AUTO_SUBMIT_ENABLED is
-deliberately NEVER touched by a normal run -- it stays whatever `.env` says
-(default False), so real submission only ever happens through the existing,
-unchanged AUTO_PERMITTED/provider-capability gates in
-app.applications.executor. TEST MODE is the one exception: it seeds a
-deterministic, always-safe `mock_ats` fixture job and temporarily allows
-AUTO_SUBMIT_ENABLED so the full discover->...->APPLIED loop can be watched
-end to end without ever touching a real employer -- see
-`_seed_test_fixture_if_needed`/CLAUDE.md one-click-agent section 33.
+actually says the moment the agent stops).
+
+Approval-gated-autonomy-v1: AUTO_SUBMIT_ENABLED is NEVER touched by this
+orchestrator, in TEST MODE or otherwise -- every stage above runs fully
+automatically (discovery through form-fill/validation) and then stops at
+ExecutionStatus.SUBMISSION_READY (the product-facing READY_FOR_APPROVAL
+stage, see app.applications.product_state). The ONE normal human gate past
+that point is an explicit APPROVE & APPLY action
+(app.applications.approval.approve_and_apply) -- START AGENT, including
+START AGENT (TEST MODE), must never imply approval for any job. TEST MODE
+seeds a deterministic, always-safe `mock_ats` fixture job so the full
+discover->...->READY_FOR_APPROVAL loop can be watched end to end without
+ever touching a real employer; reaching APPLIED from there still requires
+the same real approve_and_apply() call a human would make (see
+`_seed_test_fixture_if_needed`, tests/test_agent_orchestrator.py, CLAUDE.md
+one-click-agent section 33 as superseded by the approval-gated-autonomy-v1
+spec's section 22).
 
 Hard gates this module must never weaken (CLAUDE.md, reaffirmed by the
 one-click-agent build brief section 3): FULL_TIME-only, sponsorship gate,
@@ -322,17 +330,20 @@ class AgentOrchestrator:
         operator's actual `.env`-configured values first, so stopping the
         agent always restores exactly what was there before -- never
         silently clobbers an operator who also runs a standalone worker
-        fleet with these flags deliberately set. AUTO_SUBMIT_ENABLED is only
-        ever touched in TEST MODE (mock_ats only, see module docstring)."""
+        fleet with these flags deliberately set.
+
+        Approval-gated-autonomy-v1: AUTO_SUBMIT_ENABLED is never raised
+        here, including in TEST MODE -- the orchestrator prepares every
+        eligible job (real or the TEST MODE fixture) all the way to
+        READY_FOR_APPROVAL and stops; only an explicit APPROVE & APPLY
+        (app.applications.approval.approve_and_apply) may unlock a
+        submission attempt. See module docstring."""
         self._saved_config = {
             "APPLICATION_EXECUTOR_ENABLED": config.APPLICATION_EXECUTOR_ENABLED,
             "APPLICATION_AUTO_PREPARE_ENABLED": config.APPLICATION_AUTO_PREPARE_ENABLED,
         }
         config.APPLICATION_EXECUTOR_ENABLED = True
         config.APPLICATION_AUTO_PREPARE_ENABLED = True
-        if run_state_mod.is_test_mode():
-            self._saved_config["AUTO_SUBMIT_ENABLED"] = config.AUTO_SUBMIT_ENABLED
-            config.AUTO_SUBMIT_ENABLED = True
 
     def _restore_config_overrides(self) -> None:
         for key, value in self._saved_config.items():

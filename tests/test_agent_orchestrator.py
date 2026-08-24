@@ -103,13 +103,16 @@ def test_seed_test_fixture_is_idempotent(tmp_env, sample_profile, orchestrator):
     assert count == 1
 
 
-def test_full_test_mode_cycle_reaches_applied(tmp_env, sample_profile, orchestrator):
-    """CLAUDE.md one-click-agent section 35 (mandatory acceptance): one
-    call into the orchestrator's real cycle body -- discover fixture ->
-    FULL_TIME confirmed -> sponsorship confirmed -> JD analyzed -> one-page
-    resume produced -> claim check PASS -> ATS parse PASS -> application
-    prepared -> mock_ats submitted -> confirmation stored -> APPLIED. No
-    manual intermediate button clicks."""
+def test_full_test_mode_cycle_reaches_ready_for_approval(tmp_env, sample_profile, orchestrator):
+    """Approval-gated-autonomy-v1 spec section 22 (mandatory acceptance,
+    supersedes the old one-click-agent section 35 "straight to APPLIED"
+    behavior): one call into the orchestrator's real cycle body -- discover
+    fixture -> FULL_TIME confirmed -> sponsorship confirmed -> JD analyzed
+    -> one-page resume produced -> claim check PASS -> ATS parse PASS ->
+    application form discovered/filled/validated -> stops at
+    SUBMISSION_READY (the product-facing READY_FOR_APPROVAL stage). No
+    manual intermediate button clicks, and critically: NO submission has
+    happened yet, even in TEST MODE -- START AGENT never implies approval."""
     save_profile(sample_profile)
 
     run_state.set_desired_state(AgentRunState.RUNNING, test_mode=True)
@@ -123,11 +126,12 @@ def test_full_test_mode_cycle_reaches_applied(tmp_env, sample_profile, orchestra
 
     job = get_job_by_provider_external_id("mock_ats", "agent-test-mode-fixture-1")
     assert job is not None
-    assert job.application_state.value == "APPLIED"
+    assert job.application_state.value != "APPLIED"
     assert job.sponsorship_status.value == "CONFIRMED_SPONSOR"
     assert job.resume_docx_path and job.resume_pdf_path
     assert job.promoted_resume_variant_id
 
+    from app.applications import repo as applications_repo
     from app.resume_optimizer.repo import get_current_variant
 
     variant = get_current_variant(job.id)
@@ -135,10 +139,52 @@ def test_full_test_mode_cycle_reaches_applied(tmp_env, sample_profile, orchestra
     assert variant["status"] == "READY"
     assert variant["page_count"] == 1
 
+    execution = applications_repo.get_active_execution_for_job(job.id)
+    assert execution is not None
+    assert execution["status"] == "SUBMISSION_READY"
+
     assert counters.resumes_generated >= 1
     assert counters.one_page_success >= 1
     assert counters.applications_prepared >= 1
-    assert counters.applications_submitted >= 1
+    # Never auto-submitted, in TEST MODE or otherwise -- AUTO_SUBMIT_ENABLED
+    # is never raised by the orchestrator any more.
+    assert counters.applications_submitted == 0
+    assert config.AUTO_SUBMIT_ENABLED is False
+
+
+def test_full_test_mode_cycle_then_approve_reaches_applied(tmp_env, sample_profile, orchestrator):
+    """The second half of the approval-gated acceptance flow: after the
+    cycle above stops at READY_FOR_APPROVAL, an explicit APPROVE & APPLY
+    (app.applications.approval.approve_and_apply -- the same function the
+    dashboard's button calls) is the ONLY thing that may unlock submission,
+    and mock_ats is the one provider with a genuinely tested/verified
+    submission capability -- reaching CONFIRMED/APPLIED with real
+    confirmation evidence recorded."""
+    save_profile(sample_profile)
+
+    run_state.set_desired_state(AgentRunState.RUNNING, test_mode=True)
+    orchestrator._apply_config_overrides()
+    orchestrator._seed_test_fixture_if_needed()
+    try:
+        started = datetime.now(timezone.utc).isoformat()
+        orchestrator._run_cycle_sync(started, test_mode=True)
+    finally:
+        orchestrator._restore_config_overrides()
+
+    job = get_job_by_provider_external_id("mock_ats", "agent-test-mode-fixture-1")
+    assert job is not None
+    assert job.application_state.value != "APPLIED"
+
+    from app.applications import approval as applications_approval
+
+    result = applications_approval.approve_and_apply(job.id)
+    assert result.ok is True
+
+    job_after = get_job_by_provider_external_id("mock_ats", "agent-test-mode-fixture-1")
+    assert job_after.application_state.value == "APPLIED"
+    assert result.execution is not None
+    assert result.execution["status"] == "APPLIED"
+    assert result.execution["confirmation_id"]
 
 
 def test_orchestrator_continues_after_one_stage_raises(tmp_env, sample_profile, orchestrator, monkeypatch):

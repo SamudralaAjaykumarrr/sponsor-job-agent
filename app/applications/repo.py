@@ -45,6 +45,7 @@ _JOB_STATE_MIRROR: dict[ExecutionStatus, ApplicationState] = {
     ExecutionStatus.VALIDATION_REQUIRED: ApplicationState.NEEDS_USER_ACTION,
     ExecutionStatus.NEEDS_USER_ACTION: ApplicationState.NEEDS_USER_ACTION,
     ExecutionStatus.SUBMISSION_READY: ApplicationState.EXECUTION_QUEUED,
+    ExecutionStatus.APPROVED: ApplicationState.APPROVED,
     ExecutionStatus.SUBMITTING: ApplicationState.SUBMITTING,
     ExecutionStatus.SUBMITTED: ApplicationState.SUBMITTING,
     ExecutionStatus.SUBMISSION_CONFIRMED: ApplicationState.APPLIED,
@@ -221,7 +222,13 @@ def log_event(execution_id: str, job_id: int, event_type: str, *, detail: str = 
 # values. Kept here (not in main.py) so app.applications.metrics and the
 # dashboard route share one definition.
 DASHBOARD_BUCKETS: dict[str, tuple[str, ...]] = {
+    # "ready" == the product-facing READY_FOR_APPROVAL stage (Approval-
+    # gated-autonomy-v1 spec section 1/5) -- the ONE normal human gate.
+    # Kept as the "ready" key (not renamed) to avoid touching every
+    # existing caller; see app.applications.product_state.ready_for_approval
+    # for the same predicate expressed as the authoritative product concept.
     "ready": (ExecutionStatus.SUBMISSION_READY.value,),
+    "approved": (ExecutionStatus.APPROVED.value,),
     "queued": (ExecutionStatus.QUEUED.value, ExecutionStatus.STARTED.value),
     "preparing": (ExecutionStatus.FORM_DISCOVERED.value, ExecutionStatus.FORM_MAPPED.value,
                   ExecutionStatus.FORM_FILLED.value),
@@ -234,10 +241,11 @@ DASHBOARD_BUCKETS: dict[str, tuple[str, ...]] = {
                ExecutionStatus.JOB_NO_LONGER_ACTIVE.value),
     # Premium UI Applications page's "In flight" tab: everything actively
     # moving that isn't paused for the user, applied, or failed -- a
-    # convenience union of the "ready"/"queued"/"preparing"/"submitting"
-    # buckets above (never a replacement for them; each still works
-    # unchanged on its own).
-    "in_flight": (ExecutionStatus.SUBMISSION_READY.value, ExecutionStatus.QUEUED.value, ExecutionStatus.STARTED.value,
+    # convenience union of the "ready"/"approved"/"queued"/"preparing"/
+    # "submitting" buckets above (never a replacement for them; each still
+    # works unchanged on its own).
+    "in_flight": (ExecutionStatus.SUBMISSION_READY.value, ExecutionStatus.APPROVED.value,
+                  ExecutionStatus.QUEUED.value, ExecutionStatus.STARTED.value,
                   ExecutionStatus.FORM_DISCOVERED.value, ExecutionStatus.FORM_MAPPED.value,
                   ExecutionStatus.FORM_FILLED.value, ExecutionStatus.SUBMITTING.value, ExecutionStatus.SUBMITTED.value),
 }

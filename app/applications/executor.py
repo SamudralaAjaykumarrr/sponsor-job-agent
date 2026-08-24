@@ -20,15 +20,15 @@ from pathlib import Path
 from typing import Optional
 
 from app import config
-from app.applications import duplicate, rate_limit, repo
+from app.applications import approval, duplicate, rate_limit, repo
 from app.applications.eligibility import evaluate_executor_eligibility
 from app.applications.fingerprint import check_and_record_baseline
-from app.applications.models import ExecutionMode, ExecutionStatus, PolicyReason
+from app.applications.models import AutomationPolicy, ExecutionMode, ExecutionStatus, PolicyReason
 from app.applications.provider_registry import get_application_provider
 from app.applications.schema import build_application_fields
 from app.candidate.profile import load_profile
 from app.jobs_repo import get_job, record_state_change, update_job
-from app.models import ApplicationState, Job
+from app.models import ApplicationState, Job, SponsorshipStatus
 
 
 class ExecutorDisabledError(Exception):
@@ -130,8 +130,6 @@ def _verify_resume_artifact(job: Job, execution: dict) -> tuple[bool, str, str]:
 
 
 def _auto_submit_permitted(job: Job, mode, eligibility, provider, validation) -> tuple[bool, str]:
-    from app.applications.models import AutomationPolicy
-
     if not config.APPLICATION_EXECUTOR_ENABLED or not config.AUTO_SUBMIT_ENABLED:
         return False, "executor/auto-submit disabled"
     if mode != ExecutionMode.AUTO_PERMITTED:
@@ -145,12 +143,71 @@ def _auto_submit_permitted(job: Job, mode, eligibility, provider, validation) ->
     return True, "all AUTO_PERMITTED conditions met"
 
 
-def process_execution(execution_id: str, *, allow_submission: bool = True) -> dict:
+def _approved_submit_permitted(job: Job, eligibility, provider, validation, execution: dict) -> tuple[bool, str]:
+    """Approval-gated-autonomy-v1 (see app.applications.approval): the ONLY
+    other gate, besides `_auto_submit_permitted` above, that may unlock a
+    provider.submit() call -- reached only when a human has already clicked
+    APPROVE & APPLY (app.applications.approval.approve_and_apply), never by
+    ExecutionMode.AUTO_PERMITTED/AUTO_SUBMIT_ENABLED alone. Deliberately
+    does NOT require ExecutionMode.AUTO_PERMITTED or CONFIRMED_SPONSOR-only
+    (unlike _auto_submit_permitted's unattended path) -- a human has already
+    reviewed the READY_FOR_APPROVAL package, including any 'sponsorship
+    history found -- verify before applying' warning for LIKELY_SPONSOR, so
+    LIKELY_SPONSOR may proceed here. UNKNOWN/NO_SPONSORSHIP can never reach
+    this point at all (both already block enters_queue/hard_skip upstream).
+    Still requires a genuinely tested, verified provider capability
+    (provider.capabilities.submission_supported) and a clean, unblocked
+    validation -- approval never fakes/forces a submission capability that
+    doesn't exist, and never bypasses CAPTCHA/MFA/login/legal blockers.
+
+    The FIRST check is the server-side durable-approval gate
+    (app.applications.approval.verify_durable_approval_for_submission) --
+    this never trusts the caller having passed `approved=True` into
+    process_execution() as sufficient evidence by itself; it re-fetches the
+    latest application_approvals row fresh from the database and
+    re-validates it against `execution`'s CURRENT fingerprints. A missing,
+    non-ACTIVE, or stale approval always blocks here, regardless of what
+    `approved` was set to.
+
+    Deliberately does NOT re-check config.APPLICATION_EXECUTOR_ENABLED --
+    that flag gates creating a NEW execution (app.applications.executor.
+    queue_application's ExecutorDisabledError) and is temporarily raised by
+    the orchestrator only while it is actively RUNNING; CONTINUING an
+    already-existing, already-queued execution via an explicit human
+    approval action has never been gated by it anywhere in this codebase
+    (process_execution() itself has no such check either -- see e.g. the
+    Retry Preparation button), and requiring it here would mean approving a
+    job the agent already prepared silently stops working the moment a
+    user clicks STOP AGENT, which is not the intended product behavior."""
+    approved_ok, approved_reason = approval.verify_durable_approval_for_submission(job, execution)
+    if not approved_ok:
+        return False, approved_reason
+    if eligibility.hard_skip or not eligibility.enters_queue:
+        return False, "job is no longer eligible"
+    if job.sponsorship_status not in (SponsorshipStatus.CONFIRMED_SPONSOR, SponsorshipStatus.LIKELY_SPONSOR):
+        return False, "sponsorship status no longer permits submission"
+    if not provider.capabilities.submission_supported:
+        return False, "provider has no verified final-submission capability -- use browser assist or complete manually"
+    if not validation.ok or validation.policy != AutomationPolicy.PERMITTED_AUTO:
+        return False, "form validation did not clear for submission"
+    return True, "human-approved submission permitted"
+
+
+def process_execution(execution_id: str, *, allow_submission: bool = True, approved: bool = False) -> dict:
     """`allow_submission=False` (CLAUDE.md Phase 9 section 13, drain mode):
     runs the full prepare/map/fill/validate pipeline exactly as normal but
     never calls provider.submit(), landing in SUBMISSION_READY instead --
     used by a draining application worker that must finish safe in-progress
-    preparation but never start a new submission."""
+    preparation but never start a new submission.
+
+    `approved=True` (Approval-gated-autonomy-v1): set only by
+    app.applications.approval.approve_and_apply() immediately after
+    recording a durable, fingerprint-bound approval record. Re-runs this
+    exact same pipeline (never a fork/shortcut) so every gate --
+    eligibility, resume-artifact hash, form/answers, job-still-active,
+    rate limits, duplicates -- is revalidated fresh, then additionally
+    tries `_approved_submit_permitted` if the ordinary unattended
+    `_auto_submit_permitted` gate doesn't already clear it."""
     execution = repo.get_execution(execution_id)
     if execution is None:
         raise ValueError(f"execution {execution_id} not found")
@@ -307,9 +364,27 @@ def process_execution(execution_id: str, *, allow_submission: bool = True) -> di
         return repo.get_execution(execution_id)
 
     auto_ok, auto_reason = _auto_submit_permitted(fresh_job, mode, fresh_eligibility, provider, validation)
+    if not auto_ok and approved:
+        # A fresh read of the execution row -- `execution` (fetched at the
+        # top of this call) is stale by now: form_fingerprint/answers_version
+        # were written by the FORM_DISCOVERED/snapshot_answers steps above,
+        # in THIS same call, and never reflected back onto the local
+        # `execution` dict. The durable-approval gate inside
+        # _approved_submit_permitted must compare against what is actually
+        # about to be submitted, not a pre-pipeline snapshot.
+        current_execution = repo.get_execution(execution_id)
+        auto_ok, auto_reason = _approved_submit_permitted(fresh_job, fresh_eligibility, provider, validation,
+                                                            current_execution)
     if not auto_ok:
-        repo.update_execution(execution_id, job_id, ExecutionStatus.SUBMISSION_READY,
-                               requires_user_action=1, user_action_reason=auto_reason,
+        # Approved but this specific provider has no verified submission
+        # capability (or a blocker reappeared on revalidation): land on the
+        # honest APPROVED resting state -- never silently fall back to the
+        # generic "needs your action" SUBMISSION_READY/requires_user_action
+        # framing, since the human has already reviewed and approved this
+        # application (CLAUDE.md approval spec section 8).
+        status = ExecutionStatus.APPROVED if approved else ExecutionStatus.SUBMISSION_READY
+        repo.update_execution(execution_id, job_id, status,
+                               requires_user_action=0 if approved else 1, user_action_reason=auto_reason,
                                automation_policy=validation.policy.value, policy_reasons=policy_reasons_json)
         repo.log_event(execution_id, job_id, "validated", detail=auto_reason, correlation_id=correlation_id)
         return repo.get_execution(execution_id)

@@ -62,6 +62,15 @@ class ApplicationState(str, Enum):
     # prior meaning; nothing here is repurposed.
     EXECUTION_QUEUED = "EXECUTION_QUEUED"
     NEEDS_USER_ACTION = "NEEDS_USER_ACTION"
+
+    # --- Approval-gated-autonomy-v1: mirrors
+    # app.applications.models.ExecutionStatus.APPROVED -- the job has an
+    # explicit, durable APPROVE & APPLY record (app.applications.approval)
+    # but the provider has no verified final-submission capability, so it
+    # rests here awaiting browser-assist/manual completion. Never set
+    # without a real application_approvals row backing it.
+    APPROVED = "APPROVED"
+
     SUBMITTING = "SUBMITTING"
     SUBMISSION_STATUS_UNKNOWN = "SUBMISSION_STATUS_UNKNOWN"
     SUBMISSION_FAILED = "SUBMISSION_FAILED"

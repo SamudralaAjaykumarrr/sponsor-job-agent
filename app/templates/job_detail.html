@@ -219,7 +219,34 @@
     {% if active_execution %}
     <p>Active execution <code>{{ active_execution.execution_id }}</code>: status=<strong>{{ active_execution.status }}</strong>
        (provider={{ active_execution.provider }}, mode={{ active_execution.mode }})</p>
-    {% if active_execution.requires_user_action %}
+    {% if active_execution.status == 'SUBMISSION_READY' %}
+    <div class="banner" style="background:var(--info-bg);border-color:var(--info);margin-top:0.6rem;">
+      <strong>READY FOR APPROVAL.</strong> JD analyzed, resume tailored, one-page/claim-check/ATS-parse
+      passed, application form filled and validated, required fields completed. No submission has
+      happened yet.
+      {% if job.sponsorship_status.value == 'LIKELY_SPONSOR' %}
+      <br><span style="color:var(--warn);">Sponsorship history found -- verify before applying.</span>
+      {% endif %}
+    </div>
+    <div class="btn-row" style="margin-top:0.5rem;">
+      <form method="post" action="/jobs/{{ job.id }}/applications/approve">
+        <button class="btn btn-primary" type="submit">APPROVE &amp; APPLY</button>
+      </form>
+      <form method="post" action="/jobs/{{ job.id }}/applications/retry"><button class="btn btn-ghost" type="submit">Re-run preparation</button></form>
+    </div>
+    {% elif active_execution.status == 'APPROVED' %}
+    <div class="banner banner-warn" style="margin-top:0.6rem;">
+      <strong>Approved.</strong> This provider has no verified automatic final-submission capability --
+      final submission requires supported browser assist or manual completion. Never marked Applied
+      without real confirmation.
+      {% if not approval_freshness.valid %}
+      <br><span style="color:var(--bad);">Content changed since approval ({{ approval_freshness.reasons | join(', ') }}) -- re-review before completing.</span>
+      {% endif %}
+    </div>
+    <div class="btn-row" style="margin-top:0.5rem;">
+      <form method="post" action="/jobs/{{ job.id }}/applications/retry"><button class="btn" type="submit">Re-check</button></form>
+    </div>
+    {% elif active_execution.requires_user_action %}
     <p style="color:var(--bad);">Needs user action: {{ active_execution.user_action_reason }}</p>
     {% endif %}
     {% if active_execution.confirmation_id %}
@@ -262,6 +289,10 @@
       </form>
       <form method="post" action="/jobs/{{ job.id }}/applications/queue"><button class="btn" type="submit">Queue Application</button></form>
     </div>
+    {% if latest_execution and latest_execution.confirmation_id %}
+    <p style="margin-top:0.6rem;">Confirmation: {{ latest_execution.confirmation_id }}
+       {% if latest_execution.confirmation_url %}(<a href="{{ latest_execution.confirmation_url }}" target="_blank" rel="noopener">receipt</a>){% endif %}</p>
+    {% endif %}
     {% endif %}
   </section>
 

@@ -1385,6 +1385,46 @@ def _m053_app_settings_table(conn, backend: str) -> None:
     )
 
 
+def _m054_application_approvals_table(conn, backend: str) -> None:
+    """Approval-gated-autonomy-v1: the durable, per-application APPROVE &
+    APPLY record (see app.applications.approval, docs/approval-gated-
+    autonomy.md). APPEND-ONLY -- mirrors this project's existing
+    sponsorship_decisions/capability_evidence pattern (never UPDATEd once
+    written; a re-approval after invalidation always inserts a new row).
+    Approval validity is always LIVE-recomputed by comparing the latest
+    row's stored fingerprints against the job/execution's CURRENT
+    fingerprints (app.applications.approval.is_current_valid) -- never a
+    stored boolean that could silently go stale. No secrets/passwords/
+    tokens are ever columns here, matching application_executions' own
+    'no secrets' rule."""
+    id_column = "id BIGSERIAL PRIMARY KEY" if backend == "postgres" else "id INTEGER PRIMARY KEY AUTOINCREMENT"
+    conn.execute(
+        f"""CREATE TABLE IF NOT EXISTS application_approvals (
+            {id_column},
+            approval_id TEXT NOT NULL UNIQUE,
+            execution_id TEXT NOT NULL,
+            job_id INTEGER NOT NULL,
+            provider TEXT DEFAULT '',
+            approved_at TEXT NOT NULL,
+            approved_by TEXT NOT NULL DEFAULT 'user',
+            job_identity_fingerprint TEXT DEFAULT '',
+            jd_fingerprint TEXT DEFAULT '',
+            resume_variant_id TEXT DEFAULT '',
+            resume_fingerprint TEXT DEFAULT '',
+            answers_version INTEGER DEFAULT 0,
+            profile_fingerprint TEXT DEFAULT '',
+            form_fingerprint TEXT DEFAULT '',
+            sponsorship_status_at_approval TEXT DEFAULT '',
+            employment_type_at_approval TEXT DEFAULT '',
+            submission_capability TEXT DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'ACTIVE',
+            created_at TEXT NOT NULL
+        )"""
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_application_approvals_execution ON application_approvals (execution_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_application_approvals_job ON application_approvals (job_id)")
+
+
 MIGRATIONS: list[tuple[int, str, Callable]] = [
     (2, "phase6_worker_identity_columns", _m002_worker_identity_columns),
     (3, "phase6_schema_drift_table", _m003_schema_drift_table),
@@ -1438,6 +1478,7 @@ MIGRATIONS: list[tuple[int, str, Callable]] = [
     (51, "agent_run_state_lease_columns", _m051_agent_run_state_lease_columns),
     (52, "workday_tenant_dynamic_validation_column", _m052_workday_tenant_dynamic_validation_column),
     (53, "app_settings_table", _m053_app_settings_table),
+    (54, "application_approvals_table", _m054_application_approvals_table),
 ]
 
 # Version 1 is the implicit Phase 1-5 baseline schema, applied by
