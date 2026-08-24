@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}Demo / Test Mode — Sponsor Job Agent{% endblock %}
+{% block content_width %}wide{% endblock %}
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1>Demo / Test Mode</h1>
+    <p class="subtitle">Eight deterministic scenarios, built entirely on a local mock ATS — no real employer is ever
+      contacted. Use these to see the full Needs Action / Ready to Apply / Submitted / Issues experience.</p>
+  </div>
+</div>
+
+<div class="job-grid">
+  {% for s in scenarios %}
+  <article class="job-card">
+    <div class="jc-top">
+      <div>
+        <div class="jc-role">{{ s.label }}</div>
+        <div class="jc-loc">{{ s.description }}</div>
+      </div>
+    </div>
+
+    {% if s.execution %}
+    <div class="jc-footer"><span class="tag tag-neutral">{{ s.execution.status }}</span></div>
+    {% if s.blocker %}
+    <div class="jc-diag"><strong>{{ s.blocker.human_title }}</strong><br>{{ s.blocker.human_message }}</div>
+    {% endif %}
+    {% else %}
+    <div class="jc-footer"><span class="faint">Not run yet</span></div>
+    {% endif %}
+
+    <div class="jc-cta" style="margin-top:0.6rem; display:flex; gap:0.4rem; flex-wrap:wrap;">
+      <form method="post" action="/demo/{{ s.key }}/run">
+        <button type="submit" class="btn btn-sm">{{ 'Re-run demo' if s.execution else 'Run demo' }}</button>
+      </form>
+      {% if s.blocker and s.resolve_kind %}
+      <form method="post" action="/demo/{{ s.key }}/resolve">
+        <button type="submit" class="btn btn-sm btn-cta-primary">
+          {{ 'Check Application Status' if s.resolve_kind == 'reconcile' else 'Resolve & Continue' }}
+        </button>
+      </form>
+      {% endif %}
+      {% if s.job_id %}
+      <a class="btn btn-sm" href="/jobs/{{ s.job_id }}">View job</a>
+      {% if s.execution %}<a class="btn btn-sm" href="/applications/{{ s.execution.execution_id }}/detail">View application</a>{% endif %}
+      {% endif %}
+      {% if s.execution and s.execution.status == 'SUBMISSION_READY' %}
+      <form method="post" action="/jobs/{{ s.job_id }}/applications/approve">
+        <button type="submit" class="btn btn-sm btn-cta-primary">APPROVE &amp; APPLY</button>
+      </form>
+      {% endif %}
+    </div>
+  </article>
+  {% endfor %}
+</div>
+{% endblock %}

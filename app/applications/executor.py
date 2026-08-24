@@ -21,6 +21,7 @@ from typing import Optional
 
 from app import config
 from app.applications import approval, duplicate, rate_limit, receipts, repo
+from app.applications import blockers
 from app.applications.eligibility import evaluate_executor_eligibility
 from app.applications.fingerprint import check_and_record_baseline
 from app.applications.models import AutomationPolicy, ExecutionMode, ExecutionStatus, PolicyReason
@@ -193,7 +194,8 @@ def _approved_submit_permitted(job: Job, eligibility, provider, validation, exec
     return True, "human-approved submission permitted"
 
 
-def process_execution(execution_id: str, *, allow_submission: bool = True, approved: bool = False) -> dict:
+def process_execution(execution_id: str, *, allow_submission: bool = True, approved: bool = False,
+                       attempt_id: str = "") -> dict:
     """`allow_submission=False` (CLAUDE.md Phase 9 section 13, drain mode):
     runs the full prepare/map/fill/validate pipeline exactly as normal but
     never calls provider.submit(), landing in SUBMISSION_READY instead --
@@ -244,7 +246,21 @@ def process_execution(execution_id: str, *, allow_submission: bool = True, appro
                                user_action_reason="execution resumed while in-flight after an interruption -- "
                                                    "submission outcome unknown, reconciliation required")
         repo.log_event(execution_id, job_id, "failed", detail="resumed_mid_submission", correlation_id=correlation_id)
+        blockers.raise_blocker(execution_id, job_id, blockers.BlockerCode.SUBMISSION_STATUS_UNKNOWN,
+                                provider=execution.get("provider") or "", attempt_id=attempt_id,
+                                detail="execution resumed while in-flight -- submission outcome unknown",
+                                source="executor.resumed_mid_submission")
         return repo.get_execution(execution_id)
+
+    if execution["status"] in (ExecutionStatus.NEEDS_USER_ACTION.value, ExecutionStatus.VALIDATION_REQUIRED.value):
+        # Application-lifecycle-exception-resume-v1: process_execution()
+        # always fully re-validates every gate on every call, so a resume
+        # attempt (Retry Preparation / the user resolved the blocker
+        # out-of-band) resolves the prior blocker up front -- if the same
+        # condition still holds, the exact same code is raised again a few
+        # lines below as a fresh row, giving an honest append-only history
+        # rather than one row silently mutated in place.
+        blockers.resolve_blocker(execution_id, resolution_note="reprocessing attempted")
 
     correlation_id = job.correlation_id or execution.get("correlation_id") or ""
     mode = ExecutionMode(execution["mode"])
@@ -264,6 +280,8 @@ def process_execution(execution_id: str, *, allow_submission: bool = True, appro
         repo.update_execution(execution_id, job_id, ExecutionStatus.VALIDATION_REQUIRED,
                                requires_user_action=1, user_action_reason=reason, resume_artifact_hash=digest)
         repo.log_event(execution_id, job_id, "user_action_required", detail=reason, correlation_id=correlation_id)
+        blockers.raise_blocker(execution_id, job_id, blockers.BlockerCode.NEEDS_USER_INPUT, detail=reason,
+                                attempt_id=attempt_id, source="executor.resume_claim_check")
         return repo.get_execution(execution_id)
     if not execution.get("resume_artifact_hash"):
         repo.update_execution(execution_id, job_id, ExecutionStatus.STARTED,
@@ -293,6 +311,9 @@ def process_execution(execution_id: str, *, allow_submission: bool = True, appro
                                    automation_policy="", policy_reasons=json.dumps([PolicyReason.FORM_SCHEMA_CHANGED.value]))
             repo.log_event(execution_id, job_id, "user_action_required", detail="FORM_SCHEMA_CHANGED",
                             correlation_id=correlation_id)
+            blockers.raise_blocker(execution_id, job_id, blockers.BlockerCode.APPLICATION_ERROR,
+                                    provider=provider.name, detail="application form schema changed unexpectedly",
+                                    attempt_id=attempt_id, source="executor.form_schema_changed")
             return repo.get_execution(execution_id)
 
         mapping = provider.map_fields(form, fields)
@@ -319,6 +340,15 @@ def process_execution(execution_id: str, *, allow_submission: bool = True, appro
                                automation_policy=validation.policy.value, policy_reasons=policy_reasons_json)
         repo.log_event(execution_id, job_id, "user_action_required",
                         detail=";".join(r.value for r in validation.policy_reasons), correlation_id=correlation_id)
+        code = blockers.from_policy_reasons(validation.policy_reasons)
+        if code is not None:
+            blockers.raise_blocker(
+                execution_id, job_id, code, provider=provider.name,
+                detail="; ".join(validation.detail)[:2000], attempt_id=attempt_id,
+                resume_checkpoint={"execution_id": execution_id, "form_fingerprint": fingerprint,
+                                    "answers_version": answers_version},
+                source="executor.validation_failed",
+            )
         return repo.get_execution(execution_id)
 
     if not allow_submission:
@@ -342,6 +372,9 @@ def process_execution(execution_id: str, *, allow_submission: bool = True, appro
         repo.update_execution(execution_id, job_id, ExecutionStatus.JOB_NO_LONGER_ACTIVE,
                                error_type="JOB_NO_LONGER_ACTIVE", error_message_safe="job no longer exists")
         repo.log_event(execution_id, job_id, "failed", detail="job_missing_before_submit", correlation_id=correlation_id)
+        blockers.raise_blocker(execution_id, job_id, blockers.BlockerCode.JOB_REMOVED, provider=provider.name,
+                                detail="job no longer exists in our records", attempt_id=attempt_id,
+                                source="executor.job_missing_before_submit")
         return repo.get_execution(execution_id)
 
     still_active = provider.check_job_still_active(fresh_job)
@@ -350,6 +383,10 @@ def process_execution(execution_id: str, *, allow_submission: bool = True, appro
                                error_type="JOB_NO_LONGER_ACTIVE",
                                error_message_safe="provider reports this posting is no longer active")
         repo.log_event(execution_id, job_id, "failed", detail="job_inactive_before_submit", correlation_id=correlation_id)
+        inactive_code = blockers.from_job_inactive_reason(provider.classify_job_inactive_reason(fresh_job))
+        blockers.raise_blocker(execution_id, job_id, inactive_code, provider=provider.name,
+                                detail="provider reports this posting is no longer active", attempt_id=attempt_id,
+                                source="executor.job_inactive_before_submit")
         return repo.get_execution(execution_id)
 
     fresh_eligibility = evaluate_executor_eligibility(fresh_job)
@@ -419,6 +456,9 @@ def process_execution(execution_id: str, *, allow_submission: bool = True, appro
                                error_type=result.error_type, error_message_safe=result.error_message_safe,
                                submission_method=provider.name)
         repo.log_event(execution_id, job_id, "failed", detail="SUBMISSION_STATUS_UNKNOWN", correlation_id=correlation_id)
+        blockers.raise_blocker(execution_id, job_id, blockers.BlockerCode.SUBMISSION_STATUS_UNKNOWN,
+                                provider=provider.name, detail=result.error_message_safe or "",
+                                attempt_id=attempt_id, source="executor.submit_status_unknown")
         return repo.get_execution(execution_id)
 
     if not result.success:
@@ -435,8 +475,13 @@ def process_execution(execution_id: str, *, allow_submission: bool = True, appro
                                requires_user_action=1,
                                user_action_reason="submit reported success but no confirmation evidence found")
         repo.log_event(execution_id, job_id, "failed", detail="no confirmation evidence", correlation_id=correlation_id)
+        blockers.raise_blocker(execution_id, job_id, blockers.BlockerCode.SUBMISSION_STATUS_UNKNOWN,
+                                provider=provider.name,
+                                detail="submit reported success but no confirmation evidence found",
+                                attempt_id=attempt_id, source="executor.no_confirmation_evidence")
         return repo.get_execution(execution_id)
 
+    blockers.resolve_blocker(execution_id, resolution_note="application confirmed")
     repo.update_execution(execution_id, job_id, ExecutionStatus.APPLIED,
                            confirmation_id=confirmation.confirmation_id,
                            confirmation_url=confirmation.confirmation_url,

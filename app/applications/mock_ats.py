@@ -62,6 +62,16 @@ _LEGAL_UNKNOWN_FIELD = FormField(
     "multi_value_single_select", required=True, choices=["Yes", "No"],
 )
 
+# Application-lifecycle-exception-resume-v1 "Demo Unknown Question": a plain
+# custom required text question with no verified-profile mapping and no
+# category-specific handling (unlike the legal/demographic/file-upload
+# fields above) -- exercises the generic UNRESOLVED_REQUIRED_FIELD ->
+# NEEDS_USER_INPUT path distinctly from those other, more specific ones.
+_UNKNOWN_CUSTOM_FIELD = FormField(
+    "referral_program_q", "Which internal employee referred you to this role?",
+    "input_text", required=True,
+)
+
 # CLAUDE.md Phase 9 section 41: a "page 2" set of fields for the multi_page
 # scenario, so app.applications.schema/mapping's field-mapping engine is
 # exercised against a form whose fields don't all arrive in one flat list
@@ -98,6 +108,8 @@ def _fields_for_scenario(scenario: str) -> list[FormField]:
         fields.append(_DEMOGRAPHIC_FIELD)
     elif scenario == "legal_unknown":
         fields.append(_LEGAL_UNKNOWN_FIELD)
+    elif scenario == "unknown_question":
+        fields.append(_UNKNOWN_CUSTOM_FIELD)
     elif scenario == "required_fields":
         fields.append(FormField("cover_letter", "Cover Letter", "input_file", required=True))
     elif scenario == "file_upload":
@@ -153,6 +165,8 @@ class MockATSProvider(ApplicationProvider):
             provider=PROVIDER_NAME, tenant_identifier=job.company, external_job_id=job.external_job_id,
             fields=fields, captcha_present=(scenario == "captcha"), mfa_required=(scenario == "mfa"),
             auth_required=(scenario == "login_required"),
+            account_creation_required=(scenario == "account_creation_required"),
+            email_verification_required=(scenario == "email_verification"),
             total_steps=2 if scenario == "multi_page" else 1,
         )
         snap.fingerprint = compute_fingerprint(snap)
@@ -240,6 +254,16 @@ class MockATSProvider(ApplicationProvider):
 
         detail: list[str] = []
         reasons: list[PolicyReason] = []
+        # Application-lifecycle-exception-resume-v1 "Demo Unknown Question":
+        # answering the question must never change the FORM'S OWN SHAPE
+        # (that would be a genuine, separately-detected FORM_SCHEMA_CHANGED
+        # condition, not "the user answered") -- so resolution is a metadata
+        # flag, never a scenario switch that removes the field.
+        try:
+            meta = json.loads(job.provider_metadata or "{}")
+        except (ValueError, TypeError):
+            meta = {}
+        demo_answered = bool(meta.get("demo_answered"))
 
         if form.captcha_present:
             reasons.append(PolicyReason.CAPTCHA_PRESENT)
@@ -250,8 +274,16 @@ class MockATSProvider(ApplicationProvider):
         if form.auth_required:
             reasons.append(PolicyReason.AUTH_REQUIRED)
             detail.append("A candidate account/login is required to submit this application.")
+        if form.account_creation_required:
+            reasons.append(PolicyReason.ACCOUNT_CREATION_REQUIRED)
+            detail.append("A new candidate account must be created to submit this application.")
+        if form.email_verification_required:
+            reasons.append(PolicyReason.EMAIL_VERIFICATION_REQUIRED)
+            detail.append("Email verification is required to submit this application.")
 
         for name in draft.unresolved_field_ids:
+            if name == _UNKNOWN_CUSTOM_FIELD.name and demo_answered:
+                continue
             mf = next((m for m in draft.mapping.mapped if m.form_field.name == name), None)
             if mf is None:
                 reasons.append(PolicyReason.UNRESOLVED_REQUIRED_FIELD)
@@ -346,6 +378,15 @@ class MockATSProvider(ApplicationProvider):
 
     def check_job_still_active(self, job: Job) -> bool | None:
         scenario = _scenario_for(job)
-        if scenario == "job_removed":
+        if scenario in ("job_removed", "job_expired", "application_closed"):
             return False
         return True
+
+    def classify_job_inactive_reason(self, job: Job) -> str | None:
+        """Application-lifecycle-exception-resume-v1: the mock ATS genuinely
+        knows which of the three terminal reasons a scenario represents (it
+        chose the scenario itself), unlike a real provider -- see
+        app.applications.provider.ApplicationProvider.classify_job_inactive_reason's
+        default-None contract for every real adapter."""
+        scenario = _scenario_for(job)
+        return {"job_removed": "REMOVED", "job_expired": "EXPIRED", "application_closed": "CLOSED"}.get(scenario)

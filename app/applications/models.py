@@ -112,6 +112,16 @@ class PolicyReason(str, Enum):
     NOT_ELIGIBLE = "NOT_ELIGIBLE"
     DUPLICATE = "DUPLICATE"
     RATE_LIMITED = "RATE_LIMITED"
+    # Application-lifecycle-exception-resume-v1: distinct from the broader
+    # AUTH_REQUIRED/MFA_REQUIRED -- a candidate ACCOUNT (not merely a login)
+    # must be created, or an emailed verification link/code must be
+    # completed, before the form can proceed. Never inferred/guessed; only
+    # ever set when the provider genuinely exposes this (see
+    # MockATSProvider's "account_creation_required"/"email_verification"
+    # scenarios and app.applications.blockers.from_browser_session_status's
+    # page-text classification for the browser-assist path).
+    ACCOUNT_CREATION_REQUIRED = "ACCOUNT_CREATION_REQUIRED"
+    EMAIL_VERIFICATION_REQUIRED = "EMAIL_VERIFICATION_REQUIRED"
 
 
 class FieldCategory(str, Enum):
@@ -249,6 +259,11 @@ class FormSnapshot:
     captcha_present: bool = False
     mfa_required: bool = False
     auth_required: bool = False
+    # Application-lifecycle-exception-resume-v1: same "only when genuinely
+    # exposed" contract as auth_required/mfa_required above -- never set
+    # unless the provider genuinely detected this on the real form.
+    account_creation_required: bool = False
+    email_verification_required: bool = False
     # CLAUDE.md Phase 9 section 29: how many pages/steps the real form has,
     # when genuinely known -- never guessed for a real provider that doesn't
     # expose this; defaults to 1 (a single-page form, the common case).

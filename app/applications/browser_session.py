@@ -225,7 +225,33 @@ def update_session(session_id: str, **fields) -> Optional[dict]:
             f"UPDATE browser_assist_sessions SET {set_clause} WHERE session_id = ?",
             [*fields.values(), session_id],
         )
-    return get_session(session_id)
+    row = get_session(session_id)
+    if row is not None and status is not None:
+        _sync_blocker(row, fields.get("user_action_reason") or "")
+    return row
+
+
+def _sync_blocker(session: dict, page_text: str) -> None:
+    """Application-lifecycle-exception-resume-v1: the ONE chokepoint every
+    session status write funnels through, so app.applications.blockers stays
+    in sync without touching any of browser_assist.py's ~16 call sites.
+    Best-effort -- must never break a real session update."""
+    from app.applications import blockers
+
+    try:
+        status_value = session["status"]
+        code = blockers.from_browser_session_status(status_value, page_text)
+        if code is not None:
+            blockers.raise_blocker(
+                session["execution_id"], session["job_id"], code, provider=session.get("provider") or "",
+                detail=page_text[:2000], attempt_id=session.get("lease_attempt_id") or "",
+                resume_checkpoint={"session_id": session["session_id"], "stage": session.get("stage") or ""},
+                source="browser_session.update_session",
+            )
+        elif blockers.is_browser_status_unblocked(status_value):
+            blockers.resolve_blocker(session["execution_id"], resolution_note=f"browser session reached {status_value}")
+    except Exception:  # noqa: BLE001 -- observability sync must never break a real session update
+        pass
 
 
 def touch_activity(session_id: str) -> None:

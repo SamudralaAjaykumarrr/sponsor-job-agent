@@ -1469,6 +1469,48 @@ def _m055_application_receipts_table(conn, backend: str) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_application_receipts_provider ON application_receipts (provider)")
 
 
+def _m056_application_blockers_table(conn, backend: str) -> None:
+    """Application-lifecycle-exception-resume-v1: the durable, first-class
+    blocker record the feature is built around -- distinct from the
+    existing live-derived views (app.applications.product_state/cta), which
+    stay unchanged and unmodified. Only one row per execution may ever be
+    unresolved at a time (the partial unique index below), mirroring this
+    project's existing "one active thing per key" pattern
+    (application_executions/browser_assist_sessions/resume_variants) --
+    the actual atomic idempotency/concurrency guard for raise_blocker()'s
+    insert-or-return-existing behavior, never a read-then-write check.
+    Append-only in spirit: a blocker is resolved in place (resolved_at set)
+    rather than deleted, so history survives; a fresh occurrence of the same
+    condition after resolution is always a NEW row, never a reused one."""
+    id_column = "id BIGSERIAL PRIMARY KEY" if backend == "postgres" else "id INTEGER PRIMARY KEY AUTOINCREMENT"
+    conn.execute(
+        f"""CREATE TABLE IF NOT EXISTS application_blockers (
+            {id_column},
+            execution_id TEXT NOT NULL,
+            job_id INTEGER NOT NULL,
+            blocker_code TEXT NOT NULL,
+            blocker_class TEXT NOT NULL,
+            human_title TEXT NOT NULL DEFAULT '',
+            human_message TEXT NOT NULL DEFAULT '',
+            required_action TEXT NOT NULL DEFAULT '',
+            provider TEXT NOT NULL DEFAULT '',
+            detail TEXT NOT NULL DEFAULT '',
+            resume_checkpoint TEXT DEFAULT '',
+            attempt_id TEXT DEFAULT '',
+            source TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            resolved_at TEXT,
+            resolution_note TEXT DEFAULT ''
+        )"""
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_application_blockers_execution_active "
+        "ON application_blockers (execution_id) WHERE resolved_at IS NULL"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_application_blockers_job ON application_blockers (job_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_application_blockers_execution ON application_blockers (execution_id)")
+
+
 MIGRATIONS: list[tuple[int, str, Callable]] = [
     (2, "phase6_worker_identity_columns", _m002_worker_identity_columns),
     (3, "phase6_schema_drift_table", _m003_schema_drift_table),
@@ -1524,6 +1566,7 @@ MIGRATIONS: list[tuple[int, str, Callable]] = [
     (53, "app_settings_table", _m053_app_settings_table),
     (54, "application_approvals_table", _m054_application_approvals_table),
     (55, "application_receipts_table", _m055_application_receipts_table),
+    (56, "application_blockers_table", _m056_application_blockers_table),
 ]
 
 # Version 1 is the implicit Phase 1-5 baseline schema, applied by

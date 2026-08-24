@@ -27,6 +27,7 @@ from typing import Optional
 
 from app import config
 from app.applications import attempts as attempts_repo
+from app.applications import blockers
 from app.applications import circuit as app_circuit
 from app.applications import queue as app_queue
 from app.applications.executor import process_execution
@@ -258,7 +259,7 @@ class ApplicationWorker:
         draining_now = self._is_draining()
 
         try:
-            execution = process_execution(execution_id, allow_submission=not draining_now)
+            execution = process_execution(execution_id, allow_submission=not draining_now, attempt_id=attempt_id)
         except Exception as exc:  # noqa: BLE001 -- final safety net: an attempt must ALWAYS be
             # recorded and the lease ALWAYS released, even for a failure mode
             # process_execution()'s own handling didn't anticipate. Releasing
@@ -273,6 +274,12 @@ class ApplicationWorker:
                 result="WORKER_EXCEPTION", retryable=True, error_type=type(exc).__name__,
                 safe_error_message=str(exc)[:300], correlation_id=correlation_id,
             ))
+            try:  # best-effort -- must never affect the release-lease/record-attempt safety net above
+                blockers.raise_blocker(execution_id, job_id, blockers.BlockerCode.APPLICATION_ERROR,
+                                        provider=provider_name, detail=str(exc)[:2000], attempt_id=attempt_id,
+                                        source="worker.unhandled_exception")
+            except Exception:  # noqa: BLE001
+                pass
             self.errors += 1
             app_queue.release_execution_lease(execution_id, expected_attempt_id=item["lease_attempt_id"])
             return

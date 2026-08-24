@@ -18,7 +18,8 @@
 
       <nav class="primary-nav" aria-label="Primary">
         {% set nav_items = [
-          ("/", "Dashboard"), ("/jobs", "Jobs"), ("/applications", "Applications"),
+          ("/", "Dashboard"), ("/jobs", "Jobs"), ("/applications/board", "My Applications"),
+          ("/applications", "Applications"),
           ("/tracker", "Tracker"), ("/activity", "Activity"), ("/profile", "Profile"),
           ("/settings", "Settings"),
         ] %}
@@ -70,6 +71,7 @@
         <a href="/applications/provider-health">Provider health</a>
         <a href="/application-workers">Application workers</a>
         <a href="/registry/doctor">Registry doctor</a>
+        <a href="/demo">Demo / test mode</a>
       </div>
       <div>Local, single-user ASSIST-by-default agent. Nothing is submitted automatically unless a genuine,
         tested submission capability exists for that specific provider -- see Settings for the current safety flags.</div>
