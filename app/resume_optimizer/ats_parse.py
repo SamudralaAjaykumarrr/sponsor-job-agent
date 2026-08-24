@@ -34,6 +34,8 @@ def _expected_terms(resume: ResumeContent) -> list[tuple[str, str]]:
         terms.append(("candidate name", resume.full_name))
     if resume.email and resume.email != "NEEDS_USER_INPUT":
         terms.append(("contact email", resume.email))
+    if resume.target_role:
+        terms.append(("target role", resume.target_role))
     terms.append(("summary section", "Summary"))
     terms.append(("skills section", "Skills"))
     for e in resume.experience[:1]:

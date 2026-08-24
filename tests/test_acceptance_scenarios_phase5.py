@@ -5,6 +5,7 @@ and verifies every required property in one place."""
 
 import random
 import threading
+from datetime import datetime, timedelta, timezone
 
 import httpx
 
@@ -18,6 +19,7 @@ from app.workers.runner import Worker
 
 _N_PORTALS = 100
 _N_WORKERS = 4
+_RECENT = (datetime.now(timezone.utc) - timedelta(hours=6)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _seed_portals(n: int) -> list[int]:
@@ -41,7 +43,7 @@ def _handler_factory(fail_tenants: set[str], zero_job_tenants: set[str]):
         return httpx.Response(200, json={"jobs": [
             {"id": f"{tenant}-1", "title": "Backend Software Engineer", "location": {"name": "Remote - US"},
              "content": "H-1B sponsorship available. Python role. Full-time.",
-             "absolute_url": f"https://boards.greenhouse.io/{tenant}/jobs/1", "updated_at": "2026-08-21T10:00:00Z"},
+             "absolute_url": f"https://boards.greenhouse.io/{tenant}/jobs/1", "updated_at": _RECENT},
         ]})
     return handler
 
@@ -133,7 +135,7 @@ def test_worker_crash_recovery_within_multi_worker_scenario(tmp_env, mock_httpx)
         return httpx.Response(200, json={"jobs": [
             {"id": "1", "title": "Backend Software Engineer", "location": {"name": "Remote - US"},
              "content": "Sponsorship available. Python.", "absolute_url": "https://x/1",
-             "updated_at": "2026-08-21T10:00:00Z"},
+             "updated_at": _RECENT},
         ]})
 
     mock_httpx(handler)

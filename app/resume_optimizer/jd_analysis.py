@@ -17,7 +17,7 @@ from app.resume_optimizer.models import (
     RequirementPriority,
 )
 
-ANALYZER_VERSION = "jd-analysis-v1"
+ANALYZER_VERSION = "jd-analysis-v2"
 
 # (skill phrase, category) -- deliberately overlapping/synonymous with
 # app.matching.skills.SKILL_VOCAB but categorized for diagnostics grouping
@@ -91,7 +91,39 @@ SKILL_VOCAB: list[tuple[str, RequirementCategory]] = [
     ("pytest", RequirementCategory.TESTING),
     ("junit", RequirementCategory.TESTING),
     ("tdd", RequirementCategory.TESTING),
+    ("bdd", RequirementCategory.TESTING),
     ("test automation", RequirementCategory.TESTING),
+    # Testing terminology expansion (JD intelligence v3): QA/SDET-shaped JDs
+    # commonly name specific test types/tools rather than the bare word
+    # "testing" -- extracting them as their own requirement items (instead
+    # of silently folding into the generic "testing" responsibility signal)
+    # is what makes QA/SDET-role JDs classify and match meaningfully.
+    ("integration testing", RequirementCategory.TESTING),
+    ("end-to-end testing", RequirementCategory.TESTING),
+    ("e2e testing", RequirementCategory.TESTING),
+    ("regression testing", RequirementCategory.TESTING),
+    ("performance testing", RequirementCategory.TESTING),
+    ("load testing", RequirementCategory.TESTING),
+    ("stress testing", RequirementCategory.TESTING),
+    ("smoke testing", RequirementCategory.TESTING),
+    ("acceptance testing", RequirementCategory.TESTING),
+    ("manual testing", RequirementCategory.TESTING),
+    ("exploratory testing", RequirementCategory.TESTING),
+    ("test coverage", RequirementCategory.TESTING),
+    ("test cases", RequirementCategory.TESTING),
+    ("test plans", RequirementCategory.TESTING),
+    ("quality assurance", RequirementCategory.TESTING),
+    ("selenium", RequirementCategory.TESTING),
+    ("cypress", RequirementCategory.TESTING),
+    ("playwright", RequirementCategory.TESTING),
+    ("postman", RequirementCategory.TESTING),
+    ("cucumber", RequirementCategory.TESTING),
+    ("soapui", RequirementCategory.TESTING),
+    ("k6", RequirementCategory.TESTING),
+    ("locust", RequirementCategory.TESTING),
+    ("jmeter", RequirementCategory.TESTING),
+    ("gatling", RequirementCategory.TESTING),
+    ("loadrunner", RequirementCategory.TESTING),
     ("agile", RequirementCategory.METHODOLOGY),
     ("scrum", RequirementCategory.METHODOLOGY),
     ("api design", RequirementCategory.BACKEND),
@@ -118,6 +150,37 @@ SKILL_VOCAB: list[tuple[str, RequirementCategory]] = [
     ("observability", RequirementCategory.OBSERVABILITY),
     ("grafana", RequirementCategory.OBSERVABILITY),
     ("prometheus", RequirementCategory.OBSERVABILITY),
+    # Observability terminology expansion (JD intelligence v3): more of the
+    # concrete tool/practice names JDs actually use, kept in the same
+    # OBSERVABILITY category (deliberately excluded from
+    # TRANSFERABLE_ELIGIBLE_CATEGORIES, same rationale as the existing
+    # monitoring/grafana/prometheus entries -- see models.py).
+    ("datadog", RequirementCategory.OBSERVABILITY),
+    ("new relic", RequirementCategory.OBSERVABILITY),
+    ("splunk", RequirementCategory.OBSERVABILITY),
+    ("elk stack", RequirementCategory.OBSERVABILITY),
+    ("logstash", RequirementCategory.OBSERVABILITY),
+    ("kibana", RequirementCategory.OBSERVABILITY),
+    ("opentelemetry", RequirementCategory.OBSERVABILITY),
+    ("jaeger", RequirementCategory.OBSERVABILITY),
+    ("zipkin", RequirementCategory.OBSERVABILITY),
+    ("cloudwatch", RequirementCategory.OBSERVABILITY),
+    ("distributed tracing", RequirementCategory.OBSERVABILITY),
+    ("log aggregation", RequirementCategory.OBSERVABILITY),
+    ("pagerduty", RequirementCategory.OBSERVABILITY),
+    ("sentry", RequirementCategory.OBSERVABILITY),
+    ("site reliability", RequirementCategory.OBSERVABILITY),
+    ("sre", RequirementCategory.OBSERVABILITY),
+    ("alerting", RequirementCategory.OBSERVABILITY),
+    # AI/ML terminology (role-aware "AI/backend when evidence supports it" --
+    # CLAUDE.md JD intelligence v3): kept in the existing DATA_ML category,
+    # never claimed unless directly verified (DATA_ML stays TRANSFERABLE-
+    # eligible only via genuinely analogous verified data/ML work).
+    ("ai", RequirementCategory.DATA_ML),
+    ("artificial intelligence", RequirementCategory.DATA_ML),
+    ("llm", RequirementCategory.DATA_ML),
+    ("nlp", RequirementCategory.DATA_ML),
+    ("generative ai", RequirementCategory.DATA_ML),
 ]
 
 # Fast lookups built once from SKILL_VOCAB -- used by alternative-group
@@ -133,6 +196,13 @@ RESPONSIBILITY_SIGNALS = [
     "cloud deployment", "debugging", "testing", "code review", "on-call",
     "mentoring", "architecture", "scalability", "performance", "production",
     "incident", "cross-functional", "design and implement", "build and maintain",
+    # Responsibility extraction expansion (JD intelligence v3).
+    "root cause analysis", "capacity planning", "performance tuning",
+    "database design", "api integration", "third-party integrations",
+    "requirements gathering", "documentation", "technical design",
+    "code quality", "post-mortem", "incident response", "troubleshooting",
+    "root cause", "roadmap", "stakeholder", "collaborate with",
+    "automated testing", "deployment automation", "infrastructure as code",
 ]
 
 DOMAIN_SIGNALS = [
@@ -141,6 +211,11 @@ DOMAIN_SIGNALS = [
     "gaming", "adtech", "advertising", "media", "streaming", "cybersecurity",
     "biotech", "life sciences", "government", "public sector", "education", "edtech",
     "real estate", "travel", "telecom", "energy", "manufacturing",
+    # Domain extraction expansion (JD intelligence v3): fraud/risk is a
+    # common payments-adjacent domain signal (e.g. "fraud detection" nice-
+    # to-have on a payments JD) distinct from the ML/DATA_ML skill category
+    # itself -- purely informational, never a blocker either way.
+    "fraud", "risk management",
 ]
 
 # Post-release bug fix (real Airbnb Payments JD): a JD commonly says
@@ -189,6 +264,11 @@ _NEGATION_PATTERNS = [
 _CONDITIONAL_PATTERNS = [
     r"\bcase.by.case\b", r"\bmay be considered\b", r"\bdepending on\b",
     r"\bif available\b", r"\bwhere applicable\b",
+    # Education extraction expansion (JD intelligence v3): "...or equivalent
+    # (practical) experience" is a genuinely conditional qualifier -- the
+    # degree requirement is softened, not dropped -- same semantics as the
+    # existing "may be considered depending on" patterns above.
+    r"\bor equivalent (?:practical )?experience\b",
 ]
 
 _EDU_PATTERNS = [
@@ -196,6 +276,7 @@ _EDU_PATTERNS = [
     (r"\bmaster'?s? degree\b", "Master's degree"),
     (r"\bm\.?s\.?\b(?!\w)", "Master's degree"),
     (r"\bbachelor'?s? degree\b", "Bachelor's degree"),
+    (r"\bb\.?a\.?\b(?!\w)", "Bachelor's degree"),
     (r"\bb\.?s\.?\b(?!\w)", "Bachelor's degree"),
     (r"\bcomputer science degree\b", "Computer Science degree"),
 ]
@@ -230,8 +311,15 @@ def _trim_cert_label(label: str) -> str:
     return " ".join(words)
 
 _YEARS_PATTERNS = [
-    re.compile(r"(\d+)\s*\+?\s*-\s*(\d+)\s*\+?\s*years", re.IGNORECASE),
-    re.compile(r"(\d+)\s*\+?\s*years", re.IGNORECASE),
+    # Range first ("3-5 years", "3 to 5 years") so a range's lower bound is
+    # never mistaken for a lone hyphenated-adjective match below.
+    re.compile(r"(\d+)\s*\+?\s*(?:-|to)\s*(\d+)\s*\+?\s*years?", re.IGNORECASE),
+    # Plural/plus form ("5+ years", "5 years").
+    re.compile(r"(\d+)\s*\+?\s*years\b", re.IGNORECASE),
+    # Years intelligence v3: hyphenated singular adjective form ("7-year
+    # requirement", "7-year software engineering experience") -- a real JD
+    # phrasing the plural-only pattern above never matched.
+    re.compile(r"(\d+)\s*\+?\s*-\s*year\b", re.IGNORECASE),
 ]
 
 
@@ -377,31 +465,67 @@ def _extract_years(text: str) -> float | None:
 # single-term extraction path instead of being force-grouped.
 _ALT_GROUP_PATTERN = re.compile(r"\b[a-z][a-z0-9+#.]*(?:\s*/\s*[a-z][a-z0-9+#.]*)+\b")
 
+# Alternative requirements expansion (JD intelligence v3): the same "one
+# requirement satisfied by any verified alternative" semantics as the
+# slash-group pattern above, for the equally common prose form "Java OR
+# Kotlin OR Python" / "Java, Kotlin, or Python". Requires >=1 comma-joined
+# lead token(s) followed by >=1 "or <token>" tail so a lone, unrelated
+# "X or Y" in ordinary prose is captured too -- but exactly like the slash
+# pattern, it is only ever promoted to an alternative-group ITEM when >=2 of
+# its tokens are recognized SKILL_VOCAB phrases (see the `recognized`
+# guard in `_build_alt_item` below), so "review code or documentation"
+# never becomes a fabricated alternative-requirement group.
+_ALT_OR_PATTERN = re.compile(
+    r"\b[a-z][a-z0-9+#.]*(?:\s*,\s*[a-z][a-z0-9+#.]*)*(?:\s*,?\s+or\s+[a-z][a-z0-9+#.]*)+\b",
+    re.IGNORECASE,
+)
+
+
+def _build_alt_item(text: str, text_lower: str, start: int, end: int, tokens: list[str]) -> JDRequirementItem | None:
+    recognized = [(t, _SKILL_VOCAB_CATEGORY[t]) for t in tokens if t in _SKILL_VOCAB_CATEGORY]
+    if len(recognized) < 2:
+        return None
+    priority_override = _local_priority_override(text_lower, start, end)
+    if _negated_after_override(text_lower, start, end, priority_override):
+        return None
+    conditional = _is_conditional(text_lower, start, end)
+    priority = priority_override or _section_priority_for_offset(text_lower, start)
+    categories = [c for _, c in recognized]
+    category = max(set(categories), key=categories.count)
+    alt_names = [t for t, _ in recognized]
+    span_start = max(0, start - 40)
+    span_end = min(len(text), end + 40)
+    return JDRequirementItem(
+        text=text[start:end], normalized_value="|".join(alt_names), category=category,
+        priority=priority, evidence_span=text[span_start:span_end].strip(),
+        confidence=0.9 if not conditional else 0.6, conditional=conditional, alternatives=alt_names,
+    )
+
 
 def _extract_alternative_groups(text: str, text_lower: str) -> tuple[list[JDRequirementItem], list[tuple[int, int]]]:
     items: list[JDRequirementItem] = []
     consumed: list[tuple[int, int]] = []
+
     for m in _ALT_GROUP_PATTERN.finditer(text_lower):
         tokens = [t.strip() for t in m.group(0).split("/")]
-        recognized = [(t, _SKILL_VOCAB_CATEGORY[t]) for t in tokens if t in _SKILL_VOCAB_CATEGORY]
-        if len(recognized) < 2:
+        item = _build_alt_item(text, text_lower, m.start(), m.end(), tokens)
+        if item is None:
             continue
         consumed.append((m.start(), m.end()))
-        priority_override = _local_priority_override(text_lower, m.start(), m.end())
-        if _negated_after_override(text_lower, m.start(), m.end(), priority_override):
+        items.append(item)
+
+    for m in _ALT_OR_PATTERN.finditer(text_lower):
+        # Never re-consume a span already claimed by the slash pattern (or
+        # by an earlier OR-pattern match) above.
+        if any(s <= m.start() and m.end() <= e for s, e in consumed):
             continue
-        conditional = _is_conditional(text_lower, m.start(), m.end())
-        priority = priority_override or _section_priority_for_offset(text_lower, m.start())
-        categories = [c for _, c in recognized]
-        category = max(set(categories), key=categories.count)
-        alt_names = [t for t, _ in recognized]
-        span_start = max(0, m.start() - 40)
-        span_end = min(len(text), m.end() + 40)
-        items.append(JDRequirementItem(
-            text=text[m.start():m.end()], normalized_value="|".join(alt_names), category=category,
-            priority=priority, evidence_span=text[span_start:span_end].strip(),
-            confidence=0.9 if not conditional else 0.6, conditional=conditional, alternatives=alt_names,
-        ))
+        tokens = [t.strip() for t in re.split(r",|\bor\b", m.group(0)) if t.strip()]
+        item = _build_alt_item(text, text_lower, m.start(), m.end(), tokens)
+        if item is None:
+            continue
+        consumed.append((m.start(), m.end()))
+        items.append(item)
+
     return items, consumed
 
 
@@ -448,9 +572,16 @@ def _extract_education(text_lower: str) -> tuple[list[str], list[JDRequirementIt
         if m and not _is_negated(text_lower, m.start(), m.end()) and label not in found:
             found.append(label)
             priority = _local_priority_override(text_lower, m.start(), m.end()) or _section_priority_for_offset(text_lower, m.start())
+            # Education extraction v3: "...or equivalent (practical)
+            # experience" is a genuinely conditional qualifier on the degree
+            # requirement (see _CONDITIONAL_PATTERNS) -- previously this
+            # extractor never checked/set `conditional` at all, unlike every
+            # other extraction function in this module.
+            conditional = _is_conditional(text_lower, m.start(), m.end())
             items.append(JDRequirementItem(
                 text=label, normalized_value=label, category=RequirementCategory.EDUCATION,
                 priority=priority, evidence_span=text_lower[max(0, m.start() - 30):m.end() + 30].strip(),
+                confidence=0.9 if not conditional else 0.6, conditional=conditional,
             ))
     return found, items
 
@@ -528,6 +659,114 @@ def _extract_salary_mentioned(text_lower: str) -> bool:
     return bool(re.search(r"\$\s?\d{2,3}[,.]?\d{0,3}\s*(k|,000)?", text_lower))
 
 
+# Semantic requirement deduplication (JD intelligence v3): a JD frequently
+# names the SAME underlying technology more than once, in different phrasings
+# ("build REST APIs" ... "solid understanding of RESTful services"). Left
+# alone, that produces two separate requirement items for one real skill,
+# inflating required/preferred coverage denominators and double-weighting the
+# same signal during resume relevance scoring. Deliberately a short, EXPLICIT
+# allowlist of unambiguous same-technology phrasings -- never a broad
+# same-category merge: RequirementCategory.OBSERVABILITY's "monitoring" and
+# "observability" are near-synonyms but are NOT merged here, because this
+# codebase's own regression suite (test_resume_optimizer_airbnb_regression
+# .test_huge_plus_but_not_required_kept_as_preferred_not_dropped) already
+# depends on them staying two independently-tracked requirement items.
+_SYNONYM_GROUPS: tuple[tuple[str, ...], ...] = (
+    ("rest apis", "rest api", "restful", "rest"),
+    ("kubernetes", "k8s"),
+    ("postgresql", "postgres"),
+    ("node.js", "nodejs"),
+    ("google cloud", "gcp"),
+    ("golang", "go"),
+)
+_SYNONYM_CANONICAL: dict[str, str] = {alt: group[0] for group in _SYNONYM_GROUPS for alt in group}
+
+
+def _deduplicate_semantic_requirements(items: list[JDRequirementItem]) -> list[JDRequirementItem]:
+    """Merges duplicate same-technology single-term items (never alternative
+    groups -- those already represent one requirement by construction) that
+    both refer to the same `_SYNONYM_GROUPS` entry WITHIN THE SAME CATEGORY.
+    Keyed on (canonical, category) rather than canonical alone -- the same
+    phrase can legitimately appear as both a SKILL_CATEGORIES item (coverage
+    tracking) and a RESPONSIBILITY item (responsibility-alignment tracking,
+    e.g. "rest apis" is in both SKILL_VOCAB and RESPONSIBILITY_SIGNALS); those
+    are two independently-meaningful signals and must never be collapsed into
+    one, or app.resume_optimizer.matching's RESPONSIBILITY-category matching
+    would silently lose coverage. Keeps the FIRST-seen item's text/position
+    but promotes it to REQUIRED if any duplicate was REQUIRED, and keeps the
+    longer/more-specific phrase text when merging."""
+    seen: dict[tuple[str, RequirementCategory], int] = {}  # (canonical, category) -> index into `out`
+    out: list[JDRequirementItem] = []
+    for item in items:
+        if item.alternatives:
+            out.append(item)
+            continue
+        canonical = _SYNONYM_CANONICAL.get(item.normalized_value)
+        if canonical is None:
+            out.append(item)
+            continue
+        key = (canonical, item.category)
+        existing_idx = seen.get(key)
+        if existing_idx is None:
+            seen[key] = len(out)
+            out.append(item)
+            continue
+        existing = out[existing_idx]
+        merged_text = item.text if len(item.text) > len(existing.text) else existing.text
+        merged_priority = (
+            RequirementPriority.REQUIRED
+            if RequirementPriority.REQUIRED in (existing.priority, item.priority)
+            else RequirementPriority.PREFERRED
+        )
+        out[existing_idx] = JDRequirementItem(
+            text=merged_text, normalized_value=existing.normalized_value, category=existing.category,
+            priority=merged_priority, evidence_span=existing.evidence_span,
+            confidence=max(existing.confidence, item.confidence),
+            conditional=existing.conditional and item.conditional,
+        )
+        # duplicate item itself is dropped (not appended to `out`)
+    return out
+
+
+# Compensation parsing (JD intelligence v3, "where appropriate"): purely
+# informational -- never a matching/eligibility signal, never persisted as a
+# resume claim. A range/ceiling not genuinely present in the JD text is left
+# as None rather than guessed (same "never fabricate a field the source
+# doesn't provide" principle CLAUDE.md's registry/provider rules already
+# establish for structurally absent data elsewhere in this codebase).
+_COMP_RANGE_PATTERN = re.compile(
+    r"\$\s?(\d{1,3}(?:,\d{3})*(?:\.\d+)?)\s*(k)?\s*(?:-|to|–|—)\s*\$?\s?(\d{1,3}(?:,\d{3})*(?:\.\d+)?)\s*(k)?",
+    re.IGNORECASE,
+)
+_COMP_CEILING_PATTERN = re.compile(r"\bup to\s*\$\s?(\d{1,3}(?:,\d{3})*(?:\.\d+)?)\s*(k)?", re.IGNORECASE)
+_COMP_YEAR_PERIOD_PATTERN = re.compile(r"\bper year\b|/\s*year\b|\bannually\b|\bannual salary\b|\byearly\b", re.IGNORECASE)
+_COMP_HOUR_PERIOD_PATTERN = re.compile(r"\bper hour\b|/\s*hr\b|/\s*hour\b|\bhourly\b", re.IGNORECASE)
+
+
+def _parse_comp_amount(num_str: str, k_flag: str | None) -> float:
+    value = float(num_str.replace(",", ""))
+    return value * 1000 if k_flag else value
+
+
+def _extract_compensation(text: str) -> tuple[float | None, float | None, str, str]:
+    """Returns (min, max, period, currency). period is "year"/"hour"/"" (""
+    when the JD gives a figure but no explicit period marker -- never
+    guessed). currency is always "USD" when any figure was found (the only
+    currency symbol this parser recognizes), else ""."""
+    m = _COMP_RANGE_PATTERN.search(text)
+    if m:
+        lo = _parse_comp_amount(m.group(1), m.group(2))
+        hi = _parse_comp_amount(m.group(3), m.group(4))
+        lo, hi = (lo, hi) if lo <= hi else (hi, lo)
+    else:
+        m2 = _COMP_CEILING_PATTERN.search(text)
+        if not m2:
+            return None, None, "", ""
+        lo, hi = None, _parse_comp_amount(m2.group(1), m2.group(2))
+    period = "year" if _COMP_YEAR_PERIOD_PATTERN.search(text) else ("hour" if _COMP_HOUR_PERIOD_PATTERN.search(text) else "")
+    return lo, hi, period, "USD"
+
+
 def analyze_jd(job_title: str, description: str) -> JDAnalysisResult:
     """Pure function: JD text in, normalized requirements model out. Never
     reads candidate data (CLAUDE.md section 3)."""
@@ -555,6 +794,10 @@ def analyze_jd(job_title: str, description: str) -> JDAnalysisResult:
     responsibilities, resp_items = _extract_responsibilities(text, text_lower)
     requirements.extend(resp_items)
 
+    requirements = _deduplicate_semantic_requirements(requirements)
+
+    comp_min, comp_max, comp_period, comp_currency = _extract_compensation(text)
+
     return JDAnalysisResult(
         job_title=job_title,
         required_years=years,
@@ -564,6 +807,10 @@ def analyze_jd(job_title: str, description: str) -> JDAnalysisResult:
         certification_requirements=cert_found,
         sponsorship_language_present=_extract_sponsorship_language(text_lower),
         salary_mentioned=_extract_salary_mentioned(text_lower),
+        compensation_min=comp_min,
+        compensation_max=comp_max,
+        compensation_period=comp_period,
+        compensation_currency=comp_currency,
         requirements=requirements,
         analyzer_version=ANALYZER_VERSION,
     )

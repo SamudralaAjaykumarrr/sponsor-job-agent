@@ -44,6 +44,7 @@ class QualityReport:
     preferred_skill_coverage: CoverageBucket
     responsibility_alignment: dict
     domain_alignment: dict
+    compensation_alignment: dict
     title_alignment: dict
     keyword_coverage: dict
     experience_evidence_coverage: dict
@@ -69,6 +70,7 @@ class QualityReport:
             "preferred_skill_coverage": self.preferred_skill_coverage.as_dict(),
             "responsibility_alignment": self.responsibility_alignment,
             "domain_alignment": self.domain_alignment,
+            "compensation_alignment": self.compensation_alignment,
             "title_alignment": self.title_alignment,
             "keyword_coverage": self.keyword_coverage,
             "experience_evidence_coverage": self.experience_evidence_coverage,
@@ -138,6 +140,35 @@ def _domain_alignment(jd_domains: list[str], candidate_domains: list[str]) -> di
     }
 
 
+def _compensation_alignment(jd_analysis: JDAnalysisResult, candidate_salary_min_usd: int | None) -> dict:
+    """Compensation parsing "where appropriate" (JD intelligence v3): purely
+    informational, never a matching/eligibility signal and never a blocker
+    -- this JD's parsed figure is only ever compared against the
+    candidate's own stated preference (app.candidate.schema.Preferences
+    .salary_min_usd), never fabricated when either side is unknown."""
+    jd_min, jd_max = jd_analysis.compensation_min, jd_analysis.compensation_max
+    if jd_min is None and jd_max is None:
+        return {
+            "label": "NOT_SPECIFIED", "jd_compensation_min": None, "jd_compensation_max": None,
+            "jd_compensation_period": jd_analysis.compensation_period,
+            "detail": "JD did not state a compensation figure this parser could confidently extract.",
+        }
+    if candidate_salary_min_usd is None:
+        return {
+            "label": "CANDIDATE_PREFERENCE_UNKNOWN", "jd_compensation_min": jd_min, "jd_compensation_max": jd_max,
+            "jd_compensation_period": jd_analysis.compensation_period,
+            "detail": "Candidate salary_min_usd preference is not set -- comparison skipped, not guessed.",
+        }
+    jd_ceiling = jd_max if jd_max is not None else jd_min
+    label = "MEETS_OR_ABOVE_PREFERENCE" if jd_ceiling >= candidate_salary_min_usd else "BELOW_PREFERENCE"
+    return {
+        "label": label, "jd_compensation_min": jd_min, "jd_compensation_max": jd_max,
+        "jd_compensation_period": jd_analysis.compensation_period,
+        "candidate_salary_min_usd": candidate_salary_min_usd,
+        "detail": "Informational only -- never a matching/eligibility blocker.",
+    }
+
+
 def compute_quality(
     *,
     job_id: int,
@@ -152,6 +183,7 @@ def compute_quality(
     optimizer_version: str,
     generated_at: str,
     candidate_domains: list[str] | None = None,
+    candidate_salary_min_usd: int | None = None,
 ) -> QualityReport:
     required_bucket = _bucket(matches, RequirementPriority.REQUIRED)
     preferred_bucket = _bucket(matches, RequirementPriority.PREFERRED)
@@ -206,6 +238,7 @@ def compute_quality(
         required_skill_coverage=required_bucket, preferred_skill_coverage=preferred_bucket,
         responsibility_alignment=resp,
         domain_alignment=_domain_alignment(jd_analysis.domain_signals, candidate_domains or []),
+        compensation_alignment=_compensation_alignment(jd_analysis, candidate_salary_min_usd),
         title_alignment=_title_alignment(job_title, resume),
         keyword_coverage=keyword_coverage,
         experience_evidence_coverage=experience_evidence_coverage,

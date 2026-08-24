@@ -24,8 +24,11 @@ from app.resume_optimizer.evidence import build_evidence_graph
 from app.resume_optimizer.fingerprint import compute_artifact_hash, compute_jd_fingerprint, compute_profile_version, OPTIMIZER_VERSION
 from app.resume_optimizer.jd_analysis import analyze_jd
 from app.resume_optimizer.matching import match_requirements
-from app.resume_optimizer.models import JDAnalysisResult, MatchStatus, RequirementCategory, RequirementMatch, ResumeVariantStatus
+from app.resume_optimizer.models import EvidenceGraph, JDAnalysisResult, MatchStatus, RequirementCategory, RequirementMatch, ResumeVariantStatus
 from app.resume_optimizer.quality import compute_quality
+from app.resume_optimizer import relevance as relevance_mod
+from app.resume_optimizer.recency import recency_rank
+from app.resume_optimizer.role_classification import build_target_role, classify_role
 from app.models import utcnow
 
 
@@ -42,76 +45,76 @@ def _matched_requirement_texts(matches: list[RequirementMatch], statuses: tuple[
     return [m.requirement.text for m in matches if m.status in statuses]
 
 
-def _select_bullets(bullets: list[str], relevance_terms: set[str], cap: int) -> list[str]:
-    if not bullets:
-        return []
-    scored = sorted(bullets, key=lambda b: sum(1 for t in relevance_terms if t in b.lower()), reverse=True)
-    top = [b for b in scored if any(t in b.lower() for t in relevance_terms)][:cap]
-    if not top:
-        top = bullets[:cap]
-    return top or bullets[:1]
+_SKILL_GAP_CATEGORIES = (
+    RequirementCategory.LANGUAGE, RequirementCategory.FRAMEWORK, RequirementCategory.DATABASE,
+    RequirementCategory.CLOUD, RequirementCategory.DEVOPS, RequirementCategory.MESSAGING,
+    RequirementCategory.TESTING, RequirementCategory.SECURITY, RequirementCategory.ARCHITECTURE,
+    RequirementCategory.FRONTEND, RequirementCategory.BACKEND, RequirementCategory.DATA_ML,
+    RequirementCategory.TOOL, RequirementCategory.METHODOLOGY, RequirementCategory.OBSERVABILITY,
+)
 
 
 def generate_optimized_resume_content(
     profile: CandidateProfile, job_title: str, job_description: str,
-    jd_analysis: JDAnalysisResult, matches: list[RequirementMatch],
+    jd_analysis: JDAnalysisResult, matches: list[RequirementMatch], graph: EvidenceGraph | None = None,
 ) -> ResumeContent:
-    """CLAUDE.md sections 21-27: strongest truthful alignment -- reorders and
-    selects only verified content, never invents any."""
-    matched_required = _matched_requirement_texts(matches, (MatchStatus.MATCHED,))
-    matched_any = _matched_requirement_texts(matches, (MatchStatus.MATCHED, MatchStatus.TRANSFERABLE))
-    relevance_terms = {t.lower() for t in matched_any} | {
-        r for r in jd_analysis.responsibilities
-    }
+    """CLAUDE.md sections 21-27, JD intelligence v3: strongest truthful
+    alignment -- reorders and selects only verified content, never invents
+    any. `graph` is optional (rebuilt from `profile` when omitted, e.g. by a
+    direct caller that doesn't already have one) so `optimize_resume()` can
+    pass its already-computed graph without a second, redundant build."""
+    graph = graph if graph is not None else build_evidence_graph(profile)
+    role = classify_role(job_title, jd_analysis, graph)
+    relevance = relevance_mod.build_relevance_model(jd_analysis, matches, graph, role, job_description)
 
-    # Skills ordering (section 25): verified skills whose text directly
-    # satisfies a MATCHED requirement first, then the rest of the verified
-    # profile skills in their original order. Never a skill outside
-    # profile.skills.
+    matched_required = _matched_requirement_texts(matches, (MatchStatus.MATCHED,))
+
+    # Skills ordering (section 25, role-aware in v3): verified skills ranked
+    # by relevance-model weight (required > preferred > role-boosted
+    # category > unrelated), ties broken by original profile order --
+    # never a skill outside profile.skills.
     verified_skills = [s for s in profile.skills if s and s != "NEEDS_USER_INPUT"]
-    matched_lower = {t.lower() for t in matched_required}
-    priority_skills = [s for s in verified_skills if s.lower() in matched_lower]
-    rest_skills = [s for s in verified_skills if s.lower() not in matched_lower]
-    skills_ordered = priority_skills + rest_skills
+    skills_ordered = sorted(
+        verified_skills,
+        key=lambda s: (-relevance_mod.score_skill(s, relevance), verified_skills.index(s)),
+    )
 
     gap_skills = [
         m.requirement.text for m in matches
-        if m.requirement.category in (
-            RequirementCategory.LANGUAGE, RequirementCategory.FRAMEWORK, RequirementCategory.DATABASE,
-            RequirementCategory.CLOUD, RequirementCategory.DEVOPS, RequirementCategory.MESSAGING,
-            RequirementCategory.TESTING, RequirementCategory.SECURITY, RequirementCategory.ARCHITECTURE,
-            RequirementCategory.FRONTEND, RequirementCategory.BACKEND, RequirementCategory.DATA_ML,
-            RequirementCategory.TOOL, RequirementCategory.METHODOLOGY, RequirementCategory.OBSERVABILITY,
-        ) and m.status == MatchStatus.MISSING
+        if m.requirement.category in _SKILL_GAP_CATEGORIES and m.status == MatchStatus.MISSING
     ]
 
-    # Experience ordering + bullet selection (section 21-24): rank employers
-    # by how many matched/transferable requirement terms their bullets/
-    # skills_used cover; select the most relevant verified bullets per
-    # employer, preserving employer/title/dates/chronology of the entries
-    # actually included.
-    def employer_relevance(e) -> int:
-        used = {s.lower() for s in e.skills_used}
-        return len(used & matched_lower) + sum(1 for b in e.verified_bullets if any(t in b.lower() for t in relevance_terms))
-
-    experience_sorted = sorted(profile.employment, key=employer_relevance, reverse=True)
+    # Experience ordering + bullet selection (sections 21-24, JD
+    # intelligence v3): rank employers by the shared relevance model
+    # (required/responsibility/domain/recency/impact/keyword-weighted, never
+    # just a raw matched-term count), select bullets via non-redundant
+    # greedy coverage -- preserving employer/title/dates/chronology of the
+    # entries actually included.
+    recency = recency_rank(profile.employment)
+    experience_sorted = sorted(
+        profile.employment,
+        key=lambda e: relevance_mod.score_experience_entry(
+            list(e.verified_bullets), list(e.skills_used), relevance, recency.get(e.company, 0.0),
+        ),
+        reverse=True,
+    )
     experience = [
         ExperienceBlock(
             company=e.company, title=e.title, start_date=e.start_date, end_date=e.end_date,
-            location=e.location, bullets=_select_bullets(list(e.verified_bullets), relevance_terms, cap=5),
+            location=e.location, bullets=relevance_mod.select_bullets(list(e.verified_bullets), relevance, cap=5),
         )
         for e in experience_sorted
     ]
 
-    def project_relevance(p) -> int:
-        used = {s.lower() for s in p.skills_used}
-        return len(used & matched_lower) + sum(1 for b in p.verified_bullets if any(t in b.lower() for t in relevance_terms))
-
-    projects_sorted = sorted(profile.projects, key=project_relevance, reverse=True)
+    projects_sorted = sorted(
+        profile.projects,
+        key=lambda p: relevance_mod.score_project(list(p.verified_bullets), list(p.skills_used), relevance),
+        reverse=True,
+    )
     projects = [
         ProjectBlock(
             name=p.name, description=p.description,
-            bullets=_select_bullets(list(p.verified_bullets), relevance_terms, cap=4), url=p.url,
+            bullets=relevance_mod.select_bullets(list(p.verified_bullets), relevance, cap=4), url=p.url,
         )
         for p in projects_sorted[:3]
     ]
@@ -123,7 +126,7 @@ def generate_optimized_resume_content(
 
     years = profile.standard_answers.years_of_experience
     years_str = f"{years:g} years" if years is not None else "NEEDS_USER_INPUT"
-    top_matched = matched_required[:5] or priority_skills[:5]
+    top_matched = matched_required[:5] or skills_ordered[:5]
     top_str = ", ".join(top_matched) if top_matched else "NEEDS_USER_INPUT"
     # CLAUDE.md section 1/89: the summary never echoes the raw JD title/role
     # name -- doing so (e.g. "targeting Java Backend Engineer") could read as
@@ -133,12 +136,21 @@ def generate_optimized_resume_content(
     # Only verified skills ever appear in the summary text.
     summary = f"Software engineer with {years_str} of experience; verified strengths include {top_str}."
 
+    # Target role / headline (resume structure, JD intelligence v3): a
+    # forward-looking "what I'm applying for" line, built entirely from a
+    # hardcoded safe role family + optionally a verified language + a
+    # verified domain -- never the raw JD title, never a claim of prior
+    # employment. See app.resume_optimizer.role_classification
+    # .build_target_role's docstring for the fabrication risk this design
+    # prevents (the same one the summary rule above already guards against).
+    target_role = build_target_role(job_title, jd_analysis, graph, role)
+
     return ResumeContent(
         full_name=profile.contact.full_name, email=profile.contact.email, phone=profile.contact.phone,
         location=f"{profile.contact.city}, {profile.contact.state}", linkedin_url=profile.contact.linkedin_url,
         github_url=profile.contact.github_url, portfolio_url=profile.contact.portfolio_url,
         summary=summary, skills_ordered=skills_ordered, experience=experience, projects=projects,
-        education=education, gap_skills=gap_skills,
+        education=education, gap_skills=gap_skills, target_role=target_role,
     )
 
 
@@ -198,7 +210,7 @@ def optimize_resume(job_id: int, *, force: bool = False) -> OptimizeResult:
         raise
 
     variant_id = claimed["variant_id"]
-    resume = generate_optimized_resume_content(profile, job.title, job.description, jd_analysis, matches)
+    resume = generate_optimized_resume_content(profile, job.title, job.description, jd_analysis, matches, graph)
 
     # Content-level truthfulness gate runs on the FULL, uncompressed resume
     # first: one_page.enforce_one_page() only ever removes/shortens content,
@@ -215,7 +227,18 @@ def optimize_resume(job_id: int, *, force: bool = False) -> OptimizeResult:
     # ordering (section 25).
     protected_lower = {t.lower() for t in _matched_requirement_texts(matches, (MatchStatus.MATCHED,))}
 
-    one_page_result = enforce_one_page(resume, out_dir, protected_skills_lower=protected_lower)
+    # JD intelligence v3: overflow removal ranks by the SAME weighted
+    # relevance model (required/responsibility/domain/recency/impact/
+    # keyword, non-redundancy) that selected the resume's initial content
+    # above, instead of one_page's own cruder unweighted fallback.
+    role = classify_role(job.title, jd_analysis, graph)
+    relevance_model = relevance_mod.build_relevance_model(jd_analysis, matches, graph, role, job.description)
+    entry_recency = recency_rank(profile.employment)
+
+    one_page_result = enforce_one_page(
+        resume, out_dir, protected_skills_lower=protected_lower,
+        relevance_weights=relevance_model.weights, entry_recency=entry_recency,
+    )
     docx_path, pdf_path, txt_path = one_page_result.docx_path, one_page_result.pdf_path, one_page_result.txt_path
     resume = one_page_result.resume  # the FINAL (possibly compressed) content actually rendered
 
@@ -246,7 +269,7 @@ def optimize_resume(job_id: int, *, force: bool = False) -> OptimizeResult:
         job_id=job_id, jd_fingerprint=jd_fingerprint, resume_artifact_hash=artifact_hash, job_title=job.title,
         jd_analysis=jd_analysis, matches=matches, resume=resume, ats_report=ats_report,
         claim_violations=violations, optimizer_version=OPTIMIZER_VERSION, generated_at=utcnow(),
-        candidate_domains=graph.domains,
+        candidate_domains=graph.domains, candidate_salary_min_usd=profile.preferences.salary_min_usd,
     )
     report_dict = quality_report.as_dict()
     repo.save_quality_report(variant_id, job_id, jd_fingerprint, report_dict)

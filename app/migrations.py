@@ -1339,6 +1339,52 @@ def _m050_agent_activity_log_table(conn, backend: str) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_agent_activity_log_ts ON agent_activity_log (ts)")
 
 
+def _m051_agent_run_state_lease_columns(conn, backend: str) -> None:
+    """autonomous-core-v3 hardening: single-orchestrator-guarantee safety net
+    (see app/config.py's AGENT_ORCHESTRATOR_LEASE_SECONDS docstring). Adds an
+    owning instance_id and a lease expiry to the existing single-row
+    agent_run_state -- claimed with the same atomic `UPDATE ... WHERE
+    (unowned OR lease-expired OR already-mine)` pattern this project's
+    worker/application queues already use (app.workers.leasing /
+    app.applications.queue), so correctness comes from the database's own
+    single-writer serialization, never an application-level lock. A crashed
+    lease holder is recovered purely by the lease expiring, never a
+    heartbeat-based liveness check."""
+    add_columns_if_missing(conn, backend, "agent_run_state", [
+        ("instance_id", "TEXT DEFAULT ''"),
+        ("lease_expires_at", "TEXT"),
+    ])
+
+
+def _m052_workday_tenant_dynamic_validation_column(conn, backend: str) -> None:
+    """Workday/SmartRecruiters/Workable browser-assist hardening (2026-08-22):
+    adds `dynamic_validation` to `workday_tenant_observations`, matching the
+    new key appended to app.applications.workday_tenant.CAPABILITY_KEYS --
+    does this tenant's real form genuinely block a Next/Continue click with
+    inline validation when a required field is left empty. Nullable, same
+    as every other capability column here: NULL means "not observed"."""
+    add_columns_if_missing(conn, backend, "workday_tenant_observations", [
+        ("dynamic_validation", "INTEGER"),
+    ])
+
+
+def _m053_app_settings_table(conn, backend: str) -> None:
+    """Premium UI Settings page: a small, allowlisted key/value override
+    store for runtime-mutable, non-dangerous tuning knobs.
+
+    Safety-relevant flags such as application execution, auto-submit, and
+    browser-assist enablement remain environment-controlled and are not
+    stored here.
+    """
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS app_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )"""
+    )
+
+
 MIGRATIONS: list[tuple[int, str, Callable]] = [
     (2, "phase6_worker_identity_columns", _m002_worker_identity_columns),
     (3, "phase6_schema_drift_table", _m003_schema_drift_table),
@@ -1389,6 +1435,9 @@ MIGRATIONS: list[tuple[int, str, Callable]] = [
     (48, "agent_run_state_progress_columns", _m048_agent_run_state_progress_columns),
     (49, "jobs_test_fixture_column", _m049_jobs_test_fixture_column),
     (50, "agent_activity_log_table", _m050_agent_activity_log_table),
+    (51, "agent_run_state_lease_columns", _m051_agent_run_state_lease_columns),
+    (52, "workday_tenant_dynamic_validation_column", _m052_workday_tenant_dynamic_validation_column),
+    (53, "app_settings_table", _m053_app_settings_table),
 ]
 
 # Version 1 is the implicit Phase 1-5 baseline schema, applied by

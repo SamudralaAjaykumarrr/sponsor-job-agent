@@ -56,9 +56,10 @@ from app.applications.apply_entry import (
     parse_step_progress,
     select_apply_control,
 )
-from app.applications import spa_events
+from app.applications import spa_events, workday_tenant
 from app.applications.confirmation_evidence import classify_confirmation_evidence
 from app.applications.domain_allowlist import is_allowed_host_for_session
+from app.applications.dynamic_validation import AdvanceAttempt, AdvanceOutcome, classify_advance_attempt
 from app.applications.job_identity import (
     IdentityResult,
     JobIdentitySignals,
@@ -431,6 +432,55 @@ class _LiveSession:
         return {"route_changed": route_changed, **outcome}
 
     def _do_discover(self) -> DiscoveryOutcome:
+        """Thin wrapper over `_do_discover_impl()` (the actual, unmodified
+        Phase 10-13 discovery pass -- see its own docstring/body for that
+        logic, left entirely untouched by this wrap). Workday/SmartRecruiters/
+        Workable browser-assist hardening (2026-08-22): every real discovery
+        pass against a real, recognized Workday tenant/site now organically
+        contributes ONE `workday_tenant.record_attempt()` row -- the same
+        per-attempt evidence Phase 12's validation scripts previously only
+        ever produced from bounded, manual runs (docs/workday-observation-
+        model.md). Wrapping the whole function (rather than instrumenting
+        each of its many early-return pause branches individually) is
+        deliberate: it captures EVERY outcome, including the login-gate
+        variability Phase 12 found most significant, without touching a
+        single line of the existing, already-live-tested discovery logic."""
+        outcome = self._do_discover_impl()
+        if self.provider == "workday" and self.tenant:
+            self._record_workday_attempt(outcome)
+        return outcome
+
+    def _record_workday_attempt(self, outcome: DiscoveryOutcome) -> None:
+        """Best-effort -- never raises into the discovery pass, matching
+        spa_events.record()'s own 'observability must never break the
+        caller' contract. `result` mirrors scripts/phase12_live_validation.
+        py's own derivation: the apply-entry classification when one was
+        found, else the pause reason, else FORM_ALREADY_VISIBLE/NONE."""
+        try:
+            info = parse_workday_tenant(outcome.current_url or self.application_url)
+            control = outcome.apply_entry_control or {}
+            result = (
+                outcome.pause_reason
+                or control.get("classification")
+                or ("FORM_ALREADY_VISIBLE" if outcome.fields else "NONE")
+            )
+            step_indicator = (
+                f"{outcome.current_step_observed}/{outcome.total_steps_observed}"
+                if outcome.current_step_observed else ""
+            )
+            workday_tenant.record_attempt(
+                self.tenant, self.site, info.host or (urlparse(self.application_url).hostname or ""),
+                requisition_id=info.requisition_id, url_initial=self.application_url,
+                url_final=outcome.current_url, stage=outcome.stage, apply_control_result=str(result),
+                render_time_ms=outcome.render_time_ms, fields_detected=len(outcome.fields),
+                resume_upload_detected=any(f.get("type") == "file" for f in outcome.fields),
+                step_indicator=step_indicator, result=str(result),
+                notes="auto-recorded by browser_runtime._do_discover",
+            )
+        except Exception:  # noqa: BLE001 -- observability must never break a real session
+            pass
+
+    def _do_discover_impl(self) -> DiscoveryOutcome:
         page = self.page
         current_url = page.url
         if not is_allowed_host_for_session(self.provider, self.application_url, current_url):
@@ -781,13 +831,44 @@ class _LiveSession:
             return {"advanced": False, "reason": "no next/continue control found"}
         before_url = self.page.url
         try:
+            fields_before = _fingerprint_fields(_detect_fields(self.page))
+        except Exception:  # noqa: BLE001 -- a pre-click scan failure must never block the click itself
+            fields_before = None
+        try:
             if next_button.get("id"):
                 self.page.locator(f"#{next_button['id']}").click(timeout=5000)
             else:
                 self.page.get_by_text(next_button["text"], exact=False).first.click(timeout=5000)
         except Exception:  # noqa: BLE001 -- a failed click still means "did not advance"
             return {"advanced": False, "reason": "click on next/continue control failed"}
-        self._do_advance_to_route(before_url)
+        route = self._do_advance_to_route(before_url)
+        # Workday/SmartRecruiters/Workable browser-assist hardening
+        # (2026-08-22): a click that changed neither the route NOR the
+        # field-set fingerprint may mean the form is genuinely stuck behind
+        # inline client-side validation (a required field left empty) --
+        # see app.applications.dynamic_validation. Strictly additive: any
+        # route OR field-set change still falls straight through to the
+        # unchanged "advanced: True" behavior below; this only intervenes
+        # for the previously-unhandled "nothing changed" case, and even
+        # then only when real DOM/text validation-error evidence is found
+        # (NO_CHANGE_UNKNOWN -- nothing changed, no evidence either way --
+        # is never guessed as a block; it also falls through unchanged).
+        if not route["route_changed"] and fields_before is not None:
+            try:
+                fields_after = _fingerprint_fields(_detect_fields(self.page))
+            except Exception:  # noqa: BLE001
+                fields_after = fields_before
+            if fields_after == fields_before:
+                validation = _detect_validation_errors(self.page)
+                attempt = AdvanceAttempt(
+                    route_changed=False, fields_changed=False,
+                    validation_error_elements=validation["count"], body_text=validation["body_text"],
+                )
+                if classify_advance_attempt(attempt) == AdvanceOutcome.VALIDATION_BLOCKED:
+                    spa_events.record(spa_events.EVENT_VALIDATION_BLOCKED, session_id=self.session_id,
+                                       provider=self.provider, detail="; ".join(validation["errors"][:5]))
+                    return {"advanced": False, "reason": "validation_blocked",
+                            "validation_errors": validation["errors"]}
         self.current_step += 1
         return {"advanced": True, "current_step": self.current_step}
 
@@ -1035,6 +1116,43 @@ def _detect_button(page, include_phrases: tuple, exclude_phrases: tuple = ()) ->
         """,
         [list(include_phrases), list(exclude_phrases)],
     )
+
+
+_VALIDATION_ERROR_SELECTOR = (
+    "[aria-invalid='true'], [role='alert'], .error, .field-error, .invalid-feedback, "
+    ".validation-error, .validation-message"
+)
+
+
+def _detect_validation_errors(page) -> dict:
+    """Workday/SmartRecruiters/Workable browser-assist hardening
+    (2026-08-22): scans for visible validation-error-shaped elements (an
+    aria-invalid field, a role=alert region, or a commonly-classed error
+    message), pierced through open shadow roots via the shared
+    _DEEP_QUERY_JS helper like every other DOM scan in this module. Only
+    ever consulted by _do_advance_step() when a Next/Continue click
+    produced NO route change and NO field-set change -- see
+    app.applications.dynamic_validation."""
+    try:
+        texts = page.evaluate(
+            """
+            (selector) => {"""
+            + _DEEP_QUERY_JS +
+            """
+              const isVisible = (el) => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+              const els = __deepQueryAll(document, selector);
+              return els.filter(isVisible).map((el) => (el.innerText || '').trim()).filter(Boolean).slice(0, 10);
+            }
+            """,
+            _VALIDATION_ERROR_SELECTOR,
+        )
+    except Exception:  # noqa: BLE001 -- a malformed page must never break advance_step
+        texts = []
+    try:
+        body_text = page.inner_text("body")
+    except Exception:  # noqa: BLE001
+        body_text = ""
+    return {"count": len(texts), "errors": texts, "body_text": body_text}
 
 
 # --- module-level registry / public API -------------------------------------

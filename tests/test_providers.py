@@ -53,6 +53,93 @@ def test_greenhouse_provider_isolates_board_errors():
     assert jobs[0].external_job_id == "1"
 
 
+def test_greenhouse_provider_prefers_first_published_over_updated_at():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"jobs": [{
+            "id": 1, "title": "T", "content": "", "location": {"name": "Remote"},
+            "first_published": "2026-01-01T00:00:00Z", "updated_at": "2026-08-21T10:00:00Z",
+        }]})
+
+    provider = GreenhouseProvider(["acme"], client=_client_returning(handler))
+    jobs = provider.fetch_jobs(max_jobs=10)
+    assert jobs[0].published_at == "2026-01-01T00:00:00Z"
+
+
+def test_greenhouse_provider_falls_back_to_updated_at_when_first_published_missing():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"jobs": [{
+            "id": 1, "title": "T", "content": "", "location": {"name": "Remote"},
+            "updated_at": "2026-08-21T10:00:00Z",
+        }]})
+
+    provider = GreenhouseProvider(["acme"], client=_client_returning(handler))
+    jobs = provider.fetch_jobs(max_jobs=10)
+    assert jobs[0].published_at == "2026-08-21T10:00:00Z"
+
+
+def test_greenhouse_provider_uses_real_company_name_field():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"jobs": [{
+            "id": 1, "title": "T", "content": "", "location": {"name": "Remote"},
+            "company_name": "GitLab",
+        }]})
+
+    provider = GreenhouseProvider(["gitlab"], client=_client_returning(handler))
+    jobs = provider.fetch_jobs(max_jobs=10)
+    assert jobs[0].company == "GitLab"
+
+
+def test_greenhouse_provider_falls_back_to_token_when_company_name_missing():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"jobs": [{
+            "id": 1, "title": "T", "content": "", "location": {"name": "Remote"},
+        }]})
+
+    provider = GreenhouseProvider(["acme-corp"], client=_client_returning(handler))
+    jobs = provider.fetch_jobs(max_jobs=10)
+    assert jobs[0].company == "Acme Corp"
+
+
+def test_greenhouse_provider_extracts_employment_type_from_named_metadata_field():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"jobs": [{
+            "id": 1, "title": "T", "content": "", "location": {"name": "Remote"},
+            "metadata": [
+                {"id": 1, "name": "Quota Coverage Type", "value": "Account Executive", "value_type": "single_select"},
+                {"id": 2, "name": "Employment Type", "value": "Full-time", "value_type": "single_select"},
+            ],
+        }]})
+
+    provider = GreenhouseProvider(["acme"], client=_client_returning(handler))
+    jobs = provider.fetch_jobs(max_jobs=10)
+    assert jobs[0].employment_type_raw == "Full-time"
+
+
+def test_greenhouse_provider_leaves_employment_type_blank_when_no_matching_metadata():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"jobs": [{
+            "id": 1, "title": "T", "content": "", "location": {"name": "Remote"},
+            "metadata": [{"id": 1, "name": "Quota Coverage Type", "value": "AE", "value_type": "single_select"}],
+        }]})
+
+    provider = GreenhouseProvider(["acme"], client=_client_returning(handler))
+    jobs = provider.fetch_jobs(max_jobs=10)
+    assert jobs[0].employment_type_raw == ""
+
+
+def test_greenhouse_provider_extracts_requisition_id():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"jobs": [{
+            "id": 1, "title": "T", "content": "", "location": {"name": "Remote"},
+            "requisition_id": "6263", "internal_job_id": 6396658002,
+        }]})
+
+    provider = GreenhouseProvider(["acme"], client=_client_returning(handler))
+    jobs = provider.fetch_jobs(max_jobs=10)
+    assert jobs[0].provider_metadata["requisition_id"] == "6263"
+    assert jobs[0].provider_metadata["internal_job_id"] == 6396658002
+
+
 def test_greenhouse_provider_respects_max_jobs():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
@@ -94,6 +181,54 @@ def test_lever_provider_normalizes_jobs():
     assert job.salary_min == 90000
     assert job.salary_max == 130000
     assert job.published_at is not None
+
+
+def test_lever_provider_includes_lists_and_additional_content_in_description():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[{
+            "id": "abc-123", "text": "Python Developer",
+            "descriptionPlain": "Welcome to the role.",
+            "lists": [
+                {"text": "Qualifications", "content": "<li>be smart</li><li>be very smart</li>"},
+                {"text": "Duties", "content": "<li>work hard</li>"},
+            ],
+            "additionalPlain": "Lever is an equal opportunity employer.",
+            "categories": {},
+        }])
+
+    provider = LeverProvider(["acme"], client=_client_returning(handler))
+    job = provider.fetch_jobs(max_jobs=10)[0]
+    assert "Welcome to the role." in job.description
+    assert "Qualifications: be smart be very smart" in job.description
+    assert "Duties: work hard" in job.description
+    assert "Lever is an equal opportunity employer." in job.description
+
+
+def test_lever_provider_description_still_works_without_lists_or_additional():
+    # Schema-drift resilience: a tenant/response missing these newer fields
+    # entirely must not lose the base description or crash normalization.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[{
+            "id": "abc-123", "text": "Python Developer",
+            "descriptionPlain": "Just the basics.", "categories": {},
+        }])
+
+    provider = LeverProvider(["acme"], client=_client_returning(handler))
+    job = provider.fetch_jobs(max_jobs=10)[0]
+    assert job.description == "Just the basics."
+
+
+def test_lever_provider_extracts_salary_period_from_interval():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[{
+            "id": "abc-123", "text": "T", "categories": {},
+            "salaryRange": {"min": 10000, "max": 125000, "currency": "USD", "interval": "per-year-salary"},
+        }])
+
+    provider = LeverProvider(["acme"], client=_client_returning(handler))
+    job = provider.fetch_jobs(max_jobs=10)[0]
+    assert job.salary_period == "year"
+    assert job.salary_currency == "USD"
 
 
 def test_lever_provider_isolates_company_errors():

@@ -87,6 +87,37 @@ def test_migrations_recorded_and_idempotent(pg_db):
         assert migrations.current_db_version(conn) == version_before
 
 
+def test_like_pattern_with_literal_percent_is_not_mistaken_for_a_placeholder(pg_db):
+    """Real bug this integration QA pass caught live: app/pipeline_dashboard.py
+    (and app/agent/doctor.py, app/applications/doctor.py,
+    app/applications/metrics.py) run `?`-placeholder queries containing a
+    literal `%` in a LIKE pattern (e.g. `LIKE 'SKIPPED%'`) -- this codebase's
+    own `?`-only paramstyle convention means that `%` is never a placeholder,
+    but psycopg's client-side binding tried to parse it as one anyway,
+    raising `psycopg.ProgrammingError: only '%s', '%b', '%t' are allowed as
+    placeholders` and 500-ing the Dashboard/Applications pages under
+    Postgres. app.db_postgres._translate_paramstyle() must escape a literal
+    `%` to `%%` before translating `?` -> `%s` so this never regresses."""
+    with pg_db.db_session() as conn:
+        conn.execute(
+            "INSERT INTO jobs (title, company, description, application_state, first_seen_at, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            ("Engineer", "Acme", "desc", "SKIPPED_NO_SPONSORSHIP",
+             "2026-01-01T00:00:00", "2026-01-01T00:00:00", "2026-01-01T00:00:00"),
+        )
+        row = conn.execute(
+            "SELECT COUNT(*) AS c FROM jobs WHERE application_state LIKE 'SKIPPED%' AND is_test_fixture = 0"
+        ).fetchone()
+        assert row["c"] == 1
+        # A mixed query -- real bound `?` params alongside a literal `%` LIKE
+        # pattern in the same statement -- must also translate correctly.
+        row2 = conn.execute(
+            "SELECT COUNT(*) AS c FROM jobs WHERE application_state LIKE 'SKIPPED%' AND company = ?",
+            ("Acme",),
+        ).fetchone()
+        assert row2["c"] == 1
+
+
 def test_partial_unique_index_enforced(pg_db):
     """Two portals with the same (provider, tenant_identifier) must
     conflict -- the same partial-unique-index semantics SQLite already

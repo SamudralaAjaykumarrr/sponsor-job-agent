@@ -50,21 +50,33 @@ class OnePageResult:
     compression_log: list[str] = field(default_factory=list)
 
 
-def _bullet_relevance(bullet: str, relevance_terms: set[str]) -> int:
+def _bullet_relevance(bullet: str, relevance_terms) -> float:
+    """`relevance_terms` is either a plain `set[str]` (unweighted membership
+    count -- the original behavior, still exercised directly by
+    tests/test_one_page_resume.py's private-function test) or a
+    `dict[str, float]` (JD-intelligence-v3 weighted model from
+    app.resume_optimizer.relevance.RelevanceModel.weights) -- summing each
+    matched term's weight instead of a flat 1 per match."""
     b = bullet.lower()
+    if isinstance(relevance_terms, dict):
+        return sum(w for t, w in relevance_terms.items() if t and t in b)
     return sum(1 for t in relevance_terms if t and t in b)
 
 
-def _remove_lowest_relevance_bullet(resume: ResumeContent, relevance_terms: set[str]):
+def _remove_lowest_relevance_bullet(resume: ResumeContent, relevance_terms, entry_recency: dict | None = None):
     """Step 1: remove the single lowest-relevance OPTIONAL bullet across all
     experience/project entries -- never an entry's last remaining bullet
     (every included role/project always keeps at least one piece of
-    evidence)."""
+    evidence). `entry_recency` (company -> 0..1, optional) adds a small
+    recency tiebreak so an older role's bullets are removed slightly before
+    an equally-relevant recent one's -- never applied to projects, which
+    have no dates in the candidate schema."""
     candidates = []
     for i, e in enumerate(resume.experience):
         if len(e.bullets) > 1:
+            recency_bonus = (entry_recency or {}).get(e.company, 0.0) * 0.25
             for j, b in enumerate(e.bullets):
-                candidates.append((_bullet_relevance(b, relevance_terms), "experience", i, j, b))
+                candidates.append((_bullet_relevance(b, relevance_terms) + recency_bonus, "experience", i, j, b))
     for i, p in enumerate(resume.projects):
         if len(p.bullets) > 1:
             for j, b in enumerate(p.bullets):
@@ -83,7 +95,7 @@ def _remove_lowest_relevance_bullet(resume: ResumeContent, relevance_terms: set[
     return new, f"removed lowest-relevance optional bullet (relevance={rel}) from '{where}'"
 
 
-def _remove_lowest_relevance_project(resume: ResumeContent, relevance_terms: set[str]):
+def _remove_lowest_relevance_project(resume: ResumeContent, relevance_terms):
     """Step 2 (secondary to bullet removal, applied once bullet-trimming is
     exhausted): drop the single weakest whole project entry -- projects are
     already optional inclusions (CLAUDE.md 'project inclusion if valuable')."""
@@ -151,6 +163,7 @@ def _build_relevance_terms(resume: ResumeContent) -> set[str]:
 
 def enforce_one_page(
     resume: ResumeContent, out_dir: Path, *, protected_skills_lower: set[str] | None = None,
+    relevance_weights: dict[str, float] | None = None, entry_recency: dict[str, float] | None = None,
 ) -> OnePageResult:
     """Renders `resume` to DOCX/PDF/TXT under `out_dir`, applying the bounded
     compression ladder until the PDF is exactly one page or
@@ -158,7 +171,18 @@ def enforce_one_page(
     ResumeContent actually rendered (so callers persist/claim-check/ATS-parse
     the same content that produced the artifacts -- DOCX/PDF/TXT are always
     generated from the identical final ResumeContent, never allowed to
-    diverge)."""
+    diverge).
+
+    `relevance_weights` (JD intelligence v3, optional): a term->weight map
+    from app.resume_optimizer.relevance.RelevanceModel.weights -- when
+    given, overflow removal ranks by the SAME weighted required/
+    responsibility/domain/keyword signal the optimizer used for initial
+    bullet selection, instead of this module's own unweighted top-half-of-
+    skills_ordered fallback (`_build_relevance_terms`, still used when this
+    is None -- e.g. a direct enforce_one_page() call with no JD context, as
+    every existing test in tests/test_one_page_resume.py exercises).
+    `entry_recency` (optional): company -> 0..1, a small recency tiebreak on
+    bullet removal (see `_remove_lowest_relevance_bullet`)."""
     protected = protected_skills_lower or _build_relevance_terms(resume)
     current = resume
     log: list[str] = []
@@ -190,9 +214,9 @@ def enforce_one_page(
                 compression_log=log,
             )
 
-        relevance_terms = _build_relevance_terms(current)
+        relevance_terms = relevance_weights if relevance_weights is not None else _build_relevance_terms(current)
         step_result = (
-            _remove_lowest_relevance_bullet(current, relevance_terms)
+            _remove_lowest_relevance_bullet(current, relevance_terms, entry_recency)
             or _remove_lowest_relevance_project(current, relevance_terms)
             or _remove_lowest_relevance_skill(current, protected)
             or _shorten_summary(current)

@@ -182,7 +182,18 @@ _ROWS: list[BrowserCapabilityRow] = [
               "it may still remain VARIABLE/ASSIST_ONLY'). Per-tenant observations live in "
               "app.applications.workday_tenant, never generalized to a blanket 'Workday supported' claim -- and "
               "app.applications.doctor._check_workday_universal_claim_from_one_tenant statically enforces this "
-              "row can never claim LIVE_FORM_VERIFIED without at least one genuinely STABLE tenant behind it.",
+              "row can never claim LIVE_FORM_VERIFIED without at least one genuinely STABLE tenant behind it. "
+              "2026-08-22 browser-assist hardening pass: (1) app.applications.workday_tenant.record_attempt() is "
+              "now called automatically from every real _do_discover() pass for a recognized Workday tenant/site "
+              "(browser_runtime._LiveSession._record_workday_attempt), not only from bounded manual validation "
+              "scripts, so the LOGIN_TRIGGER/NAVIGATION_SAFE variability above will keep accumulating genuine "
+              "evidence from ordinary ASSIST usage going forward; (2) a new dynamic-validation-blocked detection "
+              "was added to _do_advance_step() (app.applications.dynamic_validation) for Workday-style multi-step "
+              "wizards that silently refuse to advance on an empty required field. Neither change was live-"
+              "verified against a real Workday posting this pass (system Chromium unavailable in this sandbox --"
+              " see docs/workday-smartrecruiters-workable-browser-hardening.md); this row's verification/"
+              "multi_step/login_handoff/captcha_handoff/confirmation_capture fields are therefore left UNCHANGED "
+              "rather than inflated.",
     ),
     BrowserCapabilityRow(
         provider="workable", verification=BrowserVerification.LIVE_FORM_VERIFIED,
@@ -200,7 +211,14 @@ _ROWS: list[BrowserCapabilityRow] = [
               "is already the real form directly (the page's own JS still performs an ordinary same-tenant "
               "redirect to add the '/flosum/' path segment, unrelated to apply-entry click-through), so "
               "apply-first-click is genuinely not needed for THIS tenant (never generalized to all Workable "
-              "accounts). Phase 12 REGRESSION-CONFIRMED: identical 14-field result on a fresh run.",
+              "accounts). Phase 12 REGRESSION-CONFIRMED: identical 14-field result on a fresh run. "
+              "2026-08-22 browser-assist hardening pass: a new local fixture "
+              "(tests/browser_fixtures.py::workable_like_multistep_page) exercises the generic multi-step engine "
+              "against a Workable-shaped 2-step flow, since the one real tenant reached so far ('flosum') is "
+              "single-page -- this row's `multi_step` field stays 'unknown' for the REAL tenant (no new live "
+              "evidence this pass; system Chromium unavailable in this sandbox), the fixture only demonstrates "
+              "the generic mechanism itself, matching this module's own 'never generalize from a fixture to a "
+              "real-tenant claim' rule.",
     ),
     BrowserCapabilityRow(
         provider="bamboohr", verification=BrowserVerification.NOT_TESTED,

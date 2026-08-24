@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+{% block title %}Profile — Sponsor Job Agent{% endblock %}
+{% block content %}
+{% macro val(v) -%}
+{% if v == 'NEEDS_USER_INPUT' or v is none or v == '' %}<span class="tag tag-warn">needs input</span>{% else %}{{ v }}{% endif %}
+{%- endmacro %}
+
+<div class="page-header">
+  <div>
+    <h1>Profile</h1>
+    <p class="subtitle">Read-only. This is exactly what the resume generator is allowed to claim about you --
+      nothing here is ever embellished. To change it, edit <code>{{ profile_path }}</code> directly and reload.</p>
+  </div>
+</div>
+
+{% if missing_count > 0 %}
+<div class="banner banner-warn">
+  <strong>{{ missing_count }} field(s)</strong> still need input before every claim can be made truthfully.
+  Edit <code>{{ profile_path }}</code> to fill them in, then reload this page.
+</div>
+{% else %}
+<div class="banner banner-good">Profile is fully filled in — no NEEDS_USER_INPUT fields remain.</div>
+{% endif %}
+
+<div class="stack">
+  <section class="surface surface-pad">
+    <h2>Contact</h2>
+    <dl class="meta-grid">
+      <dt>Name</dt><dd>{{ val(profile.contact.full_name) }}</dd>
+      <dt>Email</dt><dd>{{ val(profile.contact.email) }}</dd>
+      <dt>Phone</dt><dd>{{ val(profile.contact.phone) }}</dd>
+      <dt>Location</dt><dd>{{ val(profile.contact.city) }}{% if profile.contact.city and profile.contact.state %}, {% endif %}{{ val(profile.contact.state) }}</dd>
+      <dt>LinkedIn</dt><dd>{{ val(profile.contact.linkedin_url) }}</dd>
+      <dt>GitHub</dt><dd>{{ val(profile.contact.github_url) }}</dd>
+      <dt>Portfolio</dt><dd>{{ val(profile.contact.portfolio_url) }}</dd>
+    </dl>
+  </section>
+
+  <section class="surface surface-pad">
+    <h2>Work authorization &amp; sponsorship</h2>
+    <dl class="meta-grid">
+      <dt>Current status</dt><dd>{{ val(profile.work_authorization.current_status) }}</dd>
+      <dt>Requires sponsorship</dt><dd>{% if profile.work_authorization.requires_sponsorship is none %}{{ val(none) }}{% else %}{{ 'Yes' if profile.work_authorization.requires_sponsorship else 'No' }}{% endif %}</dd>
+      <dt>Sponsorship type needed</dt><dd>{{ val(profile.work_authorization.sponsorship_type_needed) }}</dd>
+      <dt>Years of US experience</dt><dd>{{ profile.work_authorization.years_us_experience if profile.work_authorization.years_us_experience is not none else val(none) }}</dd>
+    </dl>
+  </section>
+
+  <section class="surface surface-pad">
+    <h2>Preferences</h2>
+    <dl class="meta-grid">
+      <dt>Relocation open</dt><dd>{% if profile.preferences.relocation_open is none %}{{ val(none) }}{% else %}{{ 'Yes' if profile.preferences.relocation_open else 'No' }}{% endif %}</dd>
+      <dt>Preferred locations</dt><dd>{{ profile.preferences.preferred_locations | join(', ') or '—' }}</dd>
+      <dt>Minimum salary (USD)</dt><dd>{{ profile.preferences.salary_min_usd if profile.preferences.salary_min_usd is not none else '—' }}</dd>
+      <dt>Salary notes</dt><dd>{{ profile.preferences.salary_preference_notes or '—' }}</dd>
+      <dt>Work arrangement priority</dt><dd>{{ profile.preferences.work_arrangement_priority | join(' > ') }}</dd>
+    </dl>
+  </section>
+
+  <section class="surface surface-pad">
+    <h2>Employment history <span class="faint">({{ profile.employment | length }})</span></h2>
+    {% for job in profile.employment %}
+    <div class="{{ 'sep' if not loop.first }}" style="{{ 'border-top:1px solid var(--border);padding-top:0.75rem;margin-top:0.75rem;' if not loop.first }}">
+      <strong>{{ val(job.title) }}</strong> · {{ val(job.company) }}
+      <div class="faint">{{ val(job.start_date) }} – {{ val(job.end_date) }} · {{ val(job.location) }}</div>
+      {% if job.verified_bullets %}
+      <ul>{% for b in job.verified_bullets %}<li>{{ b }}</li>{% endfor %}</ul>
+      {% endif %}
+      {% if job.skills_used %}<p class="faint">Skills used: {{ job.skills_used | join(', ') }}</p>{% endif %}
+    </div>
+    {% else %}
+    <p class="faint">No employment history recorded yet.</p>
+    {% endfor %}
+  </section>
+
+  <section class="surface surface-pad">
+    <h2>Projects <span class="faint">({{ profile.projects | length }})</span></h2>
+    {% for p in profile.projects %}
+    <div style="{{ 'border-top:1px solid var(--border);padding-top:0.75rem;margin-top:0.75rem;' if not loop.first }}">
+      <strong>{{ val(p.name) }}</strong>{% if p.url %} · <a href="{{ p.url }}" target="_blank" rel="noopener">link</a>{% endif %}
+      <p>{{ val(p.description) }}</p>
+      {% if p.verified_bullets %}<ul>{% for b in p.verified_bullets %}<li>{{ b }}</li>{% endfor %}</ul>{% endif %}
+      {% if p.skills_used %}<p class="faint">Skills used: {{ p.skills_used | join(', ') }}</p>{% endif %}
+    </div>
+    {% else %}
+    <p class="faint">No projects recorded yet.</p>
+    {% endfor %}
+  </section>
+
+  <section class="surface surface-pad">
+    <h2>Skills <span class="faint">({{ profile.skills | length }})</span></h2>
+    {% if profile.skills %}
+    <div class="jc-badges">{% for s in profile.skills %}<span class="tag tag-neutral">{{ s }}</span>{% endfor %}</div>
+    {% else %}
+    <p class="faint">No skills recorded yet.</p>
+    {% endif %}
+  </section>
+
+  <section class="surface surface-pad">
+    <h2>Education <span class="faint">({{ profile.education | length }})</span></h2>
+    {% for e in profile.education %}
+    <div style="{{ 'border-top:1px solid var(--border);padding-top:0.75rem;margin-top:0.75rem;' if not loop.first }}">
+      <strong>{{ val(e.degree) }}</strong>{% if e.field_of_study %}, {{ e.field_of_study }}{% endif %} — {{ val(e.school) }}
+      <div class="faint">{{ val(e.graduation_date) }}</div>
+    </div>
+    {% else %}
+    <p class="faint">No education recorded yet.</p>
+    {% endfor %}
+  </section>
+
+  <details class="surface surface-pad">
+    <summary style="cursor:pointer;font-weight:650;">Standard application answers (incl. voluntary disclosures)</summary>
+    <dl class="meta-grid" style="margin-top:0.75rem;">
+      <dt>Years of experience</dt><dd>{{ profile.standard_answers.years_of_experience if profile.standard_answers.years_of_experience is not none else val(none) }}</dd>
+      <dt>Notice period</dt><dd>{{ val(profile.standard_answers.notice_period) }}</dd>
+      <dt>Willing to relocate</dt><dd>{% if profile.standard_answers.willing_to_relocate is none %}{{ val(none) }}{% else %}{{ 'Yes' if profile.standard_answers.willing_to_relocate else 'No' }}{% endif %}</dd>
+      <dt>Requires sponsorship (answer)</dt><dd>{{ val(profile.standard_answers.requires_sponsorship_answer) }}</dd>
+      <dt>Veteran status</dt><dd>{{ val(profile.standard_answers.veteran_status) }}</dd>
+      <dt>Disability status</dt><dd>{{ val(profile.standard_answers.disability_status) }}</dd>
+      <dt>Race / ethnicity</dt><dd>{{ val(profile.standard_answers.race_ethnicity) }}</dd>
+      <dt>Gender</dt><dd>{{ val(profile.standard_answers.gender) }}</dd>
+    </dl>
+    <p class="faint" style="margin-top:0.5rem;">These are voluntary self-identification answers, shown here only so you can verify what the agent would submit on your behalf. Never guessed or inferred -- a missing value always becomes "needs input" and blocks that specific field, never a fabricated answer.</p>
+  </details>
+</div>
+{% endblock %}

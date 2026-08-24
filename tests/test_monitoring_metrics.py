@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta, timezone
+
 import httpx
 
 from app.registry.models import CompanyRegistryEntry
@@ -5,9 +7,11 @@ from app.registry import repo as registry_repo
 from app.workers import metrics
 from app.workers.runner import Worker
 
+_RECENT = (datetime.now(timezone.utc) - timedelta(hours=6)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
 GREENHOUSE_OK = {"jobs": [
     {"id": 1, "title": "Backend Engineer", "location": {"name": "Remote"},
-     "content": "Sponsorship available.", "absolute_url": "https://x/1", "updated_at": "2026-08-21T10:00:00Z"},
+     "content": "Sponsorship available.", "absolute_url": "https://x/1", "updated_at": _RECENT},
 ]}
 
 

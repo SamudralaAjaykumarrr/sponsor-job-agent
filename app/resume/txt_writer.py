@@ -10,6 +10,8 @@ def write_txt(resume: ResumeContent, out_path: Path) -> Path:
         filter(None, [resume.email, resume.phone, resume.location, resume.linkedin_url, resume.github_url, resume.portfolio_url])
     )
     lines.append(contact_line)
+    if resume.target_role:
+        lines.append(resume.target_role)
     lines.append("")
     lines.append("SUMMARY")
     lines.append(resume.summary)

@@ -44,9 +44,56 @@ def _remote_status(categories: dict, location: str) -> Optional[str]:
     return None
 
 
+def _lists_as_text(lists: list) -> str:
+    """Renders Lever's structured `lists` sections (e.g. "Qualifications",
+    "Duties" -- exactly the requirement-bearing content JD analysis needs)
+    as plain text. Real, provider-exposed data that the old `descriptionPlain`-
+    only extraction silently dropped."""
+    parts = []
+    for section in lists or []:
+        if not isinstance(section, dict):
+            continue
+        label = (section.get("text") or "").strip()
+        body = _strip_html(section.get("content") or "")
+        if not body:
+            continue
+        parts.append(f"{label}: {body}" if label else body)
+    return "\n".join(parts)
+
+
+def _full_description(item: dict) -> str:
+    """Lever's `descriptionPlain` is only the intro/body -- the structured
+    `lists` sections and the `additionalPlain` closing content (EEO notices,
+    extra requirements, etc) are separate top-level fields that a
+    description-only extraction misses entirely. Concatenated here so JD
+    analysis sees the whole posting, matching what a candidate reading the
+    real hosted page would see."""
+    main = item.get("descriptionPlain") or _strip_html(item.get("description", ""))
+    lists_text = _lists_as_text(item.get("lists") or [])
+    additional = (item.get("additionalPlain") or "").strip()
+    sections = [s for s in (main, lists_text, additional) if s]
+    return "\n\n".join(sections)
+
+
+def _salary_period(interval: str) -> Optional[str]:
+    # Lever's own values: "per-year-salary" | "per-hour" | "per-month-salary" | ...
+    if not interval:
+        return None
+    text = interval.lower()
+    if "hour" in text:
+        return "hour"
+    if "month" in text:
+        return "month"
+    if "week" in text:
+        return "week"
+    if "year" in text:
+        return "year"
+    return interval
+
+
 def _normalize(slug: str, item: dict) -> RawJobPosting:
     categories = item.get("categories") or {}
-    description = item.get("descriptionPlain") or _strip_html(item.get("description", ""))
+    description = _full_description(item)
     salary = item.get("salaryRange") or {}
     location = categories.get("location", "") or ""
     return RawJobPosting(
@@ -65,6 +112,7 @@ def _normalize(slug: str, item: dict) -> RawJobPosting:
         salary_min=salary.get("min"),
         salary_max=salary.get("max"),
         salary_currency=salary.get("currency"),
+        salary_period=_salary_period(salary.get("interval", "")),
         department=categories.get("department"),
         team=categories.get("team"),
         provider_metadata={"company_slug": slug},
@@ -78,7 +126,7 @@ class LeverProvider(JobProvider):
     name = "lever"
     capabilities = ProviderCapabilities(
         provider_name="lever",
-        provider_version="2.0.0",
+        provider_version="2.1.0",
         discovery_supported=True,
         detail_fetch_supported=False,
         structured_location_supported=True,
@@ -89,7 +137,14 @@ class LeverProvider(JobProvider):
         requires_credentials=False,
         submission_supported=False,
         support_level=SupportLevel.FULL,
-        notes="Single unauthenticated request per company slug; no pagination needed.",
+        notes=(
+            "Single unauthenticated request per company slug; no pagination needed. description now "
+            "concatenates `descriptionPlain` with the API's structured `lists` sections (e.g. "
+            "'Qualifications'/'Duties' -- real requirement-bearing content) and `additionalPlain` closing "
+            "content, none of which were previously captured. salary_period is derived from the API's own "
+            "`salaryRange.interval` (present on a minority of postings -- most Lever tenants don't set a "
+            "salary range at all, never fabricated when absent)."
+        ),
     )
 
     def __init__(self, company_slugs: list[str], client: Optional[httpx.Client] = None, timeout: float = 10.0):

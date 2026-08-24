@@ -116,7 +116,10 @@ def _match_skill_requirement(req: JDRequirementItem, graph: EvidenceGraph) -> Re
 # DIRECT_VERIFIED (skills_used membership or a real supporting bullet) --
 # never fabricated.
 _RESPONSIBILITY_SKILL_EQUIVALENTS: dict[str, tuple[str, ...]] = {
-    "testing": ("unit testing", "integration testing", "automated testing", "test automation", "tdd", "pytest", "junit"),
+    "testing": (
+        "unit testing", "integration testing", "automated testing", "test automation", "tdd", "bdd",
+        "pytest", "junit", "selenium", "cypress", "playwright", "quality assurance",
+    ),
 }
 
 

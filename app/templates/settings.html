@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}Settings — Sponsor Job Agent{% endblock %}
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1>Settings</h1>
+    <p class="subtitle">Agent tuning knobs take effect immediately -- no restart needed.</p>
+  </div>
+</div>
+
+{% if saved %}<div class="banner banner-good">Settings saved.</div>{% endif %}
+{% if errors %}
+<div class="banner banner-bad">
+  <strong>Could not save:</strong>
+  <ul style="margin:0.35rem 0 0 1.1rem;">{% for e in errors %}<li>{{ e }}</li>{% endfor %}</ul>
+</div>
+{% endif %}
+
+<section class="surface surface-pad" style="margin-bottom:1.25rem;">
+  <h2>Agent tuning</h2>
+  <p class="subtitle" style="margin-bottom:1rem;">These are read live by the agent's own cycle loop --
+    saving here changes behavior on the very next cycle, and is persisted (survives a restart).</p>
+  <form method="post" action="/settings">
+    <div class="field-row">
+      {% for key, spec in specs.items() %}
+      <div class="field">
+        <label for="set-{{ key }}">{{ spec.label }}</label>
+        <input type="number" id="set-{{ key }}" name="{{ key }}" min="{{ spec.min_value }}" max="{{ spec.max_value }}"
+               value="{{ values[key] }}" required>
+        <div class="help-text">{{ spec.help_text }}</div>
+      </div>
+      {% endfor %}
+    </div>
+    <button class="btn btn-primary" type="submit">Save settings</button>
+  </form>
+</section>
+
+<section class="surface surface-pad" style="margin-bottom:1.25rem;">
+  <h2>Discovery providers</h2>
+  <p>Enabled: <strong>{{ enabled_providers | join(', ') or 'none' }}</strong></p>
+  <p class="help-text">Provider selection is environment-configured (<code>ENABLED_PROVIDERS</code>) --
+    see the full capability matrix on <a href="/providers">Providers</a>.</p>
+</section>
+
+<section class="surface surface-pad">
+  <h2>Safety flags <span class="faint">(display-only, environment-configured)</span></h2>
+  <p class="help-text" style="margin-bottom:0.85rem;">
+    These never get a UI toggle on purpose -- CLAUDE.md requires every one of them stay off by
+    default and never be silently enabled. Flip them via environment variables and restart
+    <code>./start.sh</code> if you genuinely intend to change automation behavior.
+  </p>
+  <dl class="meta-grid">
+    <dt>Application executor</dt><dd><span class="tag {{ 'tag-good' if safety_flags.application_executor_enabled else 'tag-neutral' }}">{{ 'ON' if safety_flags.application_executor_enabled else 'OFF' }}</span></dd>
+    <dt>Auto-prepare</dt><dd><span class="tag {{ 'tag-good' if safety_flags.application_auto_prepare_enabled else 'tag-neutral' }}">{{ 'ON' if safety_flags.application_auto_prepare_enabled else 'OFF' }}</span></dd>
+    <dt>Auto-submit</dt><dd><span class="tag {{ 'tag-bad' if safety_flags.auto_submit_enabled else 'tag-neutral' }}">{{ 'ON' if safety_flags.auto_submit_enabled else 'OFF (safe default)' }}</span></dd>
+    <dt>Browser assist</dt><dd><span class="tag {{ 'tag-good' if safety_flags.browser_assist_enabled else 'tag-neutral' }}">{{ 'ON' if safety_flags.browser_assist_enabled else 'OFF' }}</span> ({{ 'HEADLESS' if safety_flags.browser_headless else 'VISIBLE' }})</dd>
+    <dt>One-page resume required</dt><dd><span class="tag tag-neutral">{{ 'REQUIRED' if safety_flags.one_page_resume_required else 'not enforced' }}</span></dd>
+    <dt>Resume optimization (background)</dt><dd><span class="tag {{ 'tag-good' if safety_flags.resume_optimization_enabled else 'tag-neutral' }}">{{ 'ON' if safety_flags.resume_optimization_enabled else 'OFF' }}</span></dd>
+    <dt>Real ATS canary</dt><dd><span class="tag {{ 'tag-good' if safety_flags.real_ats_canary_enabled else 'tag-neutral' }}">{{ 'ON' if safety_flags.real_ats_canary_enabled else 'OFF' }}</span></dd>
+    <dt>Sponsorship policy</dt><dd>{{ sponsorship_policy }}</dd>
+  </dl>
+</section>
+{% endblock %}

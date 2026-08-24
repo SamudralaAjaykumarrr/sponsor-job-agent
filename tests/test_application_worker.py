@@ -97,6 +97,49 @@ def test_worker_records_attempt_and_does_not_feed_circuit_when_no_submit_attempt
     assert status.window_attempts == 0
 
 
+def test_one_blocked_execution_never_stops_others_in_the_same_batch(tmp_env, sample_profile, monkeypatch):
+    """CLAUDE.md mission 'one blocked job must never stop global processing':
+    an unanticipated exception processing one claimed execution must not
+    prevent the other executions claimed in the same worker cycle from being
+    processed and applied normally."""
+    monkeypatch.setattr(config, "AUTO_SUBMIT_ENABLED", True)
+    # Both jobs share the mock_ats provider -- raise the per-provider
+    # concurrency limit so the two claimed executions genuinely run
+    # concurrently in this test rather than one being cooldown-skipped
+    # (not an error, just deferred) by the provider's own concurrency gate.
+    monkeypatch.setattr(config, "APPLICATION_PROVIDER_CONCURRENCY_DEFAULT", 5)
+    save_profile(sample_profile)
+
+    blocked_job = ingest_and_process(_mock_job("simple", "blocked-1"))
+    ok_job = ingest_and_process(_mock_job("simple", "ok-1"))
+    blocked_result = queue_application(blocked_job.id, mode="AUTO_PERMITTED")
+    ok_result = queue_application(ok_job.id, mode="AUTO_PERMITTED")
+
+    import app.applications.worker as worker_mod
+
+    real_process_execution = worker_mod.process_execution
+
+    def _boom_for_blocked(execution_id, **kwargs):
+        if execution_id == blocked_result.execution_id:
+            raise RuntimeError("simulated unanticipated failure")
+        return real_process_execution(execution_id, **kwargs)
+
+    monkeypatch.setattr(worker_mod, "process_execution", _boom_for_blocked)
+
+    worker = ApplicationWorker(single_cycle=True)
+    stats = worker._run_cycle()
+
+    ok_execution = get_execution(ok_result.execution_id)
+    assert ok_execution["status"] == "APPLIED"
+    assert stats["applied"] == 1
+
+    blocked_execution = get_execution(blocked_result.execution_id)
+    assert blocked_execution["status"] not in ("APPLIED",)
+    assert blocked_execution["lease_owner"] is None  # released, not stranded
+    attempts = attempts_repo.list_attempts_for_execution(blocked_result.execution_id)
+    assert attempts and attempts[0]["result"] == "WORKER_EXCEPTION"
+
+
 def test_worker_drain_mode_prevents_new_claims(tmp_env, sample_profile, monkeypatch):
     from app.workers import repo as workers_repo
     from app.workers.models import WorkerStatus

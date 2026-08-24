@@ -73,3 +73,18 @@ def test_per_company_daily_limit(profile_saved, monkeypatch):
 def test_check_rate_limits_allows_when_under_thresholds(profile_saved):
     result = check_rate_limits("Nobody Yet Inc")
     assert result.allowed
+
+
+def test_daily_rate_limit_blocks_further_submissions(profile_saved, monkeypatch):
+    """MAX_APPLICATIONS_PER_DAY (distinct from the hourly/per-company caps
+    above) must independently cap submissions once reached."""
+    monkeypatch.setattr(config, "MAX_APPLICATIONS_PER_HOUR", 100)
+    monkeypatch.setattr(config, "MAX_APPLICATIONS_PER_DAY", 2)
+    monkeypatch.setattr(config, "MAX_APPLICATIONS_PER_COMPANY_PER_DAY", 100)
+
+    jobs = [ingest_and_process(_mock_job(f"d{i}", company=f"Company{i}")) for i in range(3)]
+    outcomes = [_apply(j)["status"] for j in jobs]
+
+    assert outcomes[0] == "APPLIED"
+    assert outcomes[1] == "APPLIED"
+    assert outcomes[2] == "NEEDS_USER_ACTION"

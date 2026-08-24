@@ -232,6 +232,14 @@ DASHBOARD_BUCKETS: dict[str, tuple[str, ...]] = {
     "failed": (ExecutionStatus.SUBMISSION_FAILED.value, ExecutionStatus.RETRYABLE_SUBMISSION_FAILURE.value,
                ExecutionStatus.PERMANENT_SUBMISSION_FAILURE.value, ExecutionStatus.DUPLICATE_APPLICATION_BLOCKED.value,
                ExecutionStatus.JOB_NO_LONGER_ACTIVE.value),
+    # Premium UI Applications page's "In flight" tab: everything actively
+    # moving that isn't paused for the user, applied, or failed -- a
+    # convenience union of the "ready"/"queued"/"preparing"/"submitting"
+    # buckets above (never a replacement for them; each still works
+    # unchanged on its own).
+    "in_flight": (ExecutionStatus.SUBMISSION_READY.value, ExecutionStatus.QUEUED.value, ExecutionStatus.STARTED.value,
+                  ExecutionStatus.FORM_DISCOVERED.value, ExecutionStatus.FORM_MAPPED.value,
+                  ExecutionStatus.FORM_FILLED.value, ExecutionStatus.SUBMITTING.value, ExecutionStatus.SUBMITTED.value),
 }
 
 
@@ -244,7 +252,12 @@ def list_executions_with_jobs(*, bucket: str = "", company: str = "", provider: 
         "j.employment_type AS job_employment_type "
         "FROM application_executions e JOIN jobs j ON j.id = e.job_id"
     )
-    clauses, params = [], []
+    # CLAUDE.md one-click-agent section 68 / dashboard defect 6: a TEST MODE
+    # mock_ats execution must never masquerade as a real application on the
+    # primary Applications page, matching app.pipeline_dashboard's own
+    # is_test_fixture = 0 convention used everywhere else real-mode data is
+    # queried -- unconditional, not a user-selectable filter.
+    clauses, params = ["j.is_test_fixture = 0"], []
     if bucket and bucket in DASHBOARD_BUCKETS:
         statuses = DASHBOARD_BUCKETS[bucket]
         clauses.append(f"e.status IN ({', '.join('?' for _ in statuses)})")
@@ -268,6 +281,27 @@ def list_executions_with_jobs(*, bucket: str = "", company: str = "", provider: 
     with db_session() as conn:
         rows = conn.execute(query, params).fetchall()
         return [dict(r) for r in rows]
+
+
+def bucket_counts() -> dict[str, int]:
+    """Premium UI Applications page's tab counts -- one grouped query,
+    DASHBOARD_BUCKETS itself as the single source of truth for what each
+    bucket means (never a second, hand-maintained set of status tuples;
+    matches this project's own 'one authoritative definition' convention
+    for the Needs Your Action queue/card)."""
+    # Joined to jobs and filtered by is_test_fixture = 0 for the same reason
+    # list_executions_with_jobs() above is -- these tab counts must never be
+    # inflated by a TEST MODE mock_ats execution.
+    with db_session() as conn:
+        status_rows = conn.execute(
+            "SELECT e.status AS status, COUNT(*) AS c FROM application_executions e "
+            "JOIN jobs j ON j.id = e.job_id WHERE j.is_test_fixture = 0 GROUP BY e.status"
+        ).fetchall()
+    counts_by_status = {r["status"]: r["c"] for r in status_rows}
+    return {
+        bucket: sum(counts_by_status.get(status, 0) for status in statuses)
+        for bucket, statuses in DASHBOARD_BUCKETS.items()
+    }
 
 
 def list_audit_log(execution_id: Optional[str] = None, job_id: Optional[int] = None, limit: int = 200) -> list[dict]:

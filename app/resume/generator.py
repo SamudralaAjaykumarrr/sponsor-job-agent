@@ -45,6 +45,17 @@ class ResumeContent:
     projects: list[ProjectBlock]
     education: list[EducationBlock]
     gap_skills: list[str] = field(default_factory=list)
+    # Resume structure (JD intelligence v3): a short TARGET ROLE / headline
+    # line under the name/contact block, rendered outside (before)
+    # Professional Experience so it can never be confused with an
+    # employment entry -- a forward-looking "what I'm applying for" line,
+    # NOT a claim of prior employment (app.resume_optimizer
+    # .role_classification.build_target_role; independently re-validated by
+    # app.resume.claim_checker.check_resume_claims's own
+    # `_validate_target_role`, a SEPARATE contract from the EXPERIENCE
+    # section's verified-employment-title validation). "" omits the section
+    # entirely (see the writers).
+    target_role: str = ""
 
 
 def _relevance(skills_used: list[str], jd_keywords: list[str]) -> int:

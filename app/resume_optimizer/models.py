@@ -141,6 +141,14 @@ class JDAnalysisResult:
     certification_requirements: list[str] = field(default_factory=list)
     sponsorship_language_present: bool = False
     salary_mentioned: bool = False
+    # Compensation parsing (JD intelligence v3): purely informational, never
+    # a matching/eligibility signal. None/"" when the JD gives no figure the
+    # parser can confidently extract -- never guessed (see
+    # app.resume_optimizer.jd_analysis._extract_compensation).
+    compensation_min: float | None = None
+    compensation_max: float | None = None
+    compensation_period: str = ""  # "year" / "hour" / "" (unknown)
+    compensation_currency: str = ""  # "USD" / "" (none found)
     requirements: list[JDRequirementItem] = field(default_factory=list)
     analyzer_version: str = ""
 
