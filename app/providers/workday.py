@@ -27,6 +27,33 @@ def _tenant_name(base_url: str) -> str:
     return host.split(".")[0] if host else base_url
 
 
+_CXS_BASE_PATH_RE = re.compile(r"^/wday/cxs/(?P<tenant>[^/]+)/(?P<site>[^/]+)/?$", re.I)
+
+
+def _candidate_base(base_url: str) -> str:
+    """Derives the real candidate-facing base (scheme://host/{site}) from the
+    CXS API base_url (scheme://host/wday/cxs/{tenant}/{site}) each tenant is
+    configured with. These are DIFFERENT paths on the same host -- appending
+    externalPath directly to the API base (this provider's previous
+    behavior) produces a URL that coincidentally also resolves, but to the
+    raw jobPostingInfo JSON detail endpoint (the exact same URL
+    _fetch_detail() requests), not the real HTML application page. That
+    silently broke every downstream browser-assist/application step for
+    every Workday job that went through this provider, since the URL never
+    exercised job_identity/browser_runtime against real page content.
+    Live-verified 2026-08-22 against a real tenant
+    (walmart.wd504.myworkdayjobs.com/WalmartExternal): the CXS-base URL
+    returns bare JSON with no page title; host+'/'+site+path returns the
+    real rendered page (title, 'Apply' button, requisition id visible).
+    Falls back to the API base unchanged only if base_url doesn't match the
+    documented CXS shape -- never guessed."""
+    parsed = urlparse(base_url)
+    match = _CXS_BASE_PATH_RE.match(parsed.path or "")
+    if not match:
+        return base_url.rstrip("/")
+    return f"{parsed.scheme}://{parsed.netloc}/{match.group('site')}"
+
+
 class WorkdayProvider(JobProvider):
     """Workday CXS job-search API -- the same unauthenticated POST endpoint a
     public Workday careers site's own frontend calls
@@ -43,12 +70,19 @@ class WorkdayProvider(JobProvider):
       fabricating an absolute date from a relative one.
     - Some tenants front this endpoint with bot protection that a plain
       httpx client cannot pass; those tenants fail cleanly (logged, job list
-      empty for that tenant) -- this is never treated as a bypass target."""
+      empty for that tenant) -- this is never treated as a bypass target.
+    - `url`/`source_url` are the real candidate-facing page
+      (scheme://host/{site}{externalPath}), NOT the CXS API base + path --
+      see _candidate_base()'s docstring for the real bug this fixed
+      (2026-08-22): the API base and the candidate page live at different
+      paths on the same host, and appending externalPath to the API base
+      coincidentally also resolved, but to raw JSON, not the real HTML
+      application form."""
 
     name = "workday"
     capabilities = ProviderCapabilities(
         provider_name="workday",
-        provider_version="1.1.0",
+        provider_version="1.2.0",
         discovery_supported=True,
         detail_fetch_supported=True,
         structured_location_supported=True,
@@ -65,7 +99,15 @@ class WorkdayProvider(JobProvider):
             "some tenants front this endpoint with bot protection this client will not attempt to bypass. "
             "employment_type_raw is populated from the per-job detail endpoint's jobPostingInfo.timeType "
             "field (live-verified against walmart.wd504.myworkdayjobs.com/WalmartExternal -- e.g. "
-            "'Full time'/'Part time'); a tenant that omits this field simply leaves employment_type_raw empty."
+            "'Full time'/'Part time'); a tenant that omits this field simply leaves employment_type_raw empty. "
+            "url/source_url are the real candidate-facing page (host + '/' + site + externalPath), fixed "
+            "2026-08-22 -- previously appended externalPath to the CXS API base instead, which resolved to "
+            "raw JSON, not the application form (live-verified against the same tenant). "
+            "provider_metadata['job_req_id'] and structured `country` are populated from the same detail "
+            "endpoint's jobPostingInfo.jobReqId / jobPostingInfo.country.descriptor when present; job_req_id "
+            "is metadata only, never used for external_job_id (which must stay derived solely from the list "
+            "response so it never flips if a later detail fetch fails). No structured city/state field exists "
+            "on this API -- only a combined `location` string -- so those stay unset rather than guessed."
         ),
     )
 
@@ -74,27 +116,65 @@ class WorkdayProvider(JobProvider):
         self._client = client
         self._timeout = timeout
 
-    def _fetch_detail(self, client: httpx.Client, base_url: str, external_path: str) -> tuple[str, str]:
-        """Returns (description, employment_type_raw). `jobPostingInfo.timeType`
-        (e.g. "Full time" / "Part time") is a genuine structured field on this
-        endpoint -- live-verified against a real tenant, not guessed -- so it
-        is surfaced as employment_type_raw rather than left for text-only
-        fallback. A tenant/posting that omits the field yields "" here,
-        exactly like every other optional field on this provider."""
+    _EMPTY_DETAIL = {
+        "description": "", "employment_type_raw": "", "job_req_id": "", "country": None,
+        "can_apply": None, "external_url": "",
+    }
+
+    def _fetch_detail(self, client: httpx.Client, base_url: str, external_path: str) -> dict:
+        """Returns {"description", "employment_type_raw", "job_req_id", "country",
+        "can_apply", "external_url"} from the per-job detail endpoint.
+        `jobPostingInfo.timeType` (e.g. "Full time" / "Part time") and
+        `jobPostingInfo.jobReqId` (the stable requisition id, e.g.
+        "R-1826704") are genuine structured fields -- live-verified against
+        real tenants (walmart.wd504.myworkdayjobs.com), not guessed.
+        `jobPostingInfo.country.descriptor` is likewise a real structured
+        field (e.g. "Canada"); Workday does NOT expose a separate structured
+        state/city -- only a human-readable `location`/
+        `jobRequisitionLocation.descriptor` string that bundles them, which
+        is why `location` stays a combined string rather than being split
+        into city/state here. `jobPostingInfo.canApply` (bool) is a genuine
+        structured signal for whether the posting currently accepts
+        applications -- live-verified True on an open posting; a tenant
+        that closes/withdraws a requisition without removing it from search
+        results is exactly the case this exists to catch, so it is
+        surfaced (never fabricated when absent -> None, not False).
+        `jobPostingInfo.externalUrl` is the tenant's own authoritative
+        candidate-facing URL -- live-verified to equal this provider's own
+        `_candidate_base()`-constructed URL byte-for-byte on a real posting;
+        surfaced here purely so `_fetch_tenant` can cross-check and WARN
+        (never silently override) if a future tenant's externalUrl ever
+        diverges from the constructed one. A tenant/posting that omits any
+        of these fields yields "" / None here, exactly like every other
+        optional field on this provider. `jobPostingInfo.startDate` is
+        deliberately NEVER read -- live-verified to be a job/requisition
+        start date unrelated to posting recency (a real posting shown as
+        "Posted 30+ Days Ago" carried a startDate over two years in the
+        past), so treating it as published_at would fabricate freshness."""
         if not external_path:
-            return "", ""
+            return dict(self._EMPTY_DETAIL)
         try:
             resp = client.get(base_url + external_path)
             resp.raise_for_status()
             data = resp.json()
         except Exception:
             logger.warning("workday detail fetch failed for %s%s", base_url, external_path, exc_info=True)
-            return "", ""
+            return dict(self._EMPTY_DETAIL)
         info = data.get("jobPostingInfo") or {}
-        return _strip_html(info.get("jobDescription", "")), (info.get("timeType", "") or "")
+        country = ((info.get("country") or {}).get("descriptor")) or None
+        can_apply = info.get("canApply")
+        return {
+            "description": _strip_html(info.get("jobDescription", "")),
+            "employment_type_raw": info.get("timeType", "") or "",
+            "job_req_id": info.get("jobReqId", "") or "",
+            "country": country,
+            "can_apply": can_apply if isinstance(can_apply, bool) else None,
+            "external_url": info.get("externalUrl", "") or "",
+        }
 
     def _fetch_tenant(self, client: httpx.Client, base_url: str, max_jobs: int) -> list[RawJobPosting]:
         tenant = _tenant_name(base_url)
+        candidate_base = _candidate_base(base_url)
         postings: list[dict] = []
         offset = 0
         total: Optional[int] = None
@@ -128,20 +208,49 @@ class WorkdayProvider(JobProvider):
         for item in postings[: config.MAX_JOBS_PER_PROVIDER]:
             try:
                 external_path = item.get("externalPath", "") or ""
-                url = base_url.rstrip("/") + external_path if external_path else ""
-                description, time_type = self._fetch_detail(client, base_url, external_path)
+                url = candidate_base + external_path if external_path else ""
+                detail = self._fetch_detail(client, base_url, external_path)
+                job_req_id = detail["job_req_id"]
+                metadata = {"tenant": tenant, "base_url": base_url, "posted_on_raw": item.get("postedOn")}
+                if job_req_id:
+                    metadata["job_req_id"] = job_req_id
+                if detail["can_apply"] is not None:
+                    metadata["can_apply"] = detail["can_apply"]
+                if detail["external_url"] and url and detail["external_url"] != url:
+                    # Cross-check only, never a silent override: the
+                    # constructed URL stays authoritative (always available
+                    # even when the detail fetch fails), but a genuine
+                    # divergence from Workday's own reported externalUrl is
+                    # exactly the kind of thing that should be visible, not
+                    # swallowed.
+                    logger.warning(
+                        "workday tenant '%s' externalUrl mismatch: constructed=%s reported=%s",
+                        tenant, url, detail["external_url"],
+                    )
+                    metadata["reported_external_url"] = detail["external_url"]
                 results.append(RawJobPosting(
                     provider="workday",
+                    # NEVER prefer job_req_id here even though it's the more
+                    # "canonical" id -- it only comes from the per-job detail
+                    # fetch, which can fail independently of the list fetch
+                    # (network blip, tenant rate limit). Letting external_job_id
+                    # depend on detail-fetch success would make the SAME job's
+                    # id flip between runs, breaking dedup/tracking stability
+                    # (see CLAUDE.md's cross-provider dedup rule) -- the list
+                    # response's own jobPostingId/bulletFields is always
+                    # present whenever the job appears at all, so it stays the
+                    # sole source of truth for identity.
                     external_job_id=str(item.get("jobPostingId") or item.get("bulletFields", [""])[0] or external_path),
                     title=item.get("title", "") or "",
                     company=tenant.replace("-", " ").title(),
                     company_identifier=tenant,
                     location=item.get("locationsText", "") or "",
-                    description=description,
-                    employment_type_raw=time_type,
+                    country=detail["country"],
+                    description=detail["description"],
+                    employment_type_raw=detail["employment_type_raw"],
                     url=url,
                     source_url=url,
-                    provider_metadata={"tenant": tenant, "base_url": base_url, "posted_on_raw": item.get("postedOn")},
+                    provider_metadata=metadata,
                 ))
             except Exception:
                 logger.warning("workday job normalize failed for tenant '%s'", tenant, exc_info=True)

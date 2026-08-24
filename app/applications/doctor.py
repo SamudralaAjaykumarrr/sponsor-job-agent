@@ -99,6 +99,8 @@ def run_doctor() -> DoctorReport:
         _check_identity_mismatch_but_session_active(conn, report)
         _check_applied_with_weak_confirmation(conn, report)
         _check_job_identity_unverified_not_surfaced(conn, report)
+        # --- Workday/SmartRecruiters/Workable browser-assist hardening (2026-08-22) ---
+        _check_validation_blocked_sessions_surfaced(conn, report)
     return report
 
 
@@ -854,3 +856,23 @@ def _check_applied_with_weak_confirmation(conn, report: DoctorReport) -> None:
                                     f"session {r['session_id']} (job {r['job_id']}) is CONFIRMED with confirmation "
                                     f"evidence strength '{r['confirmation_evidence_strength'] or 'unset'}' -- only "
                                     f"STRONG/MODERATE evidence may confirm"))
+
+
+def _check_validation_blocked_sessions_surfaced(conn, report: DoctorReport) -> None:
+    """Workday/SmartRecruiters/Workable browser-assist hardening
+    (2026-08-22): surfaces every recorded VALIDATION_BLOCKED event (a
+    Next/Continue click that neither changed the route nor the field set,
+    with real validation-error evidence found on the page -- see
+    app.applications.dynamic_validation and
+    browser_runtime._do_advance_step) for review. Never blocking, matching
+    this project's existing 'doctor reports, never repairs' contract and
+    _check_stage_transition_invalid's own pattern for this same
+    browser_spa_events table."""
+    rows = conn.execute(
+        "SELECT session_id, detail, created_at FROM browser_spa_events WHERE event = 'validation_blocked' "
+        "ORDER BY id DESC LIMIT 100"
+    ).fetchall()
+    for r in rows:
+        report.issues.append(Issue("warning", "validation_blocked",
+                                    f"session {r['session_id']} could not advance past a step -- inline "
+                                    f"validation appears to be blocking it ({r['detail']}) at {r['created_at']}"))

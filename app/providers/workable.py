@@ -15,7 +15,24 @@ logger = logging.getLogger("providers.workable")
 # Public unauthenticated widget API -- the same one Workable's embeddable
 # "apply" job list widget calls from a company's own careers page.
 WORKABLE_LIST_URL = "https://apply.workable.com/api/v1/widget/accounts/{account}"
-WORKABLE_DETAIL_URL = "https://apply.workable.com/api/v1/widget/accounts/{account}/jobs/{shortcode}"
+# NOT api/v1/widget/accounts/{account}/jobs/{shortcode} -- live-verified
+# 2026-08-22 (apply.workable.com/flosum, a real currently-listed shortcode):
+# that URL 404s for every real account/shortcode, meaning per-job detail
+# fetch (and therefore every real Workable job's description/requirements/
+# benefits) has been silently empty this whole time -- `_fetch_detail`'s own
+# `except Exception: return ""` swallowed the failure with no visible
+# symptom. This v2 endpoint is the real, working replacement (found via
+# Workable's own public documentation and live-confirmed to return 200 with
+# description/requirements/benefits/workplace/remote/type on a real posting).
+WORKABLE_DETAIL_URL = "https://apply.workable.com/api/v2/accounts/{account}/jobs/{shortcode}"
+
+# Workable's own structured work-arrangement enum (live-verified 2026-08-22
+# on the v2 detail endpoint's `workplace` field, e.g. "remote" on several
+# real flosum postings; "hybrid"/"onsite" are Workable's own documented
+# values for this field but were not observed live this session -- only
+# ever mapped here if the value is exactly one of these three, never
+# guessed for an unrecognized value).
+_WORKPLACE_TO_REMOTE_STATUS = {"remote": "remote", "hybrid": "hybrid", "onsite": "onsite"}
 
 
 def _strip_html(raw_html: str) -> str:
@@ -24,8 +41,24 @@ def _strip_html(raw_html: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def _remote_status(item: dict) -> Optional[str]:
-    if item.get("telecommute") is True:
+def _remote_status(item: dict, detail_workplace: str = "") -> Optional[str]:
+    # `workplace` (from the per-job detail endpoint) is Workable's own
+    # explicit work-arrangement field -- preferred first since it can
+    # genuinely distinguish hybrid/onsite, which the list-endpoint booleans
+    # below cannot. Only trusted when it's exactly one of the three known
+    # values; an empty/unrecognized value falls through to the list-level
+    # signals rather than being guessed.
+    mapped = _WORKPLACE_TO_REMOTE_STATUS.get((detail_workplace or "").strip().lower())
+    if mapped:
+        return mapped
+    # Live-verified against the real public widget API (2026-08-22,
+    # apply.workable.com/api/v1/widget/accounts/flosum): the boolean field is
+    # named `telecommuting`, not `telecommute` -- the prior key never matched
+    # any real job, so structured remote detection silently never fired and
+    # every job fell through to the text-based `city` fallback below. Both
+    # keys are checked now (never fabricated, just defensive against a
+    # differently-shaped tenant).
+    if item.get("telecommuting") is True or item.get("telecommute") is True:
         return "remote"
     city = (item.get("city") or "").lower()
     if "remote" in city:
@@ -43,7 +76,7 @@ class WorkableProvider(JobProvider):
     name = "workable"
     capabilities = ProviderCapabilities(
         provider_name="workable",
-        provider_version="1.0.0",
+        provider_version="1.2.0",
         discovery_supported=True,
         detail_fetch_supported=True,
         structured_location_supported=True,
@@ -54,7 +87,16 @@ class WorkableProvider(JobProvider):
         requires_credentials=False,
         submission_supported=False,
         support_level=SupportLevel.FULL,
-        notes="List endpoint paginated; description requires one detail request per job (bounded by max_jobs).",
+        notes=(
+            "List endpoint paginated; description requires one detail request per job (bounded by max_jobs), "
+            "now against the v2 accounts/{account}/jobs/{shortcode} endpoint -- the previously-used v1/widget "
+            "detail URL 404s for every real account/shortcode (live-verified 2026-08-22), which silently left "
+            "description empty for every real job this whole time; fixed to the working v2 shape. "
+            "remote_status prefers the v2 detail endpoint's own `workplace` enum (remote/hybrid/onsite) when "
+            "recognized, else the live-verified `telecommuting` boolean (a prior version incorrectly checked a "
+            "`telecommute` key that never matches any real job); url prefers `application_url` (the direct "
+            "apply form) over the listing-page `url`/`shortlink`, live-verified 2026-08-22."
+        ),
     )
 
     def __init__(self, account_subdomains: list[str], client: Optional[httpx.Client] = None, timeout: float = 10.0):
@@ -75,17 +117,26 @@ class WorkableProvider(JobProvider):
             self._last_error = exc
             return None
 
-    def _fetch_detail(self, client: httpx.Client, account: str, shortcode: str) -> str:
+    def _fetch_detail(self, client: httpx.Client, account: str, shortcode: str) -> dict:
+        """Returns {"description", "workplace"} from the v2 per-job detail
+        endpoint. `description`/`requirements`/`benefits` are flat top-level
+        fields on this endpoint (unlike the old, broken v1/widget detail URL
+        this replaced) -- live-verified 2026-08-22. `workplace` (e.g.
+        "remote") is likewise a genuine top-level field, surfaced for
+        _remote_status() to prefer over the coarser list-level booleans."""
         if not shortcode:
-            return ""
+            return {"description": "", "workplace": ""}
         try:
             detail = get_json(client, WORKABLE_DETAIL_URL.format(account=account, shortcode=shortcode),
                                provider="workable")
         except Exception:
             logger.warning("workable detail fetch failed for %s/%s", account, shortcode, exc_info=True)
-            return ""
+            return {"description": "", "workplace": ""}
         parts = [detail.get("description", ""), detail.get("requirements", ""), detail.get("benefits", "")]
-        return _strip_html(" ".join(p for p in parts if p))
+        return {
+            "description": _strip_html(" ".join(p for p in parts if p)),
+            "workplace": detail.get("workplace", "") or "",
+        }
 
     def _fetch_account(self, client: httpx.Client, account: str, max_jobs: int) -> list[RawJobPosting]:
         raw_items: list[dict] = []
@@ -115,8 +166,17 @@ class WorkableProvider(JobProvider):
         for item in raw_items[: config.MAX_JOBS_PER_PROVIDER]:
             try:
                 shortcode = item.get("shortcode") or item.get("code") or ""
-                description = self._fetch_detail(client, account, shortcode) if shortcode else ""
-                url = item.get("url") or (f"https://apply.workable.com/{account}/j/{shortcode}/" if shortcode else "")
+                detail = self._fetch_detail(client, account, shortcode) if shortcode else {"description": "", "workplace": ""}
+                # Live-verified 2026-08-22 (apply.workable.com/flosum): the
+                # list item's own `application_url` points directly at the
+                # apply FORM (".../apply"), while `url`/`shortlink` point at
+                # the job's listing page one hop earlier -- preferring
+                # application_url here removes an unnecessary apply-entry
+                # click-through for browser-assist, matching what
+                # app.applications.browser_capability_matrix's workable row
+                # already independently observed live in the browser.
+                url = (item.get("application_url") or item.get("url")
+                       or (f"https://apply.workable.com/{account}/j/{shortcode}/" if shortcode else ""))
                 results.append(RawJobPosting(
                     provider="workable",
                     external_job_id=shortcode or item.get("title", ""),
@@ -127,8 +187,8 @@ class WorkableProvider(JobProvider):
                     city=item.get("city"),
                     state=item.get("state"),
                     country=item.get("country"),
-                    remote_status=_remote_status(item),
-                    description=description,
+                    remote_status=_remote_status(item, detail["workplace"]),
+                    description=detail["description"],
                     url=url,
                     source_url=url,
                     employment_type_raw=item.get("employment_type", "") or "",

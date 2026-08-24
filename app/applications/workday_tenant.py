@@ -74,10 +74,16 @@ def utcnow() -> str:
 
 
 # Capability keys tracked per tenant/site -- CLAUDE.md Phase 11 section 13's
-# exact list.
+# original list, extended 2026-08-22 (Workday/SmartRecruiters/Workable
+# browser hardening) with `dynamic_validation`: does this tenant's real form
+# genuinely block a Next/Continue click with inline validation when a
+# required field is left empty (app.applications.dynamic_validation). An
+# additive extension only -- record_observation() already treats an
+# unmentioned key as "not yet observed" for any existing row.
 CAPABILITY_KEYS = (
     "landing_navigation", "login_required", "resume_upload", "profile_import",
     "multi_step", "custom_questions", "review_page", "confirmation_detection",
+    "dynamic_validation",
 )
 
 

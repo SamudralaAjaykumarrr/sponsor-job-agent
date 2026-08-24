@@ -36,6 +36,11 @@ EVENT_JOB_IDENTITY_MISMATCH = "job_identity_mismatch"
 # JobIdentityVerdict at the pre-upload/pre-final-submit gate -- distinct from
 # a confirmed EVENT_JOB_IDENTITY_MISMATCH above.
 EVENT_JOB_IDENTITY_UNVERIFIED = "job_identity_unverified"
+# Workday/SmartRecruiters/Workable browser-assist hardening (2026-08-22):
+# a Next/Continue click that neither changed the route nor the field set,
+# with real validation-error evidence found on the page -- see
+# app.applications.dynamic_validation.
+EVENT_VALIDATION_BLOCKED = "validation_blocked"
 
 
 def utcnow() -> str:
