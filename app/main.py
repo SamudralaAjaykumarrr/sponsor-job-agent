@@ -12,6 +12,7 @@ from app.agent import state as agent_state
 from app.agent import run_state as agent_run_state
 from app.agent.orchestrator import orchestrator as agent_orchestrator
 from app.agent.scheduler import scheduler
+from app.applications import approval as applications_approval
 from app.applications import doctor as applications_doctor
 from app.applications import metrics as applications_metrics
 from app.applications import repo as applications_repo
@@ -230,6 +231,9 @@ def dashboard(
 
     missing = missing_fields(load_profile())
     needs_action_queue = pipeline_dashboard.build_needs_action_queue(limit=25)
+    ready_for_approval_queue = pipeline_dashboard.build_ready_for_approval_queue(
+        limit=50, include_test_fixtures=include_test_data,
+    )
     recent_activity = pipeline_dashboard.build_recent_activity(limit=20)
     return templates.TemplateResponse(
         request,
@@ -255,6 +259,7 @@ def dashboard(
             },
             "resume_optimization_enabled": config.RESUME_OPTIMIZATION_ENABLED,
             "needs_action_queue": needs_action_queue,
+            "ready_for_approval_queue": ready_for_approval_queue,
             "recent_activity": recent_activity,
         },
     )
@@ -317,6 +322,10 @@ def job_detail(request: Request, job_id: int):
     latest_decision = decision_history[-1] if decision_history else None
     executions = applications_repo.list_executions_for_job(job_id)
     active_execution = applications_repo.get_active_execution_for_job(job_id)
+    # A terminal execution (e.g. APPLIED) is no longer "active" (active=0),
+    # but its confirmation evidence should still be visible on this page --
+    # fall back to the most recent execution row for that purpose only.
+    latest_execution = executions[-1] if executions else None
     eligibility = evaluate_executor_eligibility(job)
     active_browser_session = browser_session.get_active_session_for_job(job_id)
 
@@ -332,6 +341,7 @@ def job_detail(request: Request, job_id: int):
     jd_analysis_row = resume_optimizer_repo.get_jd_analysis(job_id, jd_fingerprint)
     evidence_links = resume_optimizer_repo.list_evidence_links(current_variant["variant_id"]) if current_variant else []
     alignment_priority = compute_alignment_priority(job, quality_row["report"] if quality_row else None)
+    approval_freshness = applications_approval.check_approval_freshness(job_id)
 
     return templates.TemplateResponse(
         request, "job_detail.html",
@@ -339,7 +349,8 @@ def job_detail(request: Request, job_id: int):
             **_nav_ctx(),
             "job": job, "score_breakdown": score_breakdown, "history": history, "provenance": provenance,
             "latest_decision": latest_decision, "decision_history": decision_history,
-            "executions": executions, "active_execution": active_execution, "eligibility": eligibility,
+            "executions": executions, "active_execution": active_execution,
+            "latest_execution": latest_execution, "eligibility": eligibility,
             "executor_enabled": config.APPLICATION_EXECUTOR_ENABLED,
             "auto_submit_enabled": config.AUTO_SUBMIT_ENABLED,
             "active_browser_session": active_browser_session,
@@ -351,6 +362,7 @@ def job_detail(request: Request, job_id: int):
             "alignment_priority": alignment_priority,
             "jd_current_fingerprint": jd_fingerprint,
             "valid_states": [s.value for s in valid_manual_transitions(job.application_state)],
+            "approval_freshness": approval_freshness,
         },
     )
 
@@ -1109,6 +1121,46 @@ def application_retry(job_id: int):
         raise HTTPException(400, "no active execution for this job -- use Prepare Application first")
     process_execution(execution["execution_id"])
     return RedirectResponse(url=f"/jobs/{job_id}", status_code=303)
+
+
+@app.post("/jobs/{job_id}/applications/approve")
+def application_approve(job_id: int):
+    """APPROVE & APPLY (approval-gated-autonomy-v1 spec section 6) -- the
+    ONE normal human gate this feature exists to implement. Records a
+    durable, fingerprint-bound approval, then synchronously continues the
+    application exactly as far as a genuinely verified provider capability
+    (and every other existing safety gate) allows -- never a UI redirect
+    that merely implies approval happened."""
+    result = applications_approval.approve_and_apply(job_id)
+    if not result.ok:
+        raise HTTPException(400, result.reason)
+    return RedirectResponse(url=f"/jobs/{job_id}", status_code=303)
+
+
+@app.post("/applications/approve-bulk")
+def application_approve_bulk(job_ids: str = Form(...)):
+    """APPROVE & APPLY SELECTED (spec section 14): each job id in the
+    comma-separated `job_ids` field (posted from the dashboard's bulk
+    confirmation modal, which lists every company/role/sponsorship
+    status/resume version/submission capability before this request is
+    ever sent) gets its own individually-recorded approval; one job
+    failing never stops the rest."""
+    ids = [int(x) for x in job_ids.split(",") if x.strip().isdigit()]
+    result = applications_approval.approve_and_apply_bulk(ids)
+    return JSONResponse(result.as_dict())
+
+
+@app.get("/api/jobs/{job_id}/approval-freshness")
+def api_approval_freshness(job_id: int):
+    return JSONResponse(applications_approval.check_approval_freshness(job_id))
+
+
+@app.get("/api/ready-for-approval")
+def api_ready_for_approval(limit: int = 50):
+    return JSONResponse({
+        "count": pipeline_dashboard.count_ready_for_approval(),
+        "items": pipeline_dashboard.build_ready_for_approval_queue(limit=limit),
+    })
 
 
 @app.post("/executions/{execution_id}/reconcile")

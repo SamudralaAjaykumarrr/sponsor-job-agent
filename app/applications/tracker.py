@@ -45,6 +45,14 @@ ALLOWED_MANUAL_TRANSITIONS = {
     },
     ApplicationState.SUBMISSION_FAILED: {ApplicationState.READY_TO_APPLY, ApplicationState.SKIPPED},
     ApplicationState.DUPLICATE_APPLICATION_BLOCKED: {ApplicationState.SKIPPED},
+    # Approval-gated-autonomy-v1: an APPROVED job (provider has no verified
+    # auto-submit capability) is typically finished via browser-assist or
+    # manually outside the executor -- same "let a human record what they
+    # truthfully did" pattern as NEEDS_USER_ACTION/SUBMISSION_STATUS_UNKNOWN
+    # above.
+    ApplicationState.APPROVED: {
+        ApplicationState.APPLIED, ApplicationState.SKIPPED, ApplicationState.WITHDRAWN,
+    },
 }
 
 

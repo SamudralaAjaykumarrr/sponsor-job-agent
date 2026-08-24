@@ -147,6 +147,7 @@ def evaluate_executor_eligibility(job: Job) -> EligibilityResult:
 
     if job.application_state not in (ApplicationState.READY_TO_APPLY, ApplicationState.REVIEW_REQUIRED,
                                       ApplicationState.EXECUTION_QUEUED, ApplicationState.NEEDS_USER_ACTION,
+                                      ApplicationState.APPROVED,
                                       ApplicationState.SUBMISSION_STATUS_UNKNOWN, ApplicationState.SUBMISSION_FAILED):
         return EligibilityResult(
             enters_queue=False, auto_submit_eligible=False, employment_type=employment_type,

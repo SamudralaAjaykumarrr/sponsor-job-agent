@@ -76,6 +76,12 @@ def compute_pipeline_summary(all_jobs: list[Job]) -> dict:
         ).fetchone()["c"]
 
         needs_user_action = _count_needs_action(conn)
+        ready_for_approval = _count_ready_for_approval(conn)
+        awaiting_manual_completion = conn.execute(
+            """SELECT COUNT(*) AS c FROM application_executions e JOIN jobs j ON j.id = e.job_id
+               WHERE e.active = 1 AND e.status = ? AND j.is_test_fixture = 0""",
+            (ExecutionStatus.APPROVED.value,),
+        ).fetchone()["c"]
 
         ready_for_final_submit = conn.execute(
             """SELECT COUNT(*) AS c FROM browser_assist_sessions s JOIN jobs j ON j.id = s.job_id
@@ -124,6 +130,8 @@ def compute_pipeline_summary(all_jobs: list[Job]) -> dict:
         "application_ready": application_ready,
         "applying": applying,
         "needs_user_action": needs_user_action,
+        "ready_for_approval": ready_for_approval,
+        "awaiting_manual_completion": awaiting_manual_completion,
         "ready_for_final_submit": ready_for_final_submit,
         "applied": applied,
         "applied_today": applied_today,
@@ -142,10 +150,22 @@ def compute_pipeline_summary(all_jobs: list[Job]) -> dict:
 # jobs by default, matching every other real-mode dashboard query.
 _NEEDS_ACTION_QUERIES: list[dict] = [
     {
+        # Approval-gated-autonomy-v1 spec section 15: Needs Action is for
+        # GENUINE blockers only (CAPTCHA/MFA/login/legal/unresolved
+        # question/unknown submission outcome) -- explicitly scoped to
+        # ExecutionStatus.NEEDS_USER_ACTION/VALIDATION_REQUIRED/
+        # SUBMISSION_STATUS_UNKNOWN (matching
+        # app.applications.repo.DASHBOARD_BUCKETS["needs_action"] and
+        # app.applications.product_state.needs_user_action -- the same
+        # three statuses, one authoritative definition). Deliberately NOT
+        # `e.requires_user_action = 1` (that flag is also set on plain
+        # SUBMISSION_READY -- normal final review, which belongs in the
+        # READY FOR APPROVAL queue below, never here).
         "kind": "execution",
         "sql": """SELECT j.id AS job_id, j.company, j.title, e.status, e.user_action_reason
                   FROM application_executions e JOIN jobs j ON j.id = e.job_id
-                  WHERE e.active = 1 AND e.requires_user_action = 1 AND j.is_test_fixture = 0
+                  WHERE e.active = 1 AND j.is_test_fixture = 0
+                        AND e.status IN ('NEEDS_USER_ACTION', 'VALIDATION_REQUIRED', 'SUBMISSION_STATUS_UNKNOWN')
                   ORDER BY e.updated_at DESC""",
         "completed": "Application prepared through form discovery/fill/validation.",
         "action": "Review and continue on the job detail page.",
@@ -196,6 +216,88 @@ def _count_needs_action(conn) -> int:
         row = conn.execute(f"SELECT COUNT(*) AS c FROM ({source['sql']}) t").fetchone()
         total += row["c"]
     return total
+
+
+def _count_ready_for_approval(conn) -> int:
+    return conn.execute(
+        """SELECT COUNT(*) AS c FROM application_executions e JOIN jobs j ON j.id = e.job_id
+           WHERE e.active = 1 AND e.status = ? AND j.is_test_fixture = 0""",
+        (ExecutionStatus.SUBMISSION_READY.value,),
+    ).fetchone()["c"]
+
+
+def count_ready_for_approval() -> int:
+    """The authoritative total for the READY FOR APPROVAL card/section --
+    same query build_ready_for_approval_queue() below is built from, so the
+    two can never disagree (CLAUDE.md section 32's existing "one source of
+    truth for a count and its list" convention, extended here)."""
+    with db_session() as conn:
+        return _count_ready_for_approval(conn)
+
+
+def build_ready_for_approval_queue(limit: int = 50, *, include_test_fixtures: bool = False) -> list[dict]:
+    """Approval-gated-autonomy-v1 spec sections 5/12: the ONE normal human
+    gate this whole feature exists to implement. Reads
+    application_executions.status == SUBMISSION_READY (the product-facing
+    READY_FOR_APPROVAL stage -- see app.applications.product_state) joined
+    with everything a review card needs (CLAUDE.md section 12): JD
+    analyzed/resume tailored/one-page/claim-check/ATS-parse/application
+    filled/resume uploaded/required fields validated. Excludes a TEST MODE
+    fixture by default (is_test_fixture = 0, matching every other real-mode
+    dashboard query, spec section 18) -- `include_test_fixtures=True` is the
+    same explicit, opt-in TEST MODE audit view the dashboard's existing
+    "view test job" link already uses for the pipeline table
+    (`?include_test_data=true`), reused here unchanged rather than a second
+    mechanism, so the TEST MODE fixture can still be approved end-to-end
+    through the real dashboard UI (spec section 22/23) without ever
+    appearing in the real-mode default view. Batched lookups only -- no
+    per-row DB query (CLAUDE.md section 55's "never N+1" convention, same
+    shape as build_job_rows())."""
+    from app.resume_optimizer.repo import get_current_variants_for_jobs, get_quality_reports_for_jobs
+
+    test_fixture_clause = "" if include_test_fixtures else "AND j.is_test_fixture = 0"
+    with db_session() as conn:
+        rows = conn.execute(
+            f"""SELECT e.execution_id, e.job_id, e.resume_artifact_hash, e.answers_version, e.updated_at,
+                      j.company, j.title, j.location, j.employment_type, j.provider, j.work_arrangement,
+                      j.sponsorship_status, j.technical_match_score
+               FROM application_executions e JOIN jobs j ON j.id = e.job_id
+               WHERE e.active = 1 AND e.status = ? {test_fixture_clause}
+               ORDER BY e.updated_at DESC LIMIT ?""",
+            (ExecutionStatus.SUBMISSION_READY.value, limit),
+        ).fetchall()
+
+    job_ids = [r["job_id"] for r in rows]
+    quality_by_job = get_quality_reports_for_jobs(job_ids)
+    variant_by_job = get_current_variants_for_jobs(job_ids)
+
+    items = []
+    for r in rows:
+        quality = (quality_by_job.get(r["job_id"]) or {}).get("report") or {}
+        variant = variant_by_job.get(r["job_id"]) or {}
+        employment_type = classify_employment_type(r["employment_type"], r["title"], "")
+        ats = quality.get("ats_parseability") or {}
+        claim_check = quality.get("claim_check") or {}
+        items.append({
+            "job_id": r["job_id"], "execution_id": r["execution_id"],
+            "company": r["company"], "title": r["title"], "location": r["location"],
+            "work_arrangement": r["work_arrangement"],
+            "employment_type": employment_type.value, "provider": r["provider"],
+            "sponsorship_status": r["sponsorship_status"],
+            # CLAUDE.md approval spec section 3: never represent historical
+            # sponsorship as confirmed -- surface an explicit warning
+            # exactly when the job's own current-role decision is
+            # LIKELY_SPONSOR (historical-evidence-only), never for
+            # CONFIRMED_SPONSOR.
+            "sponsorship_history_warning": r["sponsorship_status"] == "LIKELY_SPONSOR",
+            "match_score": r["technical_match_score"],
+            "one_page_ok": variant.get("page_count") == 1,
+            "claim_check_passed": bool(claim_check.get("passed")),
+            "ats_ok": ats.get("overall") not in (None, "FAIL"),
+            "resume_status": variant.get("status") or "NOT_GENERATED",
+            "updated_at": r["updated_at"],
+        })
+    return items
 
 
 def build_needs_action_queue(limit: int = 25) -> list[dict]:
@@ -271,6 +373,7 @@ _STATE_ACTIVITY_TEXT = {
     "APPLIED": "Application confirmed.",
     "NEEDS_USER_ACTION": "Paused -- needs your action.",
     "EXECUTION_QUEUED": "Application queued for preparation.",
+    "APPROVED": "Approved -- awaiting completion (provider has no verified auto-submit).",
 }
 
 _AUDIT_ACTIVITY_TEXT = {
@@ -281,6 +384,7 @@ _AUDIT_ACTIVITY_TEXT = {
     "filled": "Application draft filled.",
     "user_action_required": "Paused -- needs your action.",
     "validated": "Application validated.",
+    "approved": "You approved this application.",
     "submit_attempted": "Submitting application.",
     "confirmed": "Application confirmed.",
     "failed": "Application attempt failed.",
@@ -392,6 +496,7 @@ def build_job_rows(
 # Withdrawn) -------------------------------------------------------------
 
 TRACKER_LANES: list[tuple[str, str]] = [
+    ("APPROVED", "Approved"),
     ("APPLIED", "Applied"),
     ("ASSESSMENT", "Assessment"),
     ("INTERVIEW", "Interview"),

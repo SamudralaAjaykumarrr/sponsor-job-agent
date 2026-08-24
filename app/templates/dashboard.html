@@ -109,9 +109,99 @@
   <div class="stat-card"><div class="num" id="stat-application_ready">{{ summary.application_ready }}</div><div class="label">Applications prepared</div></div>
   <div class="stat-card"><div class="num" id="stat-applying">{{ summary.applying }}</div><div class="label">Applying</div></div>
   <div class="stat-card accent {{ 'warn-if-nonzero' if summary.needs_user_action else '' }} {{ 'is-nonzero' if summary.needs_user_action else '' }}"><div class="num" id="stat-needs_user_action">{{ summary.needs_user_action }}</div><div class="label">Needs your action</div></div>
+  <div class="stat-card accent {{ 'is-nonzero' if summary.ready_for_approval else '' }}"><div class="num" id="stat-ready_for_approval">{{ summary.ready_for_approval }}</div><div class="label">Ready for approval</div></div>
   <div class="stat-card"><div class="num" id="stat-applied_today">{{ summary.applied_today }}</div><div class="label">Applied today</div></div>
   <div class="stat-card"><div class="num" id="stat-skipped">{{ summary.skipped }}</div><div class="label">Skipped</div></div>
 </div>
+
+{% if ready_for_approval_queue %}
+<section class="surface surface-pad" style="margin-bottom:1rem;" id="ready-for-approval">
+  <div class="page-header" style="margin-bottom:0.5rem;">
+    <h2 style="margin:0;">Ready For Approval <span class="faint">({{ summary.ready_for_approval }})</span></h2>
+    <button type="button" class="btn btn-primary" id="approve-selected-btn" disabled
+            onclick="document.getElementById('bulk-approve-modal').style.display='flex'">APPROVE &amp; APPLY SELECTED</button>
+  </div>
+  {% if summary.ready_for_approval > ready_for_approval_queue | length %}
+  <p class="faint">Showing top {{ ready_for_approval_queue | length }} of {{ summary.ready_for_approval }}.</p>
+  {% endif %}
+  <div class="job-grid">
+    {% for item in ready_for_approval_queue %}
+    <div class="surface surface-pad" style="border:1px solid var(--border);">
+      <label style="display:flex;gap:0.4rem;align-items:flex-start;">
+        <input type="checkbox" class="approve-select" value="{{ item.job_id }}" onchange="window.updateApproveSelectedCount()">
+        <span>
+          <strong>{{ item.company }}</strong> — {{ item.title }}<br>
+          <span class="faint">{{ item.location }} · {{ item.employment_type }} · {{ item.provider }}</span><br>
+          <span class="tag {{ 'tag-confirmed' if item.sponsorship_status == 'CONFIRMED_SPONSOR' else 'tag-likely' }}">{{ item.sponsorship_status }}</span>
+          {% if item.sponsorship_history_warning %}<span style="color:var(--warn);">Sponsorship history found — verify before applying.</span>{% endif %}
+          <br>Match: {{ item.match_score }}%
+          <br>
+          {{ '✓' if item.claim_check_passed else '✗' }} JD analyzed / Resume tailored
+          &nbsp;{{ '✓' if item.one_page_ok else '✗' }} 1 page
+          &nbsp;{{ '✓' if item.claim_check_passed else '✗' }} Claim check
+          &nbsp;{{ '✓' if item.ats_ok else '✗' }} ATS parse
+          &nbsp;✓ Application filled &nbsp;✓ Required fields validated
+        </span>
+      </label>
+      <div class="btn-row" style="margin-top:0.5rem;">
+        <a class="btn btn-ghost btn-sm" href="/jobs/{{ item.job_id }}/resume/download/pdf">Preview Resume</a>
+        <a class="btn btn-ghost btn-sm" href="/jobs/{{ item.job_id }}">Review Application</a>
+        <form method="post" action="/jobs/{{ item.job_id }}/applications/approve">
+          <button class="btn btn-primary btn-sm" type="submit">APPROVE &amp; APPLY</button>
+        </form>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</section>
+
+<div id="bulk-approve-modal" class="modal-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:50;align-items:center;justify-content:center;">
+  <div class="surface surface-pad" style="max-width:32rem;max-height:80vh;overflow:auto;">
+    <h3>Confirm bulk approval</h3>
+    <p class="faint">Every selected job below will be individually approved and applied where a verified
+      submission capability exists.</p>
+    <ul id="bulk-approve-list"></ul>
+    <form id="bulk-approve-form" method="post" action="/applications/approve-bulk"
+          onsubmit="return window.submitBulkApprove(event)">
+      <input type="hidden" name="job_ids" id="bulk-approve-job-ids">
+      <div class="btn-row" style="margin-top:0.75rem;">
+        <button type="button" class="btn btn-ghost" onclick="document.getElementById('bulk-approve-modal').style.display='none'">Cancel</button>
+        <button type="submit" class="btn btn-primary">Confirm — APPROVE &amp; APPLY SELECTED</button>
+      </div>
+    </form>
+    <div id="bulk-approve-result"></div>
+  </div>
+</div>
+
+<script>
+window.updateApproveSelectedCount = function () {
+  var boxes = document.querySelectorAll('.approve-select:checked');
+  var btn = document.getElementById('approve-selected-btn');
+  btn.disabled = boxes.length === 0;
+  btn.textContent = boxes.length ? ('APPROVE & APPLY SELECTED (' + boxes.length + ')') : 'APPROVE & APPLY SELECTED';
+  var list = document.getElementById('bulk-approve-list');
+  list.innerHTML = '';
+  boxes.forEach(function (b) {
+    var card = b.closest('.surface');
+    var li = document.createElement('li');
+    li.textContent = card ? card.querySelector('strong').textContent : ('job ' + b.value);
+    list.appendChild(li);
+  });
+  document.getElementById('bulk-approve-job-ids').value = Array.prototype.map.call(boxes, function (b) { return b.value; }).join(',');
+};
+window.submitBulkApprove = function (evt) {
+  evt.preventDefault();
+  var ids = document.getElementById('bulk-approve-job-ids').value;
+  fetch('/applications/approve-bulk', {
+    method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: 'job_ids=' + encodeURIComponent(ids),
+  }).then(function (r) { return r.json(); }).then(function (data) {
+    document.getElementById('bulk-approve-result').innerText = JSON.stringify(data.results);
+    setTimeout(function () { window.location.reload(); }, 800);
+  });
+  return false;
+};
+</script>
+{% endif %}
 
 {% if needs_action_queue %}
 <section class="surface surface-pad" style="margin-bottom:1rem;">

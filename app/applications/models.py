@@ -31,6 +31,14 @@ class ExecutionStatus(str, Enum):
     VALIDATION_REQUIRED = "VALIDATION_REQUIRED"
     NEEDS_USER_ACTION = "NEEDS_USER_ACTION"
     SUBMISSION_READY = "SUBMISSION_READY"
+    # Approval-gated-autonomy-v1 (see app.applications.approval): reached
+    # only via an explicit, durable APPROVE & APPLY action when the
+    # provider has no verified final-submission capability -- distinct from
+    # SUBMISSION_READY (which means "prepared, awaiting a human decision").
+    # Non-terminal (stays active=1, like NEEDS_USER_ACTION) -- the next
+    # real step is browser-assist or manual completion, never an
+    # automatic resubmission of this same row.
+    APPROVED = "APPROVED"
     SUBMITTING = "SUBMITTING"
     SUBMITTED = "SUBMITTED"
     SUBMISSION_CONFIRMED = "SUBMISSION_CONFIRMED"
