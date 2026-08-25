@@ -691,3 +691,279 @@ def job_identity_pages(tmp_path: Path) -> tuple[str, str]:
         </form>
     """))
     return f"{original}?job_id=1234", f"{other_form}?job_id=9999"
+
+
+# =============================================================================
+# Real Provider Execution V1: realistic, LOCAL, deterministic Greenhouse- and
+# Lever-shaped fixtures.
+#
+# Field NAMES and LABELS are modeled on each provider's genuine, already
+# documented shapes recorded elsewhere in this repository -- Greenhouse's
+# from the real `boards-api.greenhouse.io/...?questions=true` payload captured
+# in tests/test_applications_providers_greenhouse.py::FIXTURE_PAYLOAD
+# (first_name/last_name/email/phone/resume/question_N/disability_status),
+# Lever's from the real rendered form live-verified in Phase 10-12 and
+# described in app.applications.browser_capability_matrix's lever row
+# (name/email/phone/org/urls[...]/resume/comments/cards[...]).
+#
+# These are `file://` pages like every other fixture in this module: no real
+# employer is ever contacted, no network access is required, and nothing here
+# is ever submitted anywhere.
+# =============================================================================
+
+_GREENHOUSE_STANDARD_FIELDS = """
+  <label for="first_name">First Name</label><input id="first_name" name="first_name" type="text" required>
+  <label for="last_name">Last Name</label><input id="last_name" name="last_name" type="text" required>
+  <label for="email">Email</label><input id="email" name="email" type="text" required>
+  <label for="phone">Phone</label><input id="phone" name="phone" type="text">
+  <label for="resume">Resume/CV</label><input id="resume" name="resume" type="file" required>
+"""
+
+_LEVER_STANDARD_FIELDS = """
+  <label for="name">Full name</label><input id="name" name="name" type="text" required>
+  <label for="email">Email</label><input id="email" name="email" type="text" required>
+  <label for="phone">Phone</label><input id="phone" name="phone" type="text">
+  <label for="org">Current company</label><input id="org" name="org" type="text">
+  <label for="linkedin">LinkedIn URL</label><input id="linkedin" name="urls[LinkedIn]" type="text">
+  <label for="resume">Resume</label><input id="resume" name="resume" type="file" required>
+"""
+
+_GREENHOUSE_SPONSORSHIP_QUESTION = """
+  <fieldset>
+    <legend>Will you now or in the future require sponsorship for a visa to remain in your current location?</legend>
+    <label><input type="radio" name="question_47110" value="Yes"> Yes</label>
+    <label><input type="radio" name="question_47110" value="No"> No</label>
+  </fieldset>
+"""
+
+_LEVER_SPONSORSHIP_QUESTION = """
+  <fieldset>
+    <legend>Will you now or in the future require sponsorship?</legend>
+    <label><input type="radio" name="cards[a1b2c3][field0]" value="Yes"> Yes</label>
+    <label><input type="radio" name="cards[a1b2c3][field0]" value="No"> No</label>
+  </fieldset>
+"""
+
+_GREENHOUSE_UNKNOWN_QUESTION = """
+  <label for="gh_unknown">Which internal Acme initiative most closely matches your background?</label>
+  <input id="gh_unknown" name="question_99001" type="text" required>
+"""
+
+_LEVER_UNKNOWN_QUESTION = """
+  <label for="lever_unknown">Describe a time you disagreed with our published engineering values.</label>
+  <textarea id="lever_unknown" name="cards[a1b2c3][field9]" required></textarea>
+"""
+
+_GREENHOUSE_COVER_LETTER = """
+  <label for="cover_letter">Cover Letter</label><input id="cover_letter" name="cover_letter" type="file">
+"""
+
+_LEVER_COVER_LETTER = """
+  <label for="comments">Additional information / cover letter</label>
+  <textarea id="comments" name="comments"></textarea>
+  <label for="lever_cover">Cover letter</label><input id="lever_cover" name="cover_letter" type="file">
+"""
+
+
+def _provider_form_page(
+    tmp_path: Path, name: str, standard: str, *, sponsorship: str = "", unknown: str = "",
+    cover_letter: str = "", extra_head: str = "", title: str = DEFAULT_JOB_TITLE,
+    company: str = DEFAULT_JOB_COMPANY, submit_label: str = "Submit Application",
+) -> str:
+    body = _jsonld_block(title, company) + extra_head + textwrap.dedent(f"""
+        <h1>{title}</h1>
+        <form id="application-form">
+          {standard}
+          {cover_letter}
+          {sponsorship}
+          {unknown}
+          <button type="submit">{submit_label}</button>
+        </form>
+    """)
+    return _write(tmp_path, name, body)
+
+
+# --- Greenhouse-shaped -------------------------------------------------------
+
+def greenhouse_like_application_page(
+    tmp_path: Path, *, with_cover_letter: bool = True, with_unknown_question: bool = False,
+    title: str = DEFAULT_JOB_TITLE, company: str = DEFAULT_JOB_COMPANY,
+) -> str:
+    """A complete Greenhouse-shaped application form: the standard
+    name/email/phone/resume block, a genuine sponsorship radio GROUP (whose
+    question text lives in the fieldset legend, exactly like the real one --
+    CLAUDE.md's Phase 10 rule about legend-over-choice-label priority),
+    optionally a cover-letter upload, and optionally an employer-specific
+    question this project has no verified answer for."""
+    return _provider_form_page(
+        tmp_path, "greenhouse_form.html", _GREENHOUSE_STANDARD_FIELDS,
+        sponsorship=_GREENHOUSE_SPONSORSHIP_QUESTION,
+        unknown=_GREENHOUSE_UNKNOWN_QUESTION if with_unknown_question else "",
+        cover_letter=_GREENHOUSE_COVER_LETTER if with_cover_letter else "",
+        title=title, company=company,
+    )
+
+
+def greenhouse_like_form_changed_page(tmp_path: Path) -> str:
+    """The SAME posting's form after the employer changed it -- one field
+    added, one removed. Written to a DIFFERENT file so a test can open the
+    first, then navigate to this one, producing a genuinely different field
+    fingerprint (the PAUSED_FORM_CHANGED / stale-authorization case)."""
+    changed_standard = _GREENHOUSE_STANDARD_FIELDS.replace(
+        '<label for="phone">Phone</label><input id="phone" name="phone" type="text">',
+        '<label for="pronouns">Pronouns</label><input id="pronouns" name="question_50002" type="text">',
+    )
+    return _provider_form_page(
+        tmp_path, "greenhouse_form_changed.html", changed_standard,
+        sponsorship=_GREENHOUSE_SPONSORSHIP_QUESTION,
+    )
+
+
+def greenhouse_like_captcha_page(tmp_path: Path) -> str:
+    """A Greenhouse-shaped form behind a genuinely RENDERED CAPTCHA widget --
+    a real `g-recaptcha` element, not merely a referenced script tag (the
+    exact false positive CLAUDE.md's Phase 13 rules require this project's
+    DOM-element-based detection to avoid)."""
+    return _write(tmp_path, "greenhouse_captcha.html", _jsonld_block() + textwrap.dedent(f"""
+        <h1>{DEFAULT_JOB_TITLE}</h1>
+        <form>
+          {_GREENHOUSE_STANDARD_FIELDS}
+          <div class="g-recaptcha" data-sitekey="local-fixture-key">Verify you are human.</div>
+          <button type="submit">Submit Application</button>
+        </form>
+    """))
+
+
+def greenhouse_like_login_page(tmp_path: Path) -> str:
+    """A Greenhouse-shaped candidate sign-in wall reached instead of the
+    form."""
+    return _write(tmp_path, "greenhouse_login.html", textwrap.dedent("""
+        <h1>Sign in to continue your application</h1>
+        <form>
+          <label for="gh_user">Email</label><input id="gh_user" name="email" type="text">
+          <label for="gh_pass">Password</label><input id="gh_pass" name="password" type="password">
+          <button type="submit">Sign In</button>
+        </form>
+    """))
+
+
+def greenhouse_like_expired_page(tmp_path: Path) -> str:
+    """The page a closed Greenhouse posting shows: no form at all, and no
+    apply control -- the "job expired" terminal case."""
+    return _write(tmp_path, "greenhouse_expired.html", textwrap.dedent("""
+        <div>
+          <h1>This job is no longer accepting applications</h1>
+          <p>The position you are looking for has been closed. Browse our other openings.</p>
+        </div>
+    """))
+
+
+def greenhouse_like_confirmation_page(tmp_path: Path) -> str:
+    """A Greenhouse-shaped post-submission confirmation page, carrying both a
+    trusted success phrase and a confirmation id (the STRONG-evidence
+    case)."""
+    return _write(tmp_path, "greenhouse_confirmation.html", textwrap.dedent("""
+        <div>
+          <h1>Thank you for applying to Acme Corp</h1>
+          <p>Your application has been submitted. Confirmation Number: GH-2026-88134</p>
+        </div>
+    """))
+
+
+# --- Lever-shaped ------------------------------------------------------------
+
+def lever_like_application_page(
+    tmp_path: Path, *, with_cover_letter: bool = True, with_unknown_question: bool = False,
+    title: str = DEFAULT_JOB_TITLE, company: str = DEFAULT_JOB_COMPANY,
+) -> str:
+    """A complete Lever-shaped application form. Lever's real DOM uses
+    `urls[...]`/`cards[...][fieldN]` input names, which is precisely why the
+    normalized form model must map on LABEL text rather than on a provider's
+    field-name convention."""
+    return _provider_form_page(
+        tmp_path, "lever_form.html", _LEVER_STANDARD_FIELDS,
+        sponsorship=_LEVER_SPONSORSHIP_QUESTION,
+        unknown=_LEVER_UNKNOWN_QUESTION if with_unknown_question else "",
+        cover_letter=_LEVER_COVER_LETTER if with_cover_letter else "",
+        title=title, company=company,
+    )
+
+
+def lever_like_form_changed_page(tmp_path: Path) -> str:
+    changed_standard = _LEVER_STANDARD_FIELDS.replace(
+        '<label for="org">Current company</label><input id="org" name="org" type="text">',
+        '<label for="github">GitHub URL</label><input id="github" name="urls[GitHub]" type="text">',
+    )
+    return _provider_form_page(
+        tmp_path, "lever_form_changed.html", changed_standard, sponsorship=_LEVER_SPONSORSHIP_QUESTION,
+    )
+
+
+def lever_like_captcha_page(tmp_path: Path) -> str:
+    return _write(tmp_path, "lever_captcha.html", _jsonld_block() + textwrap.dedent(f"""
+        <h1>{DEFAULT_JOB_TITLE}</h1>
+        <form>
+          {_LEVER_STANDARD_FIELDS}
+          <iframe id="hcaptcha-frame" src="about:blank" class="h-captcha captcha-widget"
+                  style="width:300px;height:80px;"></iframe>
+          <button type="submit">Submit Application</button>
+        </form>
+    """))
+
+
+def lever_like_login_page(tmp_path: Path) -> str:
+    return _write(tmp_path, "lever_login.html", textwrap.dedent("""
+        <h1>Sign in to apply</h1>
+        <form>
+          <label for="lv_user">Email</label><input id="lv_user" name="email" type="text">
+          <label for="lv_pass">Password</label><input id="lv_pass" name="password" type="password">
+          <button type="submit">Sign In</button>
+        </form>
+    """))
+
+
+def lever_like_expired_page(tmp_path: Path) -> str:
+    return _write(tmp_path, "lever_expired.html", textwrap.dedent("""
+        <div>
+          <h1>Job not found</h1>
+          <p>This posting is no longer available. See all open roles.</p>
+        </div>
+    """))
+
+
+def lever_like_confirmation_page(tmp_path: Path) -> str:
+    """A Lever-shaped confirmation page with a trusted phrase but NO
+    confirmation id -- the MODERATE-evidence case, deliberately distinct
+    from the Greenhouse fixture above so both grades are exercised.
+
+    The filename deliberately avoids every substring in
+    `app.applications.confirmation_evidence._URL_CONFIRMATION_HINTS`
+    ("thank"/"confirm"/"success"/"received"/"complete"): the `file://` URL
+    IS the page's URL, and a hint in it would supply a second corroborating
+    signal and silently upgrade this fixture to STRONG, defeating its whole
+    purpose."""
+    return _write(tmp_path, "lever_applied.html", textwrap.dedent("""
+        <div>
+          <h1>Application received</h1>
+          <p>We have received your application and will be in touch.</p>
+        </div>
+    """))
+
+
+def provider_like_identity_mismatch_pages(tmp_path: Path, *, provider: str) -> tuple[str, str]:
+    """Two genuinely different requisitions on the same provider: the session
+    is opened against the first, and the live page ends up on the second.
+    Returns (session_url, other_job_url), both carrying a distinct
+    requisition-shaped `job_id` query token so
+    `app.applications.job_identity.verify_job_identity` can CONFIDENTLY
+    extract one from each side (its whole design is to stay UNVERIFIABLE
+    rather than guess when it cannot)."""
+    other = _provider_form_page(
+        tmp_path, f"{provider}_other_requisition.html",
+        _GREENHOUSE_STANDARD_FIELDS if provider == "greenhouse" else _LEVER_STANDARD_FIELDS,
+        title="Frontend Software Engineer", company="Globex Industries",
+    )
+    session_page = _write(tmp_path, f"{provider}_session_landing.html", textwrap.dedent(f"""
+        <div><h1>{DEFAULT_JOB_TITLE}</h1><p>Job description for the requisition this session opened.</p></div>
+    """))
+    return f"{session_page}?job_id=778811", f"{other}?job_id=990022"

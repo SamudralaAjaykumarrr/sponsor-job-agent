@@ -1176,6 +1176,27 @@ def application_capability_matrix_page(request: Request):
     return templates.TemplateResponse(request, "application_capability_matrix.html", {"matrix": matrix})
 
 
+@app.get("/applications/execution-contract", response_class=HTMLResponse)
+def provider_execution_contract_page(request: Request):
+    """Real Provider Execution V1: the unified seven-flag provider EXECUTION
+    contract (app.applications.execution_contract). Read-only and wholly
+    derived -- it owns no capability facts of its own, so it can never
+    inflate one; it exists so a reader can see form-discovery/fill/upload/
+    assist capability and SUBMISSION capability side by side and confirm
+    they are genuinely separate columns."""
+    from app.applications import execution_contract
+
+    matrix = execution_contract.build_matrix()
+    return templates.TemplateResponse(request, "provider_execution_contract.html", {"matrix": matrix})
+
+
+@app.get("/api/applications/execution-contract")
+def provider_execution_contract_api():
+    from app.applications import execution_contract
+
+    return {"providers": [c.as_dict() for c in execution_contract.all_contracts()]}
+
+
 # --- Application-lifecycle-exception-resume-v1: consumer board/detail -------
 
 @app.get("/applications/board", response_class=HTMLResponse)

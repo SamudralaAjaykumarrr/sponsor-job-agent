@@ -1511,6 +1511,69 @@ def _m056_application_blockers_table(conn, backend: str) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_application_blockers_execution ON application_blockers (execution_id)")
 
 
+def _m057_application_document_bindings_table(conn, backend: str) -> None:
+    """Real Provider Execution V1: durable proof of WHICH document artifact
+    was placed into WHICH provider form field, for WHICH job.
+
+    The project already hashed a job's resume artifact in two places
+    (`application_executions.resume_artifact_hash`,
+    `browser_assist_sessions.resume_artifact_hash`), but neither records the
+    binding itself -- the (job, resume variant, artifact hash, filename,
+    provider upload target, moment) tuple that proves the file actually
+    handed to a real ATS field was this job's own tailored resume and not a
+    silently substituted one. That tuple is what this table stores, and it
+    is APPEND-ONLY: every upload attempt is its own row, so a re-upload
+    after a form change leaves both observations intact rather than
+    overwriting history (mirroring application_approvals/
+    application_receipts/capability_evidence's existing append-only
+    convention).
+
+    Deliberately NOT unique on (execution_id, provider_field_id): a genuinely
+    multi-step form can legitimately present the same upload target twice
+    across two attempts, and a durable audit log must record both.
+    `verified` is the honest outcome flag -- 0 means the binding was prepared
+    but the upload was not confirmed to have landed, never silently dropped.
+    Booleans stay INTEGER in both backends per CLAUDE.md's Phase 6 rule."""
+    id_column = "id BIGSERIAL PRIMARY KEY" if backend == "postgres" else "id INTEGER PRIMARY KEY AUTOINCREMENT"
+    conn.execute(
+        f"""CREATE TABLE IF NOT EXISTS application_document_bindings (
+            {id_column},
+            binding_id TEXT NOT NULL,
+            job_id INTEGER NOT NULL,
+            execution_id TEXT NOT NULL DEFAULT '',
+            session_id TEXT NOT NULL DEFAULT '',
+            provider TEXT NOT NULL DEFAULT '',
+            document_kind TEXT NOT NULL,
+            artifact_path TEXT NOT NULL DEFAULT '',
+            artifact_filename TEXT NOT NULL DEFAULT '',
+            artifact_sha256 TEXT NOT NULL DEFAULT '',
+            resume_variant_id TEXT NOT NULL DEFAULT '',
+            provider_field_id TEXT NOT NULL DEFAULT '',
+            provider_field_label TEXT NOT NULL DEFAULT '',
+            checkpoint TEXT NOT NULL DEFAULT '',
+            verified INTEGER NOT NULL DEFAULT 0,
+            detail TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_application_document_bindings_binding_id "
+        "ON application_document_bindings (binding_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_application_document_bindings_job "
+        "ON application_document_bindings (job_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_application_document_bindings_execution "
+        "ON application_document_bindings (execution_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_application_document_bindings_session "
+        "ON application_document_bindings (session_id)"
+    )
+
+
 MIGRATIONS: list[tuple[int, str, Callable]] = [
     (2, "phase6_worker_identity_columns", _m002_worker_identity_columns),
     (3, "phase6_schema_drift_table", _m003_schema_drift_table),
@@ -1567,6 +1630,7 @@ MIGRATIONS: list[tuple[int, str, Callable]] = [
     (54, "application_approvals_table", _m054_application_approvals_table),
     (55, "application_receipts_table", _m055_application_receipts_table),
     (56, "application_blockers_table", _m056_application_blockers_table),
+    (57, "application_document_bindings_table", _m057_application_document_bindings_table),
 ]
 
 # Version 1 is the implicit Phase 1-5 baseline schema, applied by

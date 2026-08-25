@@ -33,7 +33,6 @@ SUBMISSION_STATUS_UNKNOWN (if a submission may have been in flight) -- this
 module makes no claim of cross-process browser reattachment."""
 
 import hashlib
-import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -58,6 +57,7 @@ from app.applications.apply_entry import (
 )
 from app.applications import spa_events, workday_tenant
 from app.applications.confirmation_evidence import classify_confirmation_evidence
+from app.applications.confirmation_parser import parse_confirmation_text
 from app.applications.domain_allowlist import is_allowed_host_for_session
 from app.applications.dynamic_validation import AdvanceAttempt, AdvanceOutcome, classify_advance_attempt
 from app.applications.job_identity import (
@@ -118,19 +118,12 @@ _NEXT_BUTTON_PHRASES = ("next", "continue", "save and continue", "next step")
 # tuple is FINAL submit text only.
 _SUBMIT_BUTTON_PHRASES = ("submit application", "submit your application", "submit", "send application")
 _MFA_PHRASES = ("verification code", "authentication code", "two-factor", "2fa", "one-time code", "otp")
-_SUCCESS_PHRASES = (
-    "thank you for applying", "application received", "application submitted", "successfully applied",
-    "we've received your application", "we have received your application",
-    "your application has been submitted", "thank you for your application", "thank you -- your application",
-)
-# CLAUDE.md Phase 11 section 36: "you already applied" is evidence of a
-# PRIOR application, not a fresh success -- must never be folded into
-# _SUCCESS_PHRASES / a fabricated new CONFIRMED event.
-_DUPLICATE_APPLICATION_PHRASES = (
-    "you have already applied", "already applied to this position", "already applied for this job",
-    "you already applied", "application already submitted", "already submitted an application",
-)
-_CONFIRMATION_ID_RE = re.compile(r"(?:confirmation|reference|application)\s*(?:number|id|#)?\s*[:\-]?\s*([A-Z0-9][A-Z0-9\-]{3,})", re.I)
+# Real Provider Execution V1: the success/duplicate/confirmation-id tables
+# that used to live here are now owned by
+# `app.applications.confirmation_parser` -- the SINGLE source, so the exact
+# production phrase tables can be exercised against a local fixture's text
+# without a live browser. This module never maintains a second, parallel
+# copy (the same rule Phase 11 established for apply-entry phrases).
 
 
 @dataclass
@@ -161,6 +154,13 @@ class FillOutcome:
     filled: list[str] = field(default_factory=list)
     unresolved: list[str] = field(default_factory=list)
     uploads: list[str] = field(default_factory=list)
+    # Real Provider Execution V1: one entry per file that was ACTUALLY
+    # accepted by a real form field, carrying enough to bind the artifact
+    # durably (see app.applications.document_binding). The DB write itself
+    # deliberately happens in `app.applications.browser_assist` -- the
+    # orchestration layer that owns session/execution identity -- rather
+    # than here, so this module stays a DOM engine.
+    upload_details: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -711,6 +711,7 @@ class _LiveSession:
             outcome.filled.extend(extra.filled)
             outcome.unresolved.extend(extra.unresolved)
             outcome.uploads.extend(extra.uploads)
+            outcome.upload_details.extend(extra.upload_details)
         return outcome
 
     def _fill_pass(self, raw_fields: list[dict], application_fields: list[ApplicationField]) -> FillOutcome:
@@ -744,6 +745,12 @@ class _LiveSession:
                     if self._upload_one(rf, value):
                         outcome.filled.append(label)
                         outcome.uploads.append(label)
+                        outcome.upload_details.append({
+                            "canonical_field_id": app_field.field_id,
+                            "provider_field_id": rf.get("name") or rf.get("id") or "",
+                            "provider_field_label": label,
+                            "artifact_path": value,
+                        })
                     else:
                         outcome.unresolved.append(label)
                 elif rf.get("required"):
@@ -878,22 +885,17 @@ class _LiveSession:
             text = self.page.inner_text("body")
         except Exception:  # noqa: BLE001
             text = ""
-        lowered = text.lower()
-        # CLAUDE.md Phase 11 section 36: "you already applied" is evidence
-        # of a PRIOR application, checked before (and returned distinctly
-        # from) the ordinary success-phrase match below -- it must never be
-        # folded into a fresh `confirmed=True` event.
-        if any(p in lowered for p in _DUPLICATE_APPLICATION_PHRASES):
+        # Real Provider Execution V1: the text-side observation now comes
+        # from the shared, pure `app.applications.confirmation_parser`
+        # (identical tables and identical ordering -- duplicate-application
+        # evidence is still checked FIRST and returned distinctly, per
+        # CLAUDE.md Phase 11 section 36; a real success PHRASE match is still
+        # required, per section 35). Only the ownership of the tables moved.
+        parsed = parse_confirmation_text(text)
+        if parsed.already_applied:
             return ConfirmationOutcome(confirmed=False, current_url=current_url, already_applied=True)
-        # CLAUDE.md Phase 11 section 35: a real success PHRASE match is
-        # required -- text that merely mentions "confirmation" in passing
-        # (e.g. "Submit your application to receive confirmation") must
-        # never count. `_SUCCESS_PHRASES` are all deliberately affirmative,
-        # completed-action phrases ("thank you for applying"), never a bare
-        # noun like "confirmation" alone.
-        phrase_matched = any(p in lowered for p in _SUCCESS_PHRASES)
-        match = _CONFIRMATION_ID_RE.search(text)
-        confirmation_id = match.group(1) if match else ""
+        phrase_matched = parsed.phrase_matched
+        confirmation_id = parsed.confirmation_id
         # CLAUDE.md Phase 13 sections 49-51: grade the evidence STRENGTH
         # before deciding `confirmed` -- only STRONG/MODERATE evidence may
         # ever confirm (see ConfirmationGrade.confirms()); a lone
@@ -907,11 +909,9 @@ class _LiveSession:
         if not grade.confirms():
             return ConfirmationOutcome(confirmed=False, current_url=current_url,
                                         evidence_strength=grade.strength.value)
-        snippet = text.strip()[:300]
-        fingerprint = hashlib.sha256(snippet.encode("utf-8")).hexdigest()[:24]
         return ConfirmationOutcome(
             confirmed=True, current_url=current_url, confirmation_id=confirmation_id,
-            confirmation_text_fingerprint=fingerprint, evidence_strength=grade.strength.value,
+            confirmation_text_fingerprint=parsed.text_fingerprint, evidence_strength=grade.strength.value,
         )
 
     def _do_close(self) -> None:

@@ -207,6 +207,7 @@ import os
 from app.applications import approval as _approval
 from app.applications import browser_runtime
 from app.applications import checkpoints
+from app.applications import document_binding
 from app.applications import receipts as _receipts
 from app.applications import repo as _executions_repo
 from app.applications import spa_events
@@ -346,14 +347,28 @@ def _resolve_step_fields(outcome: "browser_runtime.DiscoveryOutcome", session: d
     fields = {"step_confidence": outcome.step_confidence, "stage": outcome.stage,
               "entry_detection_result": outcome.entry_detection_result,
               "iframe_used": 1 if outcome.iframe_used else 0, "shadow_dom_used": 1 if outcome.shadow_dom_used else 0}
+    # CLAUDE.md Phase 11 section 19 / Phase 12: `total_steps_if_known` is a
+    # KNOWN total, and may ONLY ever be persisted from a genuinely parsed
+    # (EXACT) "Step N of M" reading. `outcome.total_steps_hint` (2 if a
+    # Next/Continue control is visible, else 1) is a HINT, not a reading --
+    # it says "there is probably at least one more step", which is not the
+    # same claim at all.
+    #
+    # Real Provider Execution V1 fixed a real bug here: both branches below
+    # previously fell back to `total_steps_hint`, so EVERY ordinary
+    # single-page session persisted `total_steps_if_known=1` alongside
+    # `step_confidence='UNKNOWN'` -- precisely the invented total the rule
+    # forbids, and precisely what `app.applications.doctor.
+    # _check_invalid_step_progress`'s `invented_total_steps` check exists to
+    # catch (it fired on every real single-page session, which this
+    # feature's own Greenhouse/Lever E2E run surfaced). A previously-known
+    # genuine total is still carried forward; a guess is never introduced.
+    carried_total = session.get("total_steps_if_known")
     if outcome.step_confidence == StepConfidence.EXACT.value and outcome.current_step_observed:
         fields["current_step"] = outcome.current_step_observed
-        if outcome.total_steps_observed:
-            fields["total_steps_if_known"] = outcome.total_steps_observed
-        else:
-            fields["total_steps_if_known"] = outcome.total_steps_hint or session.get("total_steps_if_known")
+        fields["total_steps_if_known"] = outcome.total_steps_observed or carried_total
     else:
-        fields["total_steps_if_known"] = outcome.total_steps_hint or session.get("total_steps_if_known")
+        fields["total_steps_if_known"] = carried_total
 
     if not outcome.pause_reason and session.get("stage"):
         try:
@@ -402,6 +417,61 @@ def _record_checkpoint_for_session(session: dict) -> None:
         EntryStage.LANDING_PAGE.value, EntryStage.APPLICATION_ENTRY.value,
     ):
         checkpoints.record_checkpoint(session["session_id"], checkpoints.CheckpointStage.ENTRY_REACHED, **kwargs)
+
+
+_DOCUMENT_KIND_BY_FIELD_ID = {
+    "resume_file": document_binding.DocumentKind.RESUME,
+    "cover_letter_file": document_binding.DocumentKind.COVER_LETTER,
+}
+
+
+def _record_document_bindings(session: dict, fill_result: "browser_runtime.FillOutcome", *,
+                               form_fingerprint: str = "") -> list[dict]:
+    """Real Provider Execution V1 (the brief's DOCUMENT UPLOAD requirement):
+    every file that a REAL form field actually accepted gets a durable,
+    append-only binding row proving WHICH artifact went to WHICH provider
+    field for WHICH job.
+
+    The artifact is re-verified against the job here
+    (`document_binding.verify_artifact_matches_job`) rather than trusted:
+    that is the "never silently substitute another resume" guard, and a
+    failing check is recorded as an UNVERIFIED binding (with the reason)
+    instead of being quietly dropped -- an audit log that omits the
+    suspicious case would be worse than useless. Best-effort throughout: a
+    binding-log failure must never break a real browser session, matching
+    `checkpoints`/`spa_events`' own contract."""
+    recorded: list[dict] = []
+    job_id = session.get("job_id")
+    details = getattr(fill_result, "upload_details", []) or []
+    if not job_id or not details:
+        return recorded
+    # Only read the job when there is genuinely something to bind, so an
+    # ordinary no-upload discovery pass costs nothing extra.
+    job = get_job(job_id)
+    resume_variant_id = (job.promoted_resume_variant_id or "") if job is not None else ""
+    for detail in details:
+        kind = _DOCUMENT_KIND_BY_FIELD_ID.get(detail.get("canonical_field_id") or "")
+        if kind is None:
+            # A file field that isn't one of our own generated documents
+            # (e.g. a portfolio the candidate must attach themselves) -- we
+            # never uploaded one of OUR artifacts to it, so there is nothing
+            # to bind.
+            continue
+        artifact_path = detail.get("artifact_path") or ""
+        check = document_binding.verify_artifact_matches_job(job_id, artifact_path)
+        row = document_binding.record_binding_safe(
+            job_id=job_id, document_kind=kind, artifact_path=artifact_path,
+            provider=session.get("provider") or "", execution_id=session.get("execution_id") or "",
+            session_id=session.get("session_id") or "", provider_field_id=detail.get("provider_field_id") or "",
+            provider_field_label=detail.get("provider_field_label") or "", resume_variant_id=resume_variant_id,
+            checkpoint=f"browser_assist:form_fingerprint={form_fingerprint[:16]}" if form_fingerprint
+            else "browser_assist",
+            verified=check.ok, artifact_sha256=check.sha256,
+            detail=check.reason or "uploaded to the live form field and verified as this job's own artifact",
+        )
+        if row is not None:
+            recorded.append(row)
+    return recorded
 
 
 def _apply_discovery_outcome(session: dict, outcome: "browser_runtime.DiscoveryOutcome",
@@ -487,6 +557,7 @@ def _apply_discovery_outcome_raw(session: dict, outcome: "browser_runtime.Discov
         )
 
     fill_result = browser_runtime.fill_fields(session_id, outcome.fields, application_fields)
+    _record_document_bindings(session, fill_result, form_fingerprint=outcome.fingerprint)
 
     prior_fingerprint = session.get("form_fingerprint") or ""
     form_changed = check_drift and bool(prior_fingerprint) and prior_fingerprint != outcome.fingerprint

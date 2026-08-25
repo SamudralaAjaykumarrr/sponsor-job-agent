@@ -29,3 +29,14 @@ def test_legitimate_answers_never_overmatch():
     for choice in legitimate:
         matched = any(p in _normalize(choice) for p in DECLINE_TO_SELF_IDENTIFY_PHRASES)
         assert not matched, f"'{choice}' incorrectly matched a decline-to-self-identify phrase"
+
+
+def test_uncontracted_do_not_want_form_matches():
+    """Real Provider Execution V1 regression: "I do not want to answer" is
+    the exact choice string on the real Greenhouse EEOC payload this project
+    captured live, and it previously matched NOTHING -- only the contracted
+    "i dont want to answer" and the different-verb "i do not wish to answer"
+    were listed."""
+    assert any(p in _normalize("I do not want to answer") for p in DECLINE_TO_SELF_IDENTIFY_PHRASES)
+    choices = ["Yes, I have a disability", "No, I do not have a disability", "I do not want to answer"]
+    assert _decline_option(choices) == "I do not want to answer"

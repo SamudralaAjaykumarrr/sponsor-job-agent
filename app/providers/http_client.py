@@ -22,10 +22,21 @@ class ResponseTooLargeError(Exception):
 
 class ProviderHTTPError(Exception):
     """Wraps a final (non-retryable, or retries-exhausted) HTTP/network failure
-    with the provider name for clearer logs/discovery_log entries."""
+    with the provider name for clearer logs/discovery_log entries.
 
-    def __init__(self, provider: str, message: str):
+    Real Provider Execution V1 added the optional `status_code`: an
+    application-layer adapter must be able to tell a PERMANENT "this posting
+    is gone" (404/410) apart from a TEMPORARY network/5xx failure without
+    string-parsing the message, so it can honestly report an expired posting
+    instead of a transient blip (the same permanent-vs-temporary distinction
+    CLAUDE.md's Phase 4 registry-lifecycle rules already draw). It is None
+    for a network/transport failure, where there genuinely is no status
+    code -- never guessed. Purely additive: every existing raise site and
+    `except ProviderHTTPError` handler is unaffected."""
+
+    def __init__(self, provider: str, message: str, status_code: Optional[int] = None):
         self.provider = provider
+        self.status_code = status_code
         super().__init__(f"{provider}: {message}")
 
 
@@ -82,7 +93,8 @@ def request_with_retries(
 
         if resp.status_code == 429 or resp.status_code >= 500:
             if attempt >= max_retries:
-                raise ProviderHTTPError(provider, f"HTTP {resp.status_code} after {attempt + 1} attempt(s)")
+                raise ProviderHTTPError(provider, f"HTTP {resp.status_code} after {attempt + 1} attempt(s)",
+                                         status_code=resp.status_code)
             wait = _retry_after_seconds(resp)
             if wait is None:
                 wait = backoff
@@ -94,7 +106,8 @@ def request_with_retries(
             continue
 
         if resp.status_code >= 400:
-            raise ProviderHTTPError(provider, f"HTTP {resp.status_code}: {resp.text[:200]}")
+            raise ProviderHTTPError(provider, f"HTTP {resp.status_code}: {resp.text[:200]}",
+                                     status_code=resp.status_code)
 
         content_length = resp.headers.get("content-length")
         if content_length:

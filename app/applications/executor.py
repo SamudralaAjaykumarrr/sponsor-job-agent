@@ -21,7 +21,7 @@ from typing import Optional
 
 from app import config
 from app.applications import approval, duplicate, rate_limit, receipts, repo
-from app.applications import blockers
+from app.applications import blockers, document_binding
 from app.applications.eligibility import evaluate_executor_eligibility
 from app.applications.fingerprint import check_and_record_baseline
 from app.applications.models import AutomationPolicy, ExecutionMode, ExecutionStatus, PolicyReason
@@ -128,6 +128,51 @@ def _verify_resume_artifact(job: Job, execution: dict) -> tuple[bool, str, str]:
     if stored_hash and stored_hash != digest:
         return False, "resume artifact hash changed since this execution began -- reconciliation required", digest
     return True, "", digest
+
+
+_DOCUMENT_KIND_BY_FIELD_ID = {
+    "resume_file": document_binding.DocumentKind.RESUME,
+    "cover_letter_file": document_binding.DocumentKind.COVER_LETTER,
+}
+
+
+def _record_document_selection_bindings(job: Job, execution_id: str, provider_name: str, mapping,
+                                         form_fingerprint: str) -> list[dict]:
+    """Real Provider Execution V1 (the brief's DOCUMENT UPLOAD requirement,
+    headless/draft half): records WHICH generated artifact was SELECTED for
+    WHICH provider upload field on this execution.
+
+    Deliberately `verified=0`: this path prepares a draft, it never performs
+    a network upload (no real provider in this project has a tested
+    submission interface), so claiming a verified upload here would be
+    exactly the kind of inflated evidence CLAUDE.md forbids. The
+    browser-assist path records `verified=1` bindings, because there the
+    file genuinely was accepted by a live form field. Best-effort: an
+    audit-log failure never fails an otherwise-good preparation."""
+    recorded: list[dict] = []
+    if job.id is None:
+        return recorded
+    for m in mapping.mapped:
+        app_field = m.application_field
+        if app_field is None or not m.will_fill:
+            continue
+        kind = _DOCUMENT_KIND_BY_FIELD_ID.get(app_field.field_id)
+        if kind is None:
+            continue
+        artifact_path = app_field.verified_value or ""
+        check = document_binding.verify_artifact_matches_job(job.id, artifact_path)
+        row = document_binding.record_binding_safe(
+            job_id=job.id, document_kind=kind, artifact_path=artifact_path, provider=provider_name,
+            execution_id=execution_id, provider_field_id=m.form_field.name or "",
+            provider_field_label=m.form_field.label or "",
+            resume_variant_id=job.promoted_resume_variant_id or "",
+            checkpoint=f"executor:form_fingerprint={form_fingerprint[:16]}" if form_fingerprint else "executor",
+            verified=False, artifact_sha256=check.sha256,
+            detail=check.reason or "selected for upload during draft preparation (no network upload performed)",
+        )
+        if row is not None:
+            recorded.append(row)
+    return recorded
 
 
 def _auto_submit_permitted(job: Job, mode, eligibility, provider, validation) -> tuple[bool, str]:
@@ -320,6 +365,7 @@ def process_execution(execution_id: str, *, allow_submission: bool = True, appro
         repo.log_event(execution_id, job_id, "form_mapped", detail=f"mapped={len(mapping.mapped)}",
                         correlation_id=correlation_id)
         draft = provider.fill_draft(form, mapping)
+        _record_document_selection_bindings(job, execution_id, provider.name, mapping, fingerprint)
     else:
         from app.applications.models import DraftResult, MappingResult
 
