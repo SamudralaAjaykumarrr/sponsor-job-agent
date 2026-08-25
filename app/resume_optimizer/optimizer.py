@@ -54,15 +54,36 @@ _SKILL_GAP_CATEGORIES = (
 )
 
 
+_BULLET_CAP_BY_MODE = {"HONEST": 5, "AGGRESSIVE": 6}
+_PROJECT_CAP_BY_MODE = {"HONEST": 3, "AGGRESSIVE": 4}
+
+
 def generate_optimized_resume_content(
     profile: CandidateProfile, job_title: str, job_description: str,
     jd_analysis: JDAnalysisResult, matches: list[RequirementMatch], graph: EvidenceGraph | None = None,
+    *, mode: str = "HONEST",
 ) -> ResumeContent:
     """CLAUDE.md sections 21-27, JD intelligence v3: strongest truthful
     alignment -- reorders and selects only verified content, never invents
     any. `graph` is optional (rebuilt from `profile` when omitted, e.g. by a
     direct caller that doesn't already have one) so `optimize_resume()` can
-    pass its already-computed graph without a second, redundant build."""
+    pass its already-computed graph without a second, redundant build.
+
+    `mode` (Apply/Automation Settings V1's Resume optimization setting) is
+    HONEST or AGGRESSIVE only -- OFF is handled entirely upstream (see
+    app.resume_optimizer.scheduler._find_jobs_needing_optimization and
+    app.agent.orchestrator._run_resume_stage, which simply never call this
+    function for auto-generated jobs when the setting is OFF; a manual
+    Generate/Regenerate Resume action always still tailors, per this
+    project's "never gate a manual action" convention). AGGRESSIVE widens
+    HOW MUCH of the candidate's own verified content is included (more
+    bullets/projects) -- it never changes WHERE that content comes from, so
+    every word remains sourced from `profile`'s verified_bullets/skills
+    exactly as HONEST mode already guarantees, and the unmodified
+    check_resume_claims() firewall in optimize_resume() below still runs
+    unconditionally on the result either way."""
+    bullet_cap = _BULLET_CAP_BY_MODE.get(mode, _BULLET_CAP_BY_MODE["HONEST"])
+    project_cap = _PROJECT_CAP_BY_MODE.get(mode, _PROJECT_CAP_BY_MODE["HONEST"])
     graph = graph if graph is not None else build_evidence_graph(profile)
     role = classify_role(job_title, jd_analysis, graph)
     relevance = relevance_mod.build_relevance_model(jd_analysis, matches, graph, role, job_description)
@@ -101,7 +122,7 @@ def generate_optimized_resume_content(
     experience = [
         ExperienceBlock(
             company=e.company, title=e.title, start_date=e.start_date, end_date=e.end_date,
-            location=e.location, bullets=relevance_mod.select_bullets(list(e.verified_bullets), relevance, cap=5),
+            location=e.location, bullets=relevance_mod.select_bullets(list(e.verified_bullets), relevance, cap=bullet_cap),
         )
         for e in experience_sorted
     ]
@@ -116,7 +137,7 @@ def generate_optimized_resume_content(
             name=p.name, description=p.description,
             bullets=relevance_mod.select_bullets(list(p.verified_bullets), relevance, cap=4), url=p.url,
         )
-        for p in projects_sorted[:3]
+        for p in projects_sorted[:project_cap]
     ]
 
     education = [
@@ -160,7 +181,22 @@ def _variant_dir(job_id: int, variant_id: str) -> Path:
     return d
 
 
-def optimize_resume(job_id: int, *, force: bool = False) -> OptimizeResult:
+def _effective_mode(mode: str | None) -> str:
+    """Resolves the Resume optimization mode to actually generate with.
+    OFF only ever gates whether an AUTOMATIC caller invokes this function at
+    all (see app.resume_optimizer.scheduler._find_jobs_needing_optimization)
+    -- a caller that reaches this point (manual Generate/Regenerate Resume,
+    or an explicit `mode=` override) always gets real, tailored content, so
+    OFF resolves to HONEST here rather than silently degrading."""
+    from app import apply_settings
+
+    resolved = mode if mode is not None else apply_settings.get_settings().resume_optimization_mode
+    if resolved == apply_settings.ResumeOptimizationMode.OFF.value:
+        return apply_settings.ResumeOptimizationMode.HONEST.value
+    return resolved
+
+
+def optimize_resume(job_id: int, *, force: bool = False, mode: str | None = None) -> OptimizeResult:
     """CLAUDE.md sections 37, 58, 72: idempotent + concurrency-safe. Same
     job/JD-fingerprint/profile-version/optimizer-version never regenerates
     an identical artifact, and two concurrent callers for the identical
@@ -172,10 +208,24 @@ def optimize_resume(job_id: int, *, force: bool = False) -> OptimizeResult:
     code change to this module -- but if the recomputed identity is still
     identical to an existing row, that existing row is what gets returned
     (the unique index does not allow a genuine duplicate row for an
-    unchanged identity, by design)."""
+    unchanged identity, by design).
+
+    `mode` (HONEST/AGGRESSIVE, resolved from the Apply/Automation Settings V1
+    Resume optimization setting when omitted -- see _effective_mode)
+    influences the CONTENT generated below, but is deliberately NOT part of
+    the (job_id, jd_fingerprint, profile_version, OPTIMIZER_VERSION) identity
+    tuple -- that identity is a fixed, established contract (see
+    test_resume_optimizer_generation.py's own uniqueness-index test, which
+    asserts a duplicate claim for that exact tuple always raises). A mode
+    change for a job that already has a current READY variant therefore
+    requires `force=True` (the existing "Force Regenerate" dashboard button)
+    to take effect -- exactly the same escape hatch this docstring already
+    documents for "recompute from scratch after a code change"."""
     job = get_job(job_id)
     if job is None:
         raise ValueError(f"job {job_id} not found")
+
+    effective_mode = _effective_mode(mode)
 
     profile = load_profile()
     jd_fingerprint = compute_jd_fingerprint(job.title, job.company, job.description)
@@ -210,7 +260,9 @@ def optimize_resume(job_id: int, *, force: bool = False) -> OptimizeResult:
         raise
 
     variant_id = claimed["variant_id"]
-    resume = generate_optimized_resume_content(profile, job.title, job.description, jd_analysis, matches, graph)
+    resume = generate_optimized_resume_content(
+        profile, job.title, job.description, jd_analysis, matches, graph, mode=effective_mode,
+    )
 
     # Content-level truthfulness gate runs on the FULL, uncompressed resume
     # first: one_page.enforce_one_page() only ever removes/shortens content,

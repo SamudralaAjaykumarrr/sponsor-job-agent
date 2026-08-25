@@ -3,12 +3,12 @@
 {% block content %}
 <div class="page-header">
   <div>
-    <h1>Settings</h1>
-    <p class="subtitle">Agent tuning knobs take effect immediately -- no restart needed.</p>
+    <h1>Apply &amp; Automation Settings</h1>
+    <p class="subtitle">Configure how the agent prepares and applies for you -- no environment variables required.</p>
   </div>
 </div>
 
-{% if saved %}<div class="banner banner-good">Settings saved.</div>{% endif %}
+{% if saved_section %}<div class="banner banner-good">Settings saved.</div>{% endif %}
 {% if errors %}
 <div class="banner banner-bad">
   <strong>Could not save:</strong>
@@ -16,48 +16,265 @@
 </div>
 {% endif %}
 
+<!-- ===================== RESUME ===================== -->
 <section class="surface surface-pad" style="margin-bottom:1.25rem;">
-  <h2>Agent tuning</h2>
-  <p class="subtitle" style="margin-bottom:1rem;">These are read live by the agent's own cycle loop --
-    saving here changes behavior on the very next cycle, and is persisted (survives a restart).</p>
+  <h2>Resume</h2>
+  <form method="post" action="/settings/resume">
+    <div class="field-row">
+      <div class="field" style="flex:2; min-width:320px;">
+        <label>Resume optimization</label>
+        <div class="btn-row" style="margin-top:0.35rem;">
+          {% for mode in resume_modes %}
+          <label style="display:flex; align-items:center; gap:0.35rem; font-weight:500;">
+            <input type="radio" name="resume_optimization_mode" value="{{ mode }}"
+                   {% if apply_settings.resume_optimization_mode == mode %}checked{% endif %}>
+            {{ mode.title() }}
+          </label>
+          {% endfor %}
+        </div>
+        <div class="help-text">
+          <strong>Off</strong>: use your verified resume as-is; automatic tailoring only happens if you click Generate.
+          <strong>Honest</strong>: tailor wording, ordering, and emphasis using only your verified experience.
+          <strong>Aggressive</strong>: maximize truthful alignment and keyword coverage -- still never invents
+          experience, skills, employers, metrics, years, certifications, education, or immigration facts.
+        </div>
+      </div>
+      <div class="field">
+        <label style="display:flex; align-items:center; gap:0.5rem;">
+          <input type="checkbox" name="auto_approve_resume" value="true" {% if apply_settings.auto_approve_resume %}checked{% endif %}>
+          Auto-approve optimized resume
+        </label>
+        <div class="help-text">
+          When ON, a tailored resume skips manual review only after it passes every resume claim, one-page, and
+          ATS-parse check. When OFF, a generated resume waits on the job page for your "Approve &amp; use this resume"
+          click before it's used for an application.
+        </div>
+      </div>
+    </div>
+    <button class="btn btn-primary" type="submit">Save resume settings</button>
+  </form>
+</section>
+
+<!-- ===================== COVER LETTER ===================== -->
+<section class="surface surface-pad" style="margin-bottom:1.25rem;">
+  <h2>Cover Letter</h2>
+  <form method="post" action="/settings/cover-letter">
+    <div class="btn-row" style="margin:0.35rem 0 0.5rem;">
+      {% for policy in cover_letter_policies %}
+      <label style="display:flex; align-items:center; gap:0.35rem; font-weight:500;">
+        <input type="radio" name="cover_letter_policy" value="{{ policy }}"
+               {% if apply_settings.cover_letter_policy == policy %}checked{% endif %}>
+        {{ policy.replace('_', ' ').title() }}
+      </label>
+      {% endfor %}
+    </div>
+    <div class="help-text" style="margin-bottom:0.75rem;">
+      <strong>Off</strong>: never generate a cover letter. <strong>When requested</strong>: only when the job
+      description itself asks for one. <strong>Always</strong>: generate whenever the application safely supports
+      attaching one. A missing cover letter never blocks an otherwise-valid application.
+    </div>
+    <button class="btn btn-primary" type="submit">Save cover letter settings</button>
+  </form>
+</section>
+
+<!-- ===================== SUBMISSION ===================== -->
+<section class="surface surface-pad" style="margin-bottom:1.25rem;">
+  <h2>Submission</h2>
+  {% if needs_confirmation %}
+  <div class="banner banner-warn">
+    <strong>Confirm turning on Auto-submit</strong>
+    <ul style="margin:0.5rem 0 0.75rem 1.1rem;">
+      <li>Eligible applications may be submitted without another per-job confirmation click.</li>
+      <li>Only jobs that meet your configured limits and preferences are ever included.</li>
+      <li>All existing safety and provider-capability restrictions still apply -- nothing here overrides them.</li>
+      <li>A provider without verified submission support still stops for "Continue Application" -- it is never faked.</li>
+      <li>CAPTCHA, sign-in, one-time codes, legal questions, and unknown answers still pause for you.</li>
+    </ul>
+    <form method="post" action="/settings/submission">
+      <input type="hidden" name="submission_mode" value="{{ pending_submission_mode }}">
+      <label style="display:flex; align-items:center; gap:0.5rem; font-weight:600;">
+        <input type="checkbox" name="confirm_auto_submit" value="true" required>
+        I understand and want to turn on Auto-submit.
+      </label>
+      <button class="btn btn-cta-primary" type="submit" style="margin-top:0.6rem;">Confirm Auto-submit</button>
+    </form>
+  </div>
+  {% endif %}
+  <form method="post" action="/settings/submission">
+    <div class="btn-row" style="margin:0.35rem 0 0.5rem;">
+      <label style="display:flex; align-items:center; gap:0.35rem; font-weight:500;">
+        <input type="radio" name="submission_mode" value="REVIEW"
+               {% if apply_settings.submission_mode == 'REVIEW' %}checked{% endif %}>
+        Review before submit
+      </label>
+      <label style="display:flex; align-items:center; gap:0.35rem; font-weight:500;">
+        <input type="radio" name="submission_mode" value="AUTO_SUBMIT"
+               {% if apply_settings.submission_mode == 'AUTO_SUBMIT' %}checked{% endif %}>
+        Auto-submit
+      </label>
+    </div>
+    <div class="help-text" style="margin-bottom:0.75rem;">
+      <strong>Review before submit</strong> (default): we prepare everything automatically, then wait for your
+      approval at "Ready for approval". <strong>Auto-submit</strong>: eligible applications may be submitted
+      automatically -- only on providers with verified submission capability, and only when every existing safety
+      rule (full-time, sponsorship, identity, evidence, rate limits, no CAPTCHA/sign-in/legal blocker) passes.
+      Turning this on requires confirmation.
+    </div>
+    <button class="btn btn-primary" type="submit">Save submission settings</button>
+  </form>
+  <p class="help-text">Current: <span class="tag {{ 'tag-bad' if apply_settings.submission_mode == 'AUTO_SUBMIT' else 'tag-good' }}">
+    {{ 'AUTO-SUBMIT' if apply_settings.submission_mode == 'AUTO_SUBMIT' else 'REVIEW BEFORE SUBMIT' }}</span></p>
+</section>
+
+<!-- ===================== APPLICATION LIMITS ===================== -->
+<section class="surface surface-pad" style="margin-bottom:1.25rem;">
+  <h2>Application Limits</h2>
+  <p class="help-text" style="margin-bottom:0.75rem;">Protects against excessive or accidental applications. A value
+    of 0 for an optional limit means "no limit".</p>
   <form method="post" action="/settings">
     <div class="field-row">
-      {% for key, spec in specs.items() %}
+      {% for key, spec in limit_specs.items() if key != 'min_salary_usd' %}
       <div class="field">
         <label for="set-{{ key }}">{{ spec.label }}</label>
         <input type="number" id="set-{{ key }}" name="{{ key }}" min="{{ spec.min_value }}" max="{{ spec.max_value }}"
-               value="{{ values[key] }}" required>
+               value="{{ limit_values[key] }}" required>
+        <div class="help-text">{{ spec.help_text }}</div>
+      </div>
+      {% endfor %}
+    </div>
+    <button class="btn btn-primary" type="submit">Save application limits</button>
+  </form>
+</section>
+
+<!-- ===================== JOB PREFERENCES ===================== -->
+<section class="surface surface-pad" style="margin-bottom:1.25rem;">
+  <h2>Job Preferences</h2>
+  <p class="help-text" style="margin-bottom:0.75rem;">Narrows which already-eligible jobs are automatically prepared.
+    Leaving a field empty means "no restriction". Full-time remains the required employment type for any unattended
+    application, regardless of these preferences.</p>
+  <form method="post" action="/settings/preferences">
+    <div class="field-row">
+      <div class="field">
+        <label for="pref-preferred">Preferred titles / keywords</label>
+        <input type="text" id="pref-preferred" name="preferred_keywords" value="{{ apply_settings.preferred_keywords | join(', ') }}"
+               placeholder="backend, platform engineer">
+      </div>
+      <div class="field">
+        <label for="pref-excluded">Excluded titles / keywords</label>
+        <input type="text" id="pref-excluded" name="excluded_keywords" value="{{ apply_settings.excluded_keywords | join(', ') }}"
+               placeholder="staff, principal">
+      </div>
+      <div class="field">
+        <label for="pref-locations">Preferred locations</label>
+        <input type="text" id="pref-locations" name="locations" value="{{ apply_settings.locations | join(', ') }}"
+               placeholder="New York, Remote">
+      </div>
+    </div>
+    <div class="field-row">
+      <div class="field">
+        <label for="pref-include-co">Include companies</label>
+        <input type="text" id="pref-include-co" name="include_companies" value="{{ apply_settings.include_companies | join(', ') }}">
+      </div>
+      <div class="field">
+        <label for="pref-exclude-co">Exclude companies</label>
+        <input type="text" id="pref-exclude-co" name="exclude_companies" value="{{ apply_settings.exclude_companies | join(', ') }}">
+      </div>
+      <div class="field">
+        <label>Work arrangement</label>
+        <div class="btn-row" style="margin-top:0.35rem;">
+          {% for wa in work_arrangement_choices %}
+          <label style="display:flex; align-items:center; gap:0.3rem; font-weight:500;">
+            <input type="checkbox" name="work_arrangements" value="{{ wa }}"
+                   {% if wa in apply_settings.work_arrangements %}checked{% endif %}>
+            {{ wa.title() }}
+          </label>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+    <p class="help-text">Freshness cutoff is configured under Advanced Safety below (shared with discovery).</p>
+    <button class="btn btn-primary" type="submit">Save job preferences</button>
+  </form>
+
+  {% set salary_spec = limit_specs['min_salary_usd'] %}
+  <form method="post" action="/settings" style="margin-top:1rem; padding-top:0.9rem; border-top:1px solid var(--border);">
+    <div class="field" style="max-width:320px;">
+      <label for="set-min_salary_usd">{{ salary_spec.label }}</label>
+      <input type="number" id="set-min_salary_usd" name="min_salary_usd" min="{{ salary_spec.min_value }}"
+             max="{{ salary_spec.max_value }}" value="{{ limit_values['min_salary_usd'] }}" required>
+      <div class="help-text">{{ salary_spec.help_text }}</div>
+    </div>
+    <button class="btn btn-primary" type="submit">Save salary preference</button>
+  </form>
+</section>
+
+<!-- ===================== SPONSORSHIP & WORK AUTHORIZATION ===================== -->
+<section class="surface surface-pad" style="margin-bottom:1.25rem;">
+  <h2>Sponsorship &amp; Work Authorization</h2>
+  <p class="help-text" style="margin-bottom:0.75rem;">Read from your verified candidate profile
+    (<a href="/profile">Profile</a>) -- edit the facts themselves there, never here.</p>
+  <dl class="meta-grid" style="margin-bottom:0.9rem;">
+    <dt>Current work authorization</dt><dd>{{ profile_work_authorization.current_status }}</dd>
+    <dt>Requires future sponsorship</dt>
+    <dd>{{ requires_sponsorship_display }}</dd>
+    <dt>Sponsorship type needed</dt><dd>{{ profile_work_authorization.sponsorship_type_needed }}</dd>
+  </dl>
+  <p class="help-text" style="margin-bottom:0.75rem;">
+    <strong>Confirmed sponsorship</strong> (the job/employer explicitly says sponsorship is available) is always
+    eligible. <strong>Likely sponsorship</strong> (employer has historical sponsorship evidence, but this specific
+    role doesn't confirm it) is always review-only, never auto-submitted -- historical evidence is never presented
+    as current-role confirmation. A job that explicitly says no sponsorship now or in the future is always hard-skipped,
+    and this can never be changed from this page.
+  </p>
+  <form method="post" action="/settings/sponsorship">
+    <label style="display:flex; align-items:center; gap:0.5rem;">
+      <input type="checkbox" name="include_likely_sponsors" value="true" {% if apply_settings.include_likely_sponsors %}checked{% endif %}>
+      Also prepare (for your review) jobs with likely, historical-only sponsorship evidence
+    </label>
+    <div class="help-text">When off, only CONFIRMED_SPONSOR jobs are automatically prepared -- LIKELY_SPONSOR jobs
+      remain visible but are never auto-prepared.</div>
+    <button class="btn btn-primary" type="submit" style="margin-top:0.6rem;">Save sponsorship settings</button>
+  </form>
+</section>
+
+<!-- ===================== ADVANCED SAFETY ===================== -->
+<section class="surface surface-pad" style="margin-bottom:1.25rem;">
+  <h2>Advanced Safety</h2>
+  <p class="help-text" style="margin-bottom:0.85rem;">Agent tuning knobs take effect immediately -- no restart needed.</p>
+  <form method="post" action="/settings">
+    <div class="field-row">
+      {% for key, spec in agent_tuning_specs.items() %}
+      <div class="field">
+        <label for="set-{{ key }}">{{ spec.label }}</label>
+        <input type="number" id="set-{{ key }}" name="{{ key }}" min="{{ spec.min_value }}" max="{{ spec.max_value }}"
+               value="{{ agent_tuning_values[key] }}" required>
         <div class="help-text">{{ spec.help_text }}</div>
       </div>
       {% endfor %}
     </div>
     <button class="btn btn-primary" type="submit">Save settings</button>
   </form>
-</section>
 
-<section class="surface surface-pad" style="margin-bottom:1.25rem;">
-  <h2>Discovery providers</h2>
+  <h3 style="margin-top:1.25rem;">Discovery providers</h3>
   <p>Enabled: <strong>{{ enabled_providers | join(', ') or 'none' }}</strong></p>
   <p class="help-text">Provider selection is environment-configured (<code>ENABLED_PROVIDERS</code>) --
     see the full capability matrix on <a href="/providers">Providers</a>.</p>
-</section>
 
-<section class="surface surface-pad">
-  <h2>Safety flags <span class="faint">(display-only, environment-configured)</span></h2>
+  <h3 style="margin-top:1.25rem;">Safety flags <span class="faint">(diagnostics)</span></h3>
   <p class="help-text" style="margin-bottom:0.85rem;">
-    These never get a UI toggle on purpose -- CLAUDE.md requires every one of them stay off by
-    default and never be silently enabled. Flip them via environment variables and restart
-    <code>./start.sh</code> if you genuinely intend to change automation behavior.
+    Submission mode above is the product-facing control for Auto-submit. These lower-level flags remain
+    environment-configured diagnostics -- CLAUDE.md requires the executor/browser-assist flags stay off by default
+    and never be silently enabled outside an explicit, confirmed user action.
   </p>
   <dl class="meta-grid">
     <dt>Application executor</dt><dd><span class="tag {{ 'tag-good' if safety_flags.application_executor_enabled else 'tag-neutral' }}">{{ 'ON' if safety_flags.application_executor_enabled else 'OFF' }}</span></dd>
     <dt>Auto-prepare</dt><dd><span class="tag {{ 'tag-good' if safety_flags.application_auto_prepare_enabled else 'tag-neutral' }}">{{ 'ON' if safety_flags.application_auto_prepare_enabled else 'OFF' }}</span></dd>
-    <dt>Auto-submit</dt><dd><span class="tag {{ 'tag-bad' if safety_flags.auto_submit_enabled else 'tag-neutral' }}">{{ 'ON' if safety_flags.auto_submit_enabled else 'OFF (safe default)' }}</span></dd>
+    <dt>Auto-submit (AUTO_SUBMIT_ENABLED)</dt><dd><span class="tag {{ 'tag-bad' if safety_flags.auto_submit_enabled else 'tag-neutral' }}">{{ 'ON' if safety_flags.auto_submit_enabled else 'OFF (safe default)' }}</span> -- mirrors the Submission setting above</dd>
     <dt>Browser assist</dt><dd><span class="tag {{ 'tag-good' if safety_flags.browser_assist_enabled else 'tag-neutral' }}">{{ 'ON' if safety_flags.browser_assist_enabled else 'OFF' }}</span> ({{ 'HEADLESS' if safety_flags.browser_headless else 'VISIBLE' }})</dd>
     <dt>One-page resume required</dt><dd><span class="tag tag-neutral">{{ 'REQUIRED' if safety_flags.one_page_resume_required else 'not enforced' }}</span></dd>
     <dt>Resume optimization (background)</dt><dd><span class="tag {{ 'tag-good' if safety_flags.resume_optimization_enabled else 'tag-neutral' }}">{{ 'ON' if safety_flags.resume_optimization_enabled else 'OFF' }}</span></dd>
     <dt>Real ATS canary</dt><dd><span class="tag {{ 'tag-good' if safety_flags.real_ats_canary_enabled else 'tag-neutral' }}">{{ 'ON' if safety_flags.real_ats_canary_enabled else 'OFF' }}</span></dd>
-    <dt>Sponsorship policy</dt><dd>{{ sponsorship_policy }}</dd>
+    <dt>Sponsorship policy (internal)</dt><dd>{{ sponsorship_policy }}</dd>
   </dl>
 </section>
 {% endblock %}

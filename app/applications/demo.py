@@ -65,6 +65,17 @@ SCENARIOS: list[DemoScenario] = [
                  "timeout_after_submit", "reconcile"),
     DemoScenario("confirmed_submission", "Demo Confirmed Submission",
                  "Shows the full Ready to Apply -> Approve & Apply -> confirmed -> receipt loop.", "simple", ""),
+    # Apply/Automation Settings V1 section 13: an EXPLICIT, deterministic
+    # demonstration of the "application limit reached" experience -- never
+    # relies on the other demos' own real submit-attempt counts (see
+    # app.applications.rate_limit's demo-isolation fix, which excludes every
+    # is_test_fixture job from real rate-limit counting so the 8 scenarios
+    # above can never collide on a shared limit). This one instead wraps its
+    # own Approve & Apply in a short-lived, fully restored
+    # MAX_APPLICATIONS_PER_COMPANY_PER_DAY=0 override -- see run_demo.
+    DemoScenario("application_limit", "Demo Application Limit Reached",
+                 "Shows the friendly 'application limit reached' experience via a temporarily simulated "
+                 "(never real) limit -- your actual application limits are never touched.", "simple", ""),
 ]
 
 _BY_KEY: dict[str, DemoScenario] = {s.key: s for s in SCENARIOS}
@@ -124,11 +135,34 @@ def _with_executor_enabled(fn):
         config.APPLICATION_EXECUTOR_ENABLED = prev
 
 
+def _with_config_override(attr: str, value, fn):
+    """Same narrowly-scoped, always-restored override pattern as
+    _with_executor_enabled above, generalized to one arbitrary config
+    attribute -- used only by the "application_limit" demo scenario to
+    deterministically demonstrate a blocked application without ever
+    touching the operator's real, persisted limit."""
+    prev = getattr(config, attr)
+    setattr(config, attr, value)
+    try:
+        return fn()
+    finally:
+        setattr(config, attr, prev)
+
+
 def run_demo(key: str) -> dict:
     """Ensures the fixture job exists, queues it, and runs one pipeline pass
     (ASSIST mode -- never auto-submits; only APPROVE & APPLY, a separate
-    explicit action, can ever unlock submission)."""
-    scenario = get_scenario(key)
+    explicit action, can ever unlock submission).
+
+    The "application_limit" scenario is the one exception: it demonstrates
+    the "application limit reached" experience in a single click, so its
+    approval step (still the real app.applications.approval.approve_and_apply(),
+    never a bypass) runs here too, wrapped in the short-lived, always-restored
+    MAX_APPLICATIONS_PER_COMPANY_PER_DAY=0 override -- see
+    _with_config_override. No other scenario is affected: their own Approve &
+    Apply is still the ordinary, unmodified /jobs/{job_id}/applications/approve
+    action a real job would use."""
+    get_scenario(key)  # raises ValueError for an unknown key
 
     def _run():
         job = ensure_demo_job(key)
@@ -142,7 +176,17 @@ def run_demo(key: str) -> dict:
             process_execution(execution_id)
         return job
 
-    job = _with_executor_enabled(_run)
+    def _run_and_approve():
+        job = _run()
+        approval_mod.approve_and_apply(job.id)
+        return job
+
+    if key == "application_limit":
+        job = _with_executor_enabled(
+            lambda: _with_config_override("MAX_APPLICATIONS_PER_COMPANY_PER_DAY", 0, _run_and_approve)
+        )
+    else:
+        job = _with_executor_enabled(_run)
     return describe_demo(key, job.id)
 
 

@@ -46,6 +46,11 @@ class ProductStage(str, Enum):
     IDENTITY_REVIEW_REQUIRED = "IDENTITY_REVIEW_REQUIRED"
     UNSUPPORTED_SUBMISSION = "UNSUPPORTED_SUBMISSION"
     SKIPPED = "SKIPPED"
+    # Apply/Automation Settings V1 section 14: a specific, honest product
+    # label for app.applications.rate_limit's block -- distinct from the
+    # generic NEEDS_USER_INPUT stage, and never surfaced via a blocker row
+    # (RATE_LIMITED is deliberately unmapped in app.applications.blockers).
+    APPLICATION_LIMIT_REACHED = "APPLICATION_LIMIT_REACHED"
 
 
 # Genuine blockers only (spec section 15: "Do NOT use Needs Action merely
@@ -116,6 +121,7 @@ _STAGE_LABELS: dict[ProductStage, str] = {
     ProductStage.IDENTITY_REVIEW_REQUIRED: "Identity needs review",
     ProductStage.UNSUPPORTED_SUBMISSION: "Manual submission required",
     ProductStage.SKIPPED: "Skipped",
+    ProductStage.APPLICATION_LIMIT_REACHED: "Application limit reached",
 }
 
 
@@ -135,6 +141,10 @@ def compute_stage(execution: Optional[dict]) -> StageInfo:
         return StageInfo(ProductStage.DISCOVERED, _STAGE_LABELS[ProductStage.DISCOVERED])
     status = execution.get("status")
     if status == ExecutionStatus.NEEDS_USER_ACTION.value:
+        reason_text = execution.get("user_action_reason") or ""
+        if "MAX_APPLICATIONS" in reason_text:
+            stage = ProductStage.APPLICATION_LIMIT_REACHED
+            return StageInfo(stage, _STAGE_LABELS[stage])
         try:
             reasons = json.loads(execution.get("policy_reasons") or "[]")
         except ValueError:

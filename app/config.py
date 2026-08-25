@@ -276,6 +276,13 @@ MIN_APPLICATION_MATCH_SCORE = _env_int("MIN_APPLICATION_MATCH_SCORE", MIN_MATCH_
 MAX_APPLICATIONS_PER_HOUR = _env_int("MAX_APPLICATIONS_PER_HOUR", 5)
 MAX_APPLICATIONS_PER_DAY = _env_int("MAX_APPLICATIONS_PER_DAY", 20)
 MAX_APPLICATIONS_PER_COMPANY_PER_DAY = _env_int("MAX_APPLICATIONS_PER_COMPANY_PER_DAY", 2)
+# Apply/Automation Settings V1: optional, consumer-configurable limits.
+# 0 means "no limit" for both -- app.applications.rate_limit only enforces
+# them when non-zero, so the safe default changes nothing about existing
+# behavior. Persisted/live-editable via app/settings_store.py's existing
+# ALLOWED_SETTINGS mechanism (see settings_store.py), same as the two above.
+MAX_APPLICATIONS_PER_WEEK = _env_int("MAX_APPLICATIONS_PER_WEEK", 0)
+MAX_CONCURRENT_APPLICATIONS = _env_int("MAX_CONCURRENT_APPLICATIONS", 0)
 
 # How long an application-execution lease is held before another
 # executor-capable worker may reclaim it (same lease-expiry-only recovery

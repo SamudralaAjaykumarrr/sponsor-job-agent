@@ -5,7 +5,7 @@
 <div class="page-header">
   <div>
     <h1>Demo / Test Mode</h1>
-    <p class="subtitle">Eight deterministic scenarios, built entirely on a local mock ATS — no real employer is ever
+    <p class="subtitle">Nine deterministic scenarios, built entirely on a local mock ATS — no real employer is ever
       contacted. Use these to see the full Needs Action / Ready to Apply / Submitted / Issues experience.</p>
   </div>
 </div>
@@ -24,6 +24,8 @@
     <div class="jc-footer"><span class="tag tag-neutral">{{ s.execution.status }}</span></div>
     {% if s.blocker %}
     <div class="jc-diag"><strong>{{ s.blocker.human_title }}</strong><br>{{ s.blocker.human_message }}</div>
+    {% elif s.execution.status == 'NEEDS_USER_ACTION' and s.execution.user_action_reason %}
+    <div class="jc-diag"><strong>Needs your attention</strong><br>{{ s.execution.user_action_reason }}</div>
     {% endif %}
     {% else %}
     <div class="jc-footer"><span class="faint">Not run yet</span></div>

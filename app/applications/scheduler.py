@@ -14,7 +14,7 @@ eligibility already clears auto_submit_eligible."""
 
 from dataclasses import dataclass, field
 
-from app import config
+from app import apply_settings, config
 from app.applications import rate_limit
 from app.applications.eligibility import evaluate_executor_eligibility
 from app.applications.executor import ExecutorDisabledError, queue_application
@@ -84,6 +84,7 @@ def run_cycle(*, limit: int | None = None) -> SchedulerCycleResult:
     # or be blocked by rate limits -- bounded, never unbounded.
     candidate_ids = _candidate_job_ids(max_queue * 5)
     result.candidates_considered = len(candidate_ids)
+    preferences = apply_settings.get_settings()
 
     for job_id in candidate_ids:
         if result.queued >= max_queue:
@@ -98,6 +99,17 @@ def run_cycle(*, limit: int | None = None) -> SchedulerCycleResult:
 
         eligibility = evaluate_executor_eligibility(job)
         if not eligibility.enters_queue:
+            result.skipped_not_eligible += 1
+            continue
+
+        # Apply/Automation Settings V1 section 6: narrows WHICH already-
+        # eligible jobs get auto-prepared -- never a substitute for, or
+        # weakening of, the FULL_TIME/sponsorship hard gates already
+        # enforced by eligibility.enters_queue above. Default (empty)
+        # preferences match every job, unchanged from before this setting
+        # existed.
+        prefs_ok, _prefs_reason = apply_settings.job_matches_preferences(job, preferences)
+        if not prefs_ok:
             result.skipped_not_eligible += 1
             continue
 
