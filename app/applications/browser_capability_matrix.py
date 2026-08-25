@@ -34,6 +34,25 @@ class BrowserVerification(str, Enum):
     NOT_TESTED = "NOT_TESTED"
 
 
+class ConfirmationCaptureLevel(str, Enum):
+    """Real Provider Execution V1: a STRUCTURED restatement of the level of
+    confirmation-capture evidence each row's free-text `confirmation_capture`
+    field already recorded, so `app.applications.execution_contract` can
+    answer "is confirmation_supported true for this provider?" from data
+    rather than by prose-matching. Every value below was read off the
+    EXISTING dated prose in this module -- no row's evidence level was
+    raised, and none may ever be raised without a fresh genuine observation.
+
+    LIVE_SUBMISSION_VERIFIED deliberately exists but is used by NO row and
+    reachable by no current code path: proving it would require genuinely
+    submitting a real application to a real employer, which this project
+    never does. It is modeled so the vocabulary can express the distinction
+    honestly rather than letting FIXTURE_VERIFIED quietly stand in for it."""
+    LIVE_SUBMISSION_VERIFIED = "LIVE_SUBMISSION_VERIFIED"
+    FIXTURE_VERIFIED = "FIXTURE_VERIFIED"
+    NOT_OBSERVED = "NOT_OBSERVED"
+
+
 @dataclass(frozen=True)
 class BrowserCapabilityRow:
     provider: str
@@ -47,6 +66,7 @@ class BrowserCapabilityRow:
     final_submit_automation: bool
     confirmation_capture: str
     notes: str
+    confirmation_capture_level: ConfirmationCaptureLevel = ConfirmationCaptureLevel.NOT_OBSERVED
 
     def as_dict(self) -> dict:
         return {
@@ -55,7 +75,9 @@ class BrowserCapabilityRow:
             "resume_upload": self.resume_upload, "multi_step": self.multi_step,
             "login_handoff": self.login_handoff, "captcha_handoff": self.captcha_handoff,
             "final_submit_automation": self.final_submit_automation,
-            "confirmation_capture": self.confirmation_capture, "notes": self.notes,
+            "confirmation_capture": self.confirmation_capture,
+            "confirmation_capture_level": self.confirmation_capture_level.value,
+            "notes": self.notes,
         }
 
 
@@ -79,6 +101,7 @@ _ROWS: list[BrowserCapabilityRow] = [
         final_submit_automation=False,
         confirmation_capture="verified on local sandbox fixture (success-page text + confirmation id regex); "
                               "not exercised against a real submission (never submitted for real)",
+        confirmation_capture_level=ConfirmationCaptureLevel.FIXTURE_VERIFIED,
         notes="Live-opened a real GitLab application page every phase since Phase 3: 23-24 real fields detected "
               "including resume upload and a genuine sponsorship question, submit button detected and never "
               "clicked. Phase 11 additionally found and safely CLICKED a real NAVIGATION_SAFE 'Apply' control on "
@@ -102,6 +125,7 @@ _ROWS: list[BrowserCapabilityRow] = [
         captcha_handoff="the live posting genuinely presented a CAPTCHA widget, correctly detected and paused",
         final_submit_automation=False,
         confirmation_capture="verified on local sandbox fixture only",
+        confirmation_capture_level=ConfirmationCaptureLevel.FIXTURE_VERIFIED,
         notes="Live-opened a real posting on Lever's own public demo account (api.lever.co/v0/postings/leverdemo): "
               "22 real fields detected (name/email/phone/resume/EEOC demographic questions), submit button "
               "detected and never clicked. This is the SAME real form the Phase 8 providers_lever.py adapter "
@@ -125,6 +149,7 @@ _ROWS: list[BrowserCapabilityRow] = [
         captcha_handoff="the live posting genuinely presented a CAPTCHA widget, correctly detected and paused",
         final_submit_automation=False,
         confirmation_capture="verified on local sandbox fixture only",
+        confirmation_capture_level=ConfirmationCaptureLevel.FIXTURE_VERIFIED,
         notes="Live-opened a real posting on Ashby's own public careers board (api.ashbyhq.com/posting-api/"
               "job-board/ashby): 27-28 real fields detected including free-response questions and demographic "
               "self-identification choices, submit button detected and never clicked. Phase 12 REGRESSION-"
@@ -251,6 +276,7 @@ _ROWS: list[BrowserCapabilityRow] = [
         multi_step="verified (local fixture only)", login_handoff="verified (local fixture only)",
         captcha_handoff="verified (local fixture only)", final_submit_automation=False,
         confirmation_capture="verified (local fixture only)",
+        confirmation_capture_level=ConfirmationCaptureLevel.FIXTURE_VERIFIED,
         notes="Deterministic in-process test fixture only -- never a real ATS.",
     ),
 ]
@@ -266,7 +292,7 @@ def build_matrix() -> dict:
         ("safe_autofill", "Safe autofill"), ("resume_upload", "Resume upload"), ("multi_step", "Multi-step"),
         ("login_handoff", "Login handoff"), ("captcha_handoff", "CAPTCHA handoff"),
         ("final_submit_automation", "Final-submit automation"), ("confirmation_capture", "Confirmation capture"),
-        ("notes", "Notes"),
+        ("confirmation_capture_level", "Confirmation evidence level"), ("notes", "Notes"),
     ]
     return {"columns": columns, "rows": all_rows()}
 
@@ -284,5 +310,6 @@ def render_text() -> str:
         lines.append(f"  CAPTCHA handoff:         {row['captcha_handoff']}")
         lines.append(f"  Final-submit automation: {row['final_submit_automation']}")
         lines.append(f"  Confirmation capture:    {row['confirmation_capture']}")
+        lines.append(f"  Confirmation evidence:   {row['confirmation_capture_level']}")
         lines.append(f"  Notes:                   {row['notes']}")
     return "\n".join(lines) + "\n"

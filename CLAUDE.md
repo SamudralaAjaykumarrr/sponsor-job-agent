@@ -1036,3 +1036,94 @@ must keep obeying as this project evolves further:
   the same never-collide-with-a-real-identifier convention as every other benchmark/fixture in this
   project — idempotent re-seeding (matched by its fixed `external_job_id`), never written to
   anything but the `mock_ats` provider path, and never mistaken for a real job.
+
+## Real Provider Execution Rules (recorded after the real-provider-execution-v1 build,
+apply to all future phases)
+
+These are durable rules the provider execution layer (`app/applications/execution_contract.py`,
+`form_model.py`, `document_binding.py`, `presubmit_manifest.py`, `confirmation_parser.py`, and the
+Greenhouse/Lever execution adapters) must keep obeying as real-ATS coverage grows:
+
+- **Browser fill capability is NEVER submission capability.** `app.applications.execution_contract`
+  separates seven independently-addressable flags (`discovery_supported`,
+  `form_discovery_supported`, `fill_supported`, `upload_supported`, `assist_supported`,
+  `submission_supported`, `confirmation_supported`) and must never collapse them into one. Its
+  `_submission_supported()` reads EXACTLY ONE field — that provider's own
+  `ApplicationCapabilities.submission_supported` — and must never be changed to OR in, infer from,
+  or be upgraded by any browser/assist observation, no matter how thoroughly a provider's real form
+  has been fill-verified. `app.applications.doctor._check_execution_contract_submission_never_inferred`
+  and `_check_execution_contract_consistency` statically enforce this on every doctor run.
+- `execution_contract` is a strictly DERIVED, read-only projection over the three registries that
+  actually own capability facts (`app.providers.capabilities.ProviderCapabilities`,
+  `app.applications.models.ApplicationCapabilities`, `app.applications.browser_capability_matrix`).
+  It must never acquire a fact of its own. Every "either source counts" flag must keep its explicit
+  `*_source` (`PROVIDER_API`/`BROWSER_LIVE_VERIFIED`/`BROWSER_FIXTURE_ONLY`/`MOCK_FIXTURE`/`NONE`),
+  and a source may never be reported stronger than the evidence behind it.
+- `ConfirmationCaptureLevel.LIVE_SUBMISSION_VERIFIED` may only ever be set on a provider row from a
+  genuine confirmation observed after a REAL submission to a REAL employer. Since this project never
+  submits, no row may carry it; `FIXTURE_VERIFIED` must never be quietly promoted to stand in for it.
+- `app.applications.confirmation_parser` is the SINGLE source of `SUCCESS_PHRASES`,
+  `DUPLICATE_APPLICATION_PHRASES` and `CONFIRMATION_ID_RE` — `app.applications.browser_runtime`
+  imports them and must never reintroduce a parallel private table (the same single-source rule
+  Phase 11 established for `apply_entry`'s phrase tables). The two phrase tables must stay MUTUALLY
+  DISJOINT (`_check_confirmation_phrase_tables_disjoint`), duplicate-application evidence is always
+  checked FIRST and returned distinctly, and a confirmation id must contain at least one DIGIT — a
+  keyword-anchored regex otherwise captures the ordinary English word after the keyword
+  ("Application received" -> "received"), which would both be stored durably AND wrongly corroborate
+  the evidence grade up from MODERATE to STRONG. Never loosen that digit requirement.
+- `app.applications.form_model` is the one normalized shape both a provider API's published schema
+  and a real rendered DOM project into. It must never become a second field-matching engine (it
+  always delegates to `app.applications.mapping.match_field` + `app.applications.schema.find_field`)
+  and never a filling policy — `safe_answer_available` REPORTS what the existing rules already allow
+  and must never widen them.
+- High-risk question classification lives on the normalized field (`HighRiskClass`), never by
+  widening `app.applications.models.SENSITIVE_CATEGORIES` — that frozenset controls what actually
+  gets FILLED, and changing it is a truthfulness change requiring its own justification. A high-risk
+  field with a genuinely authoritative verified profile answer is reported high-risk WITH
+  `authoritatively_known=True` rather than needlessly blocked; a SENSITIVE-category field never
+  counts as authoritatively known.
+- `application_document_bindings` is APPEND-ONLY (a re-upload is always a new row, never an update),
+  and `verify_artifact_matches_job()` uses the same `/<job_id>/` path-segment convention every other
+  resume-ownership check in this project agrees on — never re-narrow it to an exact
+  immediate-parent match. A FAILING ownership check is recorded as an UNVERIFIED binding with the
+  reason, never silently dropped. The browser-assist path records `verified=1` (a live form field
+  genuinely accepted the file); the executor draft path records `verified=0` (it performs no network
+  upload, so a verified claim there would be inflated evidence).
+- `app.applications.presubmit_manifest` is STRICTLY READ-ONLY and introduces NO new gate. Its
+  `ready_for_approval` is a REPORT over `app.applications.product_state.ready_for_approval()` plus
+  its own blocking observations; no submission path may ever consult it as authorization. The real
+  gates remain `eligibility.evaluate_executor_eligibility`,
+  `executor._auto_submit_permitted`/`_approved_submit_permitted`, and
+  `approval.verify_durable_approval_for_submission`. The manifest carries the candidate's own
+  prepared answers, so `as_dict()` REDACTS every answer value by default — `include_values=True` is
+  opt-in and must never become the default anywhere that could be logged or exported.
+- A provider adapter's optional `check_job_still_active()`/`classify_job_inactive_reason()` may only
+  ever return genuine evidence: `False`/a reason ONLY on a permanent 404/410 from the provider's own
+  public read API, and `None` ("not checkable") for a timeout, 5xx, 401/403, or an unrecognized
+  canonical identity. A temporary failure must never terminate a live application. This is the same
+  permanent-vs-temporary split Phase 4's registry lifecycle established.
+- `ProviderHTTPError.status_code` exists so an application-layer adapter can make that distinction
+  without string-parsing the message. It is `None` for a network/transport failure (where there
+  genuinely is no status code) and must never be guessed.
+- A Lever posting id is only accepted as canonical when it is a real UUID (Lever's actual shape);
+  a Greenhouse identity requires a board token + numeric posting id from the job row or a genuine
+  `greenhouse.io` URL. Never fabricate either from an unrelated URL. Provider SELECTION may stay
+  broader than canonical identity (a Lever job still gets the adapter so the candidate gets the
+  apply URL) — only the API-backed lookups are gated on a confident identity.
+- `total_steps_if_known` may ONLY ever be persisted from a genuinely parsed EXACT "Step N of M"
+  reading. `DiscoveryOutcome.total_steps_hint` (2 if a Next control is visible, else 1) is a HINT,
+  not a reading, and must never be written into that column — doing so made EVERY ordinary
+  single-page session violate the Phase 11/12 invented-total rule and trip
+  `doctor._check_invalid_step_progress`. A previously-known genuine total is carried forward; a
+  guess is never introduced.
+- SQL in `app/applications/doctor.py` (and any other module shared by both backends) must be valid
+  in BOTH SQLite and PostgreSQL: never a SELECT alias in `HAVING` (use `HAVING COUNT(*) > 1`), and
+  never a selected column that is neither grouped nor aggregated. SQLite silently tolerates both;
+  Postgres rejects them, and this had silently made `run_doctor()` unusable against Postgres
+  entirely. `tests/test_real_provider_execution_postgres.py` runs EVERY doctor check individually
+  under real Postgres to keep this from regressing.
+- Local provider fixtures (`tests/browser_fixtures.py`'s `greenhouse_like_*`/`lever_like_*`) stay
+  `file://`-only and deterministic; no automated test may ever contact a real employer or submit
+  anything. A fixture's own FILENAME is part of its `file://` URL, so a confirmation fixture must
+  avoid every substring in `confirmation_evidence._URL_CONFIRMATION_HINTS` — otherwise the filename
+  itself supplies a corroborating signal and silently upgrades the evidence grade.

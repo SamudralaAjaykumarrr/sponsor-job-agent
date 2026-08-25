@@ -142,6 +142,48 @@ def _cmd_capability_matrix(_: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_capability_audit(_: argparse.Namespace) -> int:
+    """Real Provider Execution V1: the unified, seven-flag provider execution
+    contract (discovery / form discovery / fill / upload / assist /
+    submission / confirmation), each with the source of its evidence. Always
+    states submission_supported and confirmation_supported explicitly."""
+    from app.applications.execution_contract import render_audit
+
+    print(render_audit())
+    return 0
+
+
+def _cmd_presubmit_manifest(args: argparse.Namespace) -> int:
+    """Prints the provider-neutral pre-submit manifest for one job. Answer
+    VALUES are redacted unless `--show-values` is passed explicitly -- the
+    manifest carries the candidate's own prepared answers, and this is the
+    one command that could otherwise put them on a terminal/CI log."""
+    from app.applications.presubmit_manifest import build_manifest, render_text
+
+    manifest = build_manifest(args.job_id, discover_form=not args.no_form_discovery)
+    if manifest is None:
+        print(f"job {args.job_id} not found")
+        return 1
+    print(render_text(manifest, include_values=args.show_values))
+    return 0
+
+
+def _cmd_document_bindings(args: argparse.Namespace) -> int:
+    from app.applications.document_binding import list_bindings_for_job
+
+    rows = list_bindings_for_job(args.job_id)
+    if not rows:
+        print(f"no document bindings recorded for job {args.job_id}")
+        return 0
+    for row in rows:
+        print(
+            f"{row['created_at']}  {row['document_kind']:<12} {row['artifact_filename'] or '(none)':<28} "
+            f"sha256={(row['artifact_sha256'] or '')[:16]:<16} field={row['provider_field_id'] or '-':<20} "
+            f"verified={row['verified']}  {row['checkpoint']}"
+        )
+    return 0
+
+
 def _cmd_browser_capability_matrix(_: argparse.Namespace) -> int:
     from app.applications.browser_capability_matrix import render_text
 
@@ -346,6 +388,24 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_matrix = sub.add_parser("capability-matrix", help="print the truthful provider capability matrix")
     p_matrix.set_defaults(func=_cmd_capability_matrix)
+
+    p_audit = sub.add_parser("capability-audit",
+                              help="print the unified seven-flag provider EXECUTION contract per provider")
+    p_audit.set_defaults(func=_cmd_capability_audit)
+
+    p_manifest = sub.add_parser("presubmit-manifest",
+                                 help="print the provider-neutral pre-submit manifest for one job")
+    p_manifest.add_argument("job_id", type=int)
+    p_manifest.add_argument("--show-values", action="store_true",
+                             help="include prepared answer VALUES (candidate data) in the output")
+    p_manifest.add_argument("--no-form-discovery", action="store_true",
+                             help="skip the provider form lookup (avoids a real network read)")
+    p_manifest.set_defaults(func=_cmd_presubmit_manifest)
+
+    p_bindings = sub.add_parser("document-bindings",
+                                 help="list durable resume/cover-letter upload bindings for one job")
+    p_bindings.add_argument("job_id", type=int)
+    p_bindings.set_defaults(func=_cmd_document_bindings)
 
     p_bstart = sub.add_parser("browser-start", help="open a visible browser-assist session for an execution")
     p_bstart.add_argument("execution_id")

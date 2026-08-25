@@ -109,6 +109,12 @@ def run_doctor() -> DoctorReport:
         _check_applied_execution_missing_receipt(conn, report)
         _check_receipt_without_applied_execution(conn, report)
         _check_named_real_provider_capability_inflated(report)
+        # --- Real Provider Execution V1 ---
+        _check_confirmation_phrase_tables_disjoint(report)
+        _check_execution_contract_consistency(report)
+        _check_execution_contract_submission_never_inferred(report)
+        _check_document_binding_wrong_job(conn, report)
+        _check_document_binding_execution_job_mismatch(conn, report)
     return report
 
 
@@ -194,7 +200,14 @@ def _check_execution_missing_job(conn, report: DoctorReport) -> None:
 
 def _check_duplicate_active_execution(conn, report: DoctorReport) -> None:
     rows = conn.execute(
-        "SELECT job_id, COUNT(*) AS n FROM application_executions WHERE active = 1 GROUP BY job_id HAVING n > 1"
+        # `HAVING COUNT(*) > 1`, never `HAVING n > 1`: SQLite accepts a
+        # SELECT alias in HAVING, PostgreSQL does not (it raises
+        # UndefinedColumn). This whole doctor therefore used to abort on its
+        # very first grouped check under the Postgres backend -- found by
+        # Real Provider Execution V1's own Postgres run, which was the first
+        # to call run_doctor() against a real PostgreSQL database.
+        "SELECT job_id, COUNT(*) AS n FROM application_executions WHERE active = 1 "
+        "GROUP BY job_id HAVING COUNT(*) > 1"
     ).fetchall()
     for r in rows:
         report.issues.append(Issue("serious", "duplicate_active_execution",
@@ -217,10 +230,19 @@ def _check_wrong_resume_job_mapping(conn, report: DoctorReport) -> None:
 
 def _check_missing_answer_snapshot(conn, report: DoctorReport) -> None:
     rows = conn.execute(
+        # `GROUP BY e.execution_id, e.job_id`, and a NOT EXISTS rather than a
+        # LEFT JOIN + `s.id IS NULL`: SQLite tolerates selecting a column
+        # that is neither grouped nor aggregated (it picks an arbitrary
+        # row), PostgreSQL rejects it outright (GroupingError). Same
+        # SQLite-permissiveness class of bug as the `HAVING n > 1` alias
+        # fixed above, found by the same first-ever Postgres doctor run.
+        # NOT EXISTS also expresses the intent directly -- one row per
+        # execution that has no snapshot at all -- so no grouping is needed
+        # to de-duplicate a join fan-out in the first place.
         """SELECT e.execution_id, e.job_id FROM application_executions e
-           LEFT JOIN application_answer_snapshots s ON s.execution_id = e.execution_id
-           WHERE e.status NOT IN ('QUEUED', 'STARTED') AND s.id IS NULL
-           GROUP BY e.execution_id"""
+           WHERE e.status NOT IN ('QUEUED', 'STARTED')
+             AND NOT EXISTS (SELECT 1 FROM application_answer_snapshots s
+                             WHERE s.execution_id = e.execution_id)"""
     ).fetchall()
     for r in rows:
         report.issues.append(Issue("serious", "missing_answer_snapshot",
@@ -333,7 +355,7 @@ def _check_multiple_active_leases_same_job(conn, report: DoctorReport) -> None:
     rows = conn.execute(
         """SELECT job_id, COUNT(*) AS n FROM application_executions
            WHERE lease_owner IS NOT NULL AND lease_expires_at IS NOT NULL AND lease_expires_at > ?
-           GROUP BY job_id HAVING n > 1""",
+           GROUP BY job_id HAVING COUNT(*) > 1""",
         (now,),
     ).fetchall()
     for r in rows:
@@ -344,7 +366,8 @@ def _check_multiple_active_leases_same_job(conn, report: DoctorReport) -> None:
 def _check_duplicate_confirmation(conn, report: DoctorReport) -> None:
     rows = conn.execute(
         "SELECT confirmation_id, COUNT(*) AS n FROM application_executions "
-        "WHERE confirmation_id IS NOT NULL AND confirmation_id != '' GROUP BY confirmation_id HAVING n > 1"
+        "WHERE confirmation_id IS NOT NULL AND confirmation_id != '' "
+        "GROUP BY confirmation_id HAVING COUNT(*) > 1"
     ).fetchall()
     for r in rows:
         report.issues.append(Issue("serious", "duplicate_confirmation",
@@ -411,7 +434,8 @@ def _check_non_confirmed_sponsorship_queued(conn, report: DoctorReport) -> None:
 
 def _check_duplicate_active_browser_sessions(conn, report: DoctorReport) -> None:
     rows = conn.execute(
-        "SELECT job_id, COUNT(*) AS n FROM browser_assist_sessions WHERE active = 1 GROUP BY job_id HAVING n > 1"
+        "SELECT job_id, COUNT(*) AS n FROM browser_assist_sessions WHERE active = 1 "
+        "GROUP BY job_id HAVING COUNT(*) > 1"
     ).fetchall()
     for r in rows:
         report.issues.append(Issue("serious", "duplicate_active_browser_session",
@@ -1011,3 +1035,151 @@ def _check_named_real_provider_capability_inflated(report: DoctorReport) -> None
                 f"provider '{cap['provider']}' declares submission_supported=True -- no real ATS in this "
                 f"project has a genuinely verified final-submission interface; only mock_ats may set this",
             ))
+
+
+# =============================================================================
+# Real Provider Execution V1
+# =============================================================================
+
+def _check_confirmation_phrase_tables_disjoint(report: DoctorReport) -> None:
+    """`app.applications.confirmation_parser`'s SUCCESS_PHRASES and
+    DUPLICATE_APPLICATION_PHRASES must stay MUTUALLY DISJOINT, so classifying
+    a page's text is always one unambiguous lookup rather than a priority
+    tie-break -- the same invariant CLAUDE.md's Phase 11 rules impose on
+    apply_entry's three phrase tables (a phrase appearing in two tables was
+    a real Phase 10 bug there). A duplicate-application page must never be
+    reachable as a fresh confirmation, and a genuine success page must never
+    be swallowed as a duplicate. Static and DB-free: catches the regression
+    the moment a phrase is added to the wrong table."""
+    from app.applications import confirmation_parser
+
+    overlap = set(confirmation_parser.SUCCESS_PHRASES) & set(confirmation_parser.DUPLICATE_APPLICATION_PHRASES)
+    if overlap:
+        report.issues.append(Issue(
+            "serious", "confirmation_phrase_tables_overlap",
+            f"phrase(s) appear in BOTH confirmation_parser.SUCCESS_PHRASES and "
+            f"DUPLICATE_APPLICATION_PHRASES: {sorted(overlap)} -- classification would depend on lookup order",
+        ))
+    for table_name, table in (
+        ("SUCCESS_PHRASES", confirmation_parser.SUCCESS_PHRASES),
+        ("DUPLICATE_APPLICATION_PHRASES", confirmation_parser.DUPLICATE_APPLICATION_PHRASES),
+    ):
+        for phrase in table:
+            if phrase != phrase.lower().strip() or len(phrase) < 8:
+                report.issues.append(Issue(
+                    "serious", "confirmation_phrase_unsafe",
+                    f"confirmation_parser.{table_name} entry {phrase!r} is not a lowercase, specific, "
+                    f"completed-action phrase -- a short/unnormalized phrase risks matching unrelated page text",
+                ))
+
+
+def _check_execution_contract_consistency(report: DoctorReport) -> None:
+    """`app.applications.execution_contract` owns no facts of its own -- every
+    flag it reports is derived from `ApplicationCapabilities`,
+    `ProviderCapabilities`, or `browser_capability_matrix`. This check
+    re-derives the contract and confirms each flag still agrees with its
+    source, so the derived view can never quietly drift away from (or
+    inflate beyond) the registries it summarizes."""
+    from app.applications.browser_capability_matrix import BrowserVerification, all_rows as browser_rows
+    from app.applications.execution_contract import all_contracts
+
+    app_caps = {c["provider"]: c for c in all_application_capabilities() if c["provider"] != "generic"}
+    browser = {r["provider"]: r for r in browser_rows()}
+
+    for contract in all_contracts():
+        provider = contract.provider
+        caps = app_caps.get(provider)
+        row = browser.get(provider)
+        browser_evidenced = row is not None and row["verification"] != BrowserVerification.NOT_TESTED.value
+
+        expected_form = bool(caps and caps["form_discovery_supported"]) or bool(
+            browser_evidenced and row["field_discovery"])
+        if contract.form_discovery_supported != expected_form:
+            report.issues.append(Issue(
+                "serious", "execution_contract_drift",
+                f"provider '{provider}': contract.form_discovery_supported="
+                f"{contract.form_discovery_supported} disagrees with its sources ({expected_form})",
+            ))
+
+        expected_assist = bool(browser_evidenced and row["field_discovery"])
+        if contract.assist_supported != expected_assist:
+            report.issues.append(Issue(
+                "serious", "execution_contract_drift",
+                f"provider '{provider}': contract.assist_supported={contract.assist_supported} disagrees "
+                f"with app.applications.browser_capability_matrix ({expected_assist})",
+            ))
+
+        expected_submission = bool(caps and caps["submission_supported"])
+        if contract.submission_supported != expected_submission:
+            report.issues.append(Issue(
+                "serious", "execution_contract_drift",
+                f"provider '{provider}': contract.submission_supported={contract.submission_supported} "
+                f"disagrees with ApplicationCapabilities.submission_supported ({expected_submission})",
+            ))
+
+
+def _check_execution_contract_submission_never_inferred(report: DoctorReport) -> None:
+    """The brief's single most important line: "Browser fill capability is
+    NOT submission capability." A provider may legitimately have every
+    browser/assist/fill/upload capability True while `submission_supported`
+    stays False -- and today EVERY real provider is exactly that. This check
+    fails if any provider other than the deterministic `mock_ats` fixture
+    ever reports `submission_supported=True` in the derived contract, or if
+    a True value is ever sourced from anything but its own
+    ApplicationCapabilities row."""
+    from app.applications.execution_contract import CapabilitySource, all_contracts
+
+    for contract in all_contracts():
+        if not contract.submission_supported:
+            continue
+        if contract.provider != "mock_ats":
+            report.issues.append(Issue(
+                "serious", "execution_contract_submission_inflated",
+                f"provider '{contract.provider}' reports submission_supported=True in the execution "
+                f"contract -- only the deterministic mock_ats fixture may ever do so",
+            ))
+        if contract.submission_source not in (CapabilitySource.MOCK_FIXTURE, CapabilitySource.PROVIDER_API):
+            report.issues.append(Issue(
+                "serious", "execution_contract_submission_inflated",
+                f"provider '{contract.provider}' reports submission_supported=True sourced from "
+                f"'{contract.submission_source.value}' -- submission capability may never be inferred from a "
+                f"browser/assist observation",
+            ))
+
+
+def _check_document_binding_wrong_job(conn, report: DoctorReport) -> None:
+    """A durable document binding whose artifact path does not belong to the
+    job it was bound for -- i.e. evidence that some other job's resume was
+    (or was about to be) handed to this employer. Uses the same
+    `/<job_id>/` path-segment convention every other resume-ownership check
+    in this project agrees on."""
+    rows = conn.execute(
+        "SELECT binding_id, job_id, artifact_path, document_kind FROM application_document_bindings "
+        "WHERE artifact_path != '' ORDER BY id DESC LIMIT 500"
+    ).fetchall()
+    for row in rows:
+        normalized = (row["artifact_path"] or "").replace("\\", "/")
+        if f"/{row['job_id']}/" not in normalized:
+            report.issues.append(Issue(
+                "serious", "document_binding_wrong_job",
+                f"document binding {row['binding_id']} ({row['document_kind']}) for job {row['job_id']} "
+                f"points at '{row['artifact_path']}', which does not belong to that job",
+            ))
+
+
+def _check_document_binding_execution_job_mismatch(conn, report: DoctorReport) -> None:
+    """A binding whose execution belongs to a DIFFERENT job than the binding
+    itself claims -- the cross-wiring case a path check alone cannot see."""
+    rows = conn.execute(
+        """SELECT b.binding_id, b.job_id AS binding_job, e.job_id AS execution_job, b.execution_id
+           FROM application_document_bindings b
+           JOIN application_executions e ON e.execution_id = b.execution_id
+           WHERE b.execution_id != '' AND b.job_id != e.job_id
+           ORDER BY b.id DESC LIMIT 200"""
+    ).fetchall()
+    for row in rows:
+        report.issues.append(Issue(
+            "serious", "document_binding_execution_job_mismatch",
+            f"document binding {row['binding_id']} claims job {row['binding_job']} but its execution "
+            f"{row['execution_id']} belongs to job {row['execution_job']}",
+        ))

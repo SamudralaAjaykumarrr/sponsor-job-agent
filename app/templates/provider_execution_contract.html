@@ -1,0 +1,72 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Provider Execution Contract — Sponsor Job Agent</title>
+  <style>
+    body { font-family: -apple-system, Arial, sans-serif; margin: 2rem; background: #f7f7f9; color: #1a1a1a; }
+    table { width: 100%; border-collapse: collapse; background: white; }
+    th, td { padding: 8px 10px; border-bottom: 1px solid #eee; text-align: left; font-size: 0.82rem; vertical-align: top; }
+    th { background: #fafafa; }
+    .yes { color: #155724; font-weight: 600; }
+    .no { color: #721c24; }
+    .src { display: block; color: #777; font-size: 0.72rem; font-weight: 400; }
+    .notes { max-width: 340px; color: #555; }
+    .callout { background: #fff8e1; border-left: 4px solid #f0ad4e; padding: 0.75rem 1rem; margin: 1rem 0;
+               font-size: 0.88rem; }
+    .submit-col { background: #fdf3f4; }
+  </style>
+</head>
+<body>
+  <p><a href="/">&larr; back to dashboard</a> · <a href="/applications">Applications</a> ·
+     <a href="/applications/capability-matrix">Application Provider Capability Matrix</a> ·
+     <a href="/applications/browser-capability-matrix">Browser-Assist Capability Matrix</a></p>
+  <h1>Provider Execution Contract</h1>
+  <p>The seven independent execution capabilities per provider, derived read-only from the three registries
+     that actually own them (<code>ProviderCapabilities</code> for discovery,
+     <code>ApplicationCapabilities</code> for the headless application adapters, and the browser-assist
+     capability matrix for the real-browser engine). Every &ldquo;true&rdquo; names the source of its evidence.</p>
+
+  <div class="callout">
+    <strong>Browser fill capability is not submission capability.</strong>
+    A provider can have working form discovery, field mapping, autofill and resume upload and still have
+    <code>submission_supported = false</code> — that is the case for <em>every real ATS</em> here.
+    <code>submission_supported</code> is read from that provider's own
+    <code>ApplicationCapabilities.submission_supported</code> alone and is never inferred from a browser
+    observation. Today only the deterministic in-process <code>mock_ats</code> test fixture sets it.
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Provider</th><th>Discovery</th><th>Form discovery</th><th>Fill</th><th>Upload</th>
+        <th>Browser assist</th><th class="submit-col">Automated submission</th><th>Confirmation detection</th>
+        <th>Policy</th><th>Why submission is / isn&rsquo;t supported</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in matrix.rows %}
+      <tr>
+        <td><strong>{{ r.provider }}</strong></td>
+        <td class="{{ 'yes' if r.discovery_supported else 'no' }}">{{ r.discovery_supported }}</td>
+        <td class="{{ 'yes' if r.form_discovery_supported else 'no' }}">{{ r.form_discovery_supported }}
+          <span class="src">{{ r.form_discovery_source }}</span></td>
+        <td class="{{ 'yes' if r.fill_supported else 'no' }}">{{ r.fill_supported }}
+          <span class="src">{{ r.fill_source }}</span></td>
+        <td class="{{ 'yes' if r.upload_supported else 'no' }}">{{ r.upload_supported }}
+          <span class="src">{{ r.upload_source }}</span></td>
+        <td class="{{ 'yes' if r.assist_supported else 'no' }}">{{ r.assist_supported }}
+          <span class="src">{{ r.assist_source }}</span></td>
+        <td class="submit-col {{ 'yes' if r.submission_supported else 'no' }}">{{ r.submission_supported }}
+          <span class="src">{{ r.submission_source }}</span></td>
+        <td class="{{ 'yes' if r.confirmation_supported else 'no' }}">{{ r.confirmation_supported }}
+          <span class="src">{{ r.confirmation_source }}</span></td>
+        <td>{{ r.automation_policy }}
+          {% if not r.has_application_adapter %}<span class="src">generic fallback</span>{% endif %}</td>
+        <td class="notes">{{ r.submission_evidence }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</body>
+</html>

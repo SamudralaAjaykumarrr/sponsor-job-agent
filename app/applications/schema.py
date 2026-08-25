@@ -22,6 +22,17 @@ DECLINE_TO_SELF_IDENTIFY_PHRASES = [
     "i dont wish to answer", "i don t wish to answer",
     "i do not wish to answer",
     "i dont want to answer", "i don t want to answer",
+    # Real Provider Execution V1: the UNCONTRACTED "do not WANT" form was
+    # genuinely missing -- only the contracted "i dont want to answer" and
+    # the different-verb "i do not wish to answer" were listed. "I do not
+    # want to answer" is the exact string on the real Greenhouse EEOC
+    # payload this project captured live (see
+    # tests/test_applications_providers_greenhouse.py::FIXTURE_PAYLOAD's
+    # disability_status choices), so a real Greenhouse demographic question
+    # would silently have had NO decline option recognized. Same
+    # verb+negation shape as every neighbouring entry, so it carries the
+    # same overmatch safety.
+    "i do not want to answer",
     # CLAUDE.md Phase 11 section 24: additional common real-EEOC-form
     # variants, added conservatively -- each phrase contains a distinctive
     # verb+negation combination ("prefer/rather/wish/choose" + "not" +
