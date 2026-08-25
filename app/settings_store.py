@@ -18,9 +18,19 @@ Deliberately excluded: MIN_MATCH_SCORE (app/pipeline.py name-imports it,
 so a runtime override would not take effect -- fixing that is a pipeline.py
 gate change, out of scope here), ENABLED_PROVIDERS (Phase 3/4 registry vs.
 legacy dual-path selection, too easy to misconfigure from a UI toggle), and
-every safety-relevant flag (APPLICATION_EXECUTOR_ENABLED, AUTO_SUBMIT_ENABLED,
+every OTHER safety-relevant flag (APPLICATION_EXECUTOR_ENABLED,
 BROWSER_ASSIST_ENABLED, ...) which CLAUDE.md requires stay env-only /
-"never silently enabled"."""
+"never silently enabled".
+
+Apply/Automation Settings V1 carve-out: AUTO_SUBMIT_ENABLED is deliberately
+NOT in this plain numeric allowlist (it is a boolean tied to a specific
+product concept -- "Submission mode" -- not a tuning knob), but IS now a
+genuinely persisted, user-facing setting: see app/apply_settings.py, which
+implements the same "setattr onto `config`, persist to `app_settings`,
+reapply on startup" mechanism as this module, gated behind an explicit
+high-risk confirmation step the plain numeric knobs below don't need. The
+orchestrator (app.agent.orchestrator) still never touches AUTO_SUBMIT_ENABLED
+itself -- only this explicit, confirmed user action does."""
 
 from datetime import datetime, timezone
 
@@ -54,6 +64,30 @@ ALLOWED_SETTINGS: dict[str, SettingSpec] = {
     "freshness_max_days": SettingSpec(
         "freshness_max_days", "FRESHNESS_MAX_DAYS", "Freshness cutoff (days)",
         "Jobs older than this (by published_at) are skipped at discovery time.", 1, 30,
+    ),
+    # --- Apply/Automation Settings V1: application limits -------------------
+    # Read live by app.applications.rate_limit.check_rate_limits on every
+    # submit attempt -- unchanged read sites, just now also user-editable.
+    "max_applications_per_day": SettingSpec(
+        "max_applications_per_day", "MAX_APPLICATIONS_PER_DAY", "Maximum applications per day",
+        "Hard cap on submissions in a rolling 24 hours -- protects against excessive/accidental applications.", 1, 100,
+    ),
+    "max_applications_per_company_per_day": SettingSpec(
+        "max_applications_per_company_per_day", "MAX_APPLICATIONS_PER_COMPANY_PER_DAY",
+        "Maximum applications per company per day",
+        "Hard cap on submissions to the same company in a rolling 24 hours.", 1, 20,
+    ),
+    "max_applications_per_week": SettingSpec(
+        "max_applications_per_week", "MAX_APPLICATIONS_PER_WEEK", "Maximum applications per week",
+        "Optional weekly cap on submissions. 0 = no weekly limit.", 0, 500,
+    ),
+    "max_concurrent_applications": SettingSpec(
+        "max_concurrent_applications", "MAX_CONCURRENT_APPLICATIONS", "Maximum concurrent in-progress applications",
+        "Optional cap on how many applications may be actively in progress at once. 0 = no limit.", 0, 50,
+    ),
+    "min_salary_usd": SettingSpec(
+        "min_salary_usd", "MIN_SALARY_USD", "Minimum acceptable salary (USD)",
+        "Jobs with a published maximum salary below this are skipped. 0 = no salary floor.", 0, 500_000,
     ),
 }
 

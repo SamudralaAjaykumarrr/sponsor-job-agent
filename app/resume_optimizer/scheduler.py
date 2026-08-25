@@ -38,7 +38,20 @@ def _eligible_sponsorship_statuses() -> tuple:
 def _find_jobs_needing_optimization(batch_size: int) -> list[int]:
     """A job needs (re)optimization when it has no current READY variant at
     all, or its current variant is STALE -- never when it already has a
-    fresh READY one (CLAUDE.md section 58 idempotency)."""
+    fresh READY one (CLAUDE.md section 58 idempotency).
+
+    Apply/Automation Settings V1: when the Resume optimization setting is
+    OFF, no AUTOMATIC caller (this background scheduler, or
+    app.agent.orchestrator._run_resume_stage, which reuses this exact
+    function) generates anything -- an empty candidate list, never a
+    behavior change to the manual Generate/Regenerate Resume dashboard
+    action or CLI, which call app.resume_optimizer.optimizer.optimize_resume
+    directly and never go through this candidate query."""
+    from app import apply_settings
+
+    if apply_settings.get_settings().resume_optimization_mode == apply_settings.ResumeOptimizationMode.OFF.value:
+        return []
+
     eligible_sponsorship = _eligible_sponsorship_statuses()
     with db_session() as conn:
         rows = conn.execute(

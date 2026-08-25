@@ -443,15 +443,28 @@ class AgentOrchestrator:
         'verify resume artifact hash before upload'. A variant that could
         not safely reach one page (REVIEW_REQUIRED) is never promoted -- the
         job keeps whatever resume it had before, and the dashboard surfaces
-        the REVIEW_REQUIRED variant for human review."""
-        from app.jobs_repo import get_job, update_job
+        the REVIEW_REQUIRED variant for human review.
+
+        Apply/Automation Settings V1: a successfully one-page READY variant
+        is only auto-promoted here when the persisted Auto-approve resume
+        setting is ON. When it's OFF, the variant is still generated (still
+        counted as a one-page success, still visible/downloadable on the
+        job-detail page) but the job keeps whatever resume it had before
+        until a human uses the "Approve resume" action
+        (app.resume_optimizer.promotion.promote_current_variant) -- the
+        exact reviewable-before-use behavior this setting's OFF state
+        promises."""
+        from app import apply_settings
+        from app.jobs_repo import get_job
         from app.resume_optimizer.models import ResumeVariantStatus
         from app.resume_optimizer.optimizer import optimize_resume
+        from app.resume_optimizer.promotion import promote_variant
         from app.resume_optimizer.repo import get_current_variant
         from app.resume_optimizer.scheduler import _find_jobs_needing_optimization
 
         stats = dict(generated=0, one_page_success=0, one_page_overflow=0, compression_events=0)
         job_ids = _find_jobs_needing_optimization(config.MAX_RESUMES_PER_CYCLE)
+        auto_approve_resume = apply_settings.get_settings().auto_approve_resume
 
         for job_id in job_ids:
             # Watchdog diagnostics: heartbeat per job, not just once per
@@ -476,14 +489,10 @@ class AgentOrchestrator:
 
             if variant["status"] == ResumeVariantStatus.READY.value and variant.get("page_count") == 1:
                 stats["one_page_success"] += 1
-                job = get_job(job_id)
-                if job is not None:
-                    update_job(
-                        job_id,
-                        resume_docx_path=variant["resume_docx_path"], resume_pdf_path=variant["resume_pdf_path"],
-                        resume_txt_path=variant["resume_txt_path"], resume_jd_fingerprint=variant["jd_fingerprint"],
-                        promoted_resume_variant_id=variant["variant_id"],
-                    )
+                if auto_approve_resume:
+                    job = get_job(job_id)
+                    if job is not None:
+                        promote_variant(job_id, variant)
             elif variant["status"] == ResumeVariantStatus.REVIEW_REQUIRED.value:
                 stats["one_page_overflow"] += 1
 

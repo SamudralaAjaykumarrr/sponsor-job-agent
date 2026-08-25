@@ -7,7 +7,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from app import config
+from app import apply_settings, config
 from app.agent import state as agent_state
 from app.agent import run_state as agent_run_state
 from app.agent.orchestrator import orchestrator as agent_orchestrator
@@ -110,6 +110,10 @@ async def lifespan(_: FastAPI):
     # (the app_settings table must exist) and before the scheduler/
     # orchestrator start reading config.* below.
     settings_store.apply_overrides_on_startup()
+    # Apply/Automation Settings V1: re-applies the persisted submission-mode
+    # (AUTO_SUBMIT_ENABLED)/sponsorship-policy choices on every startup, same
+    # "never silently revert to the .env default" contract as the call above.
+    apply_settings.apply_overrides_on_startup()
     if config.REGISTRY_SEED_DEMO_DATA:
         seed_demo_entries()
     # CLAUDE.md Phase 8 section 66: never silently enable the executor --
@@ -430,67 +434,141 @@ def profile_page(request: Request):
     )
 
 
-@app.get("/settings", response_class=HTMLResponse)
-def settings_page(request: Request, saved: bool = False):
-    return templates.TemplateResponse(
-        request, "settings.html",
-        {
-            **_nav_ctx(),
-            "values": settings_store.current_values(),
-            "specs": settings_store.ALLOWED_SETTINGS,
-            "errors": [],
-            "saved": saved,
-            "safety_flags": {
-                "application_executor_enabled": config.APPLICATION_EXECUTOR_ENABLED,
-                "auto_submit_enabled": config.AUTO_SUBMIT_ENABLED,
-                "application_auto_prepare_enabled": config.APPLICATION_AUTO_PREPARE_ENABLED,
-                "browser_assist_enabled": config.BROWSER_ASSIST_ENABLED,
-                "browser_headless": config.BROWSER_HEADLESS,
-                "one_page_resume_required": config.ONE_PAGE_RESUME_REQUIRED,
-                "resume_optimization_enabled": config.RESUME_OPTIMIZATION_ENABLED,
-                "real_ats_canary_enabled": config.REAL_ATS_CANARY_ENABLED,
-            },
-            "enabled_providers": config.ENABLED_PROVIDERS,
-            "sponsorship_policy": config.SPONSORSHIP_POLICY,
+_AGENT_TUNING_KEYS = ("agent_interval_minutes", "max_jobs_per_cycle", "freshness_max_days")
+_LIMIT_SETTING_KEYS = (
+    "max_applications_per_day", "max_applications_per_company_per_day",
+    "max_applications_per_week", "max_concurrent_applications", "min_salary_usd",
+)
+
+
+def _settings_context(
+    *, errors: list[str] | None = None, saved_section: str = "",
+    needs_confirmation: bool = False, pending_submission_mode: str = "",
+) -> dict:
+    """Single builder for every piece of context settings.html needs --
+    used by the GET route and every POST route's error/confirmation
+    re-render, so the page's sections are always populated identically
+    regardless of which form was just submitted."""
+    all_values = settings_store.current_values()
+    apply_current = apply_settings.get_settings()
+    profile = load_profile()
+    return {
+        **_nav_ctx(),
+        "errors": errors or [],
+        "saved_section": saved_section,
+        "needs_confirmation": needs_confirmation,
+        "pending_submission_mode": pending_submission_mode,
+        "agent_tuning_values": {k: all_values[k] for k in _AGENT_TUNING_KEYS},
+        "agent_tuning_specs": {k: settings_store.ALLOWED_SETTINGS[k] for k in _AGENT_TUNING_KEYS},
+        "limit_values": {k: all_values[k] for k in _LIMIT_SETTING_KEYS},
+        "limit_specs": {k: settings_store.ALLOWED_SETTINGS[k] for k in _LIMIT_SETTING_KEYS},
+        "apply_settings": apply_current,
+        "resume_modes": [m.value for m in apply_settings.ResumeOptimizationMode],
+        "cover_letter_policies": [p.value for p in apply_settings.CoverLetterPolicy],
+        "work_arrangement_choices": apply_settings.WORK_ARRANGEMENTS,
+        "profile_work_authorization": profile.work_authorization,
+        "requires_sponsorship_display": (
+            "Yes" if profile.work_authorization.requires_sponsorship is True
+            else "No" if profile.work_authorization.requires_sponsorship is False
+            else "NEEDS_USER_INPUT"
+        ),
+        "safety_flags": {
+            "application_executor_enabled": config.APPLICATION_EXECUTOR_ENABLED,
+            "auto_submit_enabled": config.AUTO_SUBMIT_ENABLED,
+            "application_auto_prepare_enabled": config.APPLICATION_AUTO_PREPARE_ENABLED,
+            "browser_assist_enabled": config.BROWSER_ASSIST_ENABLED,
+            "browser_headless": config.BROWSER_HEADLESS,
+            "one_page_resume_required": config.ONE_PAGE_RESUME_REQUIRED,
+            "resume_optimization_enabled": config.RESUME_OPTIMIZATION_ENABLED,
+            "real_ats_canary_enabled": config.REAL_ATS_CANARY_ENABLED,
         },
-    )
+        "enabled_providers": config.ENABLED_PROVIDERS,
+        "sponsorship_policy": config.SPONSORSHIP_POLICY,
+    }
+
+
+@app.get("/settings", response_class=HTMLResponse)
+def settings_page(request: Request, saved: str = ""):
+    return templates.TemplateResponse(request, "settings.html", _settings_context(saved_section=saved))
 
 
 @app.post("/settings")
 async def settings_save(request: Request):
-    """Validates + persists + immediately applies the allowlisted agent
-    tuning knobs (see app/settings_store.py) -- a real, functional Save,
-    never a no-op. Every other config flag on this page is display-only by
-    design (CLAUDE.md's 'never silently enable' rules for the
-    executor/auto-submit/browser-assist flags)."""
+    """Advanced/Agent-tuning + Application-limit numeric knobs (see
+    app/settings_store.py) -- a real, functional Save, never a no-op. Every
+    other config flag on the Advanced Safety card is display-only by design
+    (CLAUDE.md's 'never silently enable' rules for the executor/browser-
+    assist flags)."""
     form = await request.form()
-    values = {key: form.get(key) for key in settings_store.ALLOWED_SETTINGS if form.get(key) is not None}
+    keys = _AGENT_TUNING_KEYS + _LIMIT_SETTING_KEYS
+    values = {key: form.get(key) for key in keys if form.get(key) is not None}
     errors = settings_store.save_settings(values)
     if errors:
         return templates.TemplateResponse(
-            request, "settings.html",
-            {
-                **_nav_ctx(),
-                "values": settings_store.current_values(),
-                "specs": settings_store.ALLOWED_SETTINGS,
-                "errors": errors,
-                "saved": False,
-                "safety_flags": {
-                    "application_executor_enabled": config.APPLICATION_EXECUTOR_ENABLED,
-                    "auto_submit_enabled": config.AUTO_SUBMIT_ENABLED,
-                    "application_auto_prepare_enabled": config.APPLICATION_AUTO_PREPARE_ENABLED,
-                    "browser_assist_enabled": config.BROWSER_ASSIST_ENABLED,
-                    "browser_headless": config.BROWSER_HEADLESS,
-                    "one_page_resume_required": config.ONE_PAGE_RESUME_REQUIRED,
-                    "resume_optimization_enabled": config.RESUME_OPTIMIZATION_ENABLED,
-                    "real_ats_canary_enabled": config.REAL_ATS_CANARY_ENABLED,
-                },
-                "enabled_providers": config.ENABLED_PROVIDERS,
-                "sponsorship_policy": config.SPONSORSHIP_POLICY,
-            },
-            status_code=400,
+            request, "settings.html", _settings_context(errors=errors), status_code=400,
         )
     return RedirectResponse(url="/settings?saved=true", status_code=303)
+
+
+@app.post("/settings/resume")
+async def settings_save_resume(request: Request):
+    form = await request.form()
+    result = apply_settings.save_resume_settings(dict(form))
+    if not result.ok:
+        return templates.TemplateResponse(request, "settings.html", _settings_context(errors=result.errors), status_code=400)
+    return RedirectResponse(url="/settings?saved=resume", status_code=303)
+
+
+@app.post("/settings/cover-letter")
+async def settings_save_cover_letter(request: Request):
+    form = await request.form()
+    result = apply_settings.save_cover_letter_settings(dict(form))
+    if not result.ok:
+        return templates.TemplateResponse(request, "settings.html", _settings_context(errors=result.errors), status_code=400)
+    return RedirectResponse(url="/settings?saved=cover-letter", status_code=303)
+
+
+@app.post("/settings/submission")
+async def settings_save_submission(request: Request):
+    """Apply/Automation Settings V1 section 10: turning Submission from
+    Review to Auto-submit requires an explicit confirmation checkbox
+    (`confirm_auto_submit`) submitted on the SAME request -- omitting it
+    persists nothing and re-renders the page with the confirmation prompt
+    expanded instead."""
+    form = await request.form()
+    confirmed = str(form.get("confirm_auto_submit") or "").strip().lower() in ("1", "true", "yes", "on")
+    result = apply_settings.save_submission_settings(dict(form), confirmed=confirmed)
+    if result.needs_confirmation:
+        return templates.TemplateResponse(
+            request, "settings.html",
+            _settings_context(needs_confirmation=True, pending_submission_mode=str(form.get("submission_mode") or "")),
+        )
+    if not result.ok:
+        return templates.TemplateResponse(request, "settings.html", _settings_context(errors=result.errors), status_code=400)
+    return RedirectResponse(url="/settings?saved=submission", status_code=303)
+
+
+@app.post("/settings/preferences")
+async def settings_save_preferences(request: Request):
+    form = await request.form()
+    payload = dict(form)
+    # work_arrangements is a multi-select checkbox group -- form.getlist
+    # (not dict(form), which keeps only the last value per key) captures
+    # every checked box.
+    payload["work_arrangements"] = form.getlist("work_arrangements")
+    result = apply_settings.save_preferences_settings(payload)
+    if not result.ok:
+        return templates.TemplateResponse(request, "settings.html", _settings_context(errors=result.errors), status_code=400)
+    return RedirectResponse(url="/settings?saved=preferences", status_code=303)
+
+
+@app.post("/settings/sponsorship")
+async def settings_save_sponsorship(request: Request):
+    form = await request.form()
+    result = apply_settings.save_sponsorship_settings(dict(form))
+    if not result.ok:
+        return templates.TemplateResponse(request, "settings.html", _settings_context(errors=result.errors), status_code=400)
+    return RedirectResponse(url="/settings?saved=sponsorship", status_code=303)
 
 
 @app.get("/api/dashboard/live")
@@ -866,6 +944,22 @@ def resume_optimize(job_id: int, force: bool = Form(False)):
         optimize_resume(job_id, force=force)
     except ValueError as exc:
         raise HTTPException(400, str(exc))
+    return RedirectResponse(url=f"/jobs/{job_id}", status_code=303)
+
+
+@app.post("/jobs/{job_id}/resume/approve")
+def resume_approve(job_id: int):
+    """Apply/Automation Settings V1: the manual "Approve resume" action,
+    used when Auto-approve resume is OFF and a generated variant is READY/
+    one-page but not yet promoted onto the job -- never gated by that
+    setting itself (a manual action always works, matching this project's
+    existing "manual action is never gated by an automation flag"
+    convention)."""
+    from app.resume_optimizer.promotion import promote_current_variant
+
+    if get_job(job_id) is None:
+        raise HTTPException(404, "job not found")
+    promote_current_variant(job_id)
     return RedirectResponse(url=f"/jobs/{job_id}", status_code=303)
 
 

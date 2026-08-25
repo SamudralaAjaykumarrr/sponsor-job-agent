@@ -250,8 +250,10 @@ def generate_assist_outputs(job_id: int) -> Job:
     answers_path = out_dir / "application_answers.json"
     answers_path.write_text(json.dumps(answers, indent=2, default=str))
 
+    from app import apply_settings
+
     cover_letter_path = None
-    if resume.experience or resume.projects:
+    if (resume.experience or resume.projects) and apply_settings.should_generate_cover_letter(job):
         cover_letter_path = out_dir / "cover_letter.txt"
         top_skill = resume.skills_ordered[0] if resume.skills_ordered else "NEEDS_USER_INPUT"
         cover_letter_path.write_text(

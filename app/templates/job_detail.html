@@ -116,6 +116,15 @@
       {% if current_variant.compression_steps_applied %} · {{ current_variant.compression_steps_applied }} compression step(s) applied{% endif %}
       {% if job.promoted_resume_variant_id == current_variant.variant_id %} · <strong>promoted as this job's primary resume</strong>{% endif %}
     </p>
+    {% if current_variant.status == 'READY' and current_variant.page_count == 1 and job.promoted_resume_variant_id != current_variant.variant_id %}
+    <div class="banner banner-good" style="margin-top:0.5rem;">
+      This resume is ready but is waiting for your approval (Auto-approve resume is off in
+      <a href="/settings">Settings</a>).
+      <form method="post" action="/jobs/{{ job.id }}/resume/approve" style="display:inline; margin-left:0.5rem;">
+        <button type="submit" class="btn btn-sm btn-cta-primary">Approve &amp; use this resume</button>
+      </form>
+    </div>
+    {% endif %}
     {% if current_variant.status == 'READY' %}
     <div class="btn-row" style="margin-top:0.4rem;">
       <a class="btn btn-ghost" href="/jobs/{{ job.id }}/resume/download/docx">optimized resume.docx</a>
