@@ -115,6 +115,11 @@ def run_doctor() -> DoctorReport:
         _check_execution_contract_submission_never_inferred(report)
         _check_document_binding_wrong_job(conn, report)
         _check_document_binding_execution_job_mismatch(conn, report)
+        # --- Greenhouse Verified Submission Contract V1 ---
+        _check_greenhouse_canary_disabled_by_default(report)
+        _check_greenhouse_submission_supported_still_false(report)
+        _check_greenhouse_submit_claim_double_attempt(conn, report)
+        _check_greenhouse_claim_without_confirmed_receipt(conn, report)
     return report
 
 
@@ -1182,4 +1187,78 @@ def _check_document_binding_execution_job_mismatch(conn, report: DoctorReport) -
             "serious", "document_binding_execution_job_mismatch",
             f"document binding {row['binding_id']} claims job {row['binding_job']} but its execution "
             f"{row['execution_id']} belongs to job {row['execution_job']}",
+        ))
+
+
+# --- Greenhouse Verified Submission Contract V1 ------------------------------
+
+def _check_greenhouse_canary_disabled_by_default(report: DoctorReport) -> None:
+    """A static assertion that the real Greenhouse submission canary stays
+    off by default, matching every other real-network/real-browser flag in
+    this project. Reads the LIVE config value (never a hardcoded assumption)
+    -- a serious finding here means an operator's .env (or a bug) has
+    already turned on the one flag this feature's entire safety model
+    depends on staying off unless deliberately, explicitly enabled."""
+    if config.GREENHOUSE_SUBMIT_CANARY_ENABLED:
+        report.issues.append(Issue(
+            "warning", "greenhouse_canary_enabled",
+            "GREENHOUSE_SUBMIT_CANARY_ENABLED is currently true -- the real Greenhouse submission canary can be "
+            "invoked for an explicitly-approved job. This is a warning, not an error: it may be an intentional, "
+            "explicit operator decision, but confirm it was not left on by accident.",
+        ))
+
+
+def _check_greenhouse_submission_supported_still_false(report: DoctorReport) -> None:
+    """Capability honesty (build brief 'CAPABILITY HONESTY' section): this
+    feature's engine/contract/canary must never, by their mere existence,
+    flip GreenhouseApplicationProvider.capabilities.submission_supported to
+    True. A local fixture is never sufficient evidence for real-provider
+    production submission support -- only a genuinely authorized, genuinely
+    observed real-employer submission could ever justify that, and this
+    project never performs one."""
+    from app.applications.providers_greenhouse import GreenhouseApplicationProvider
+
+    if GreenhouseApplicationProvider.capabilities.submission_supported:
+        report.issues.append(Issue(
+            "serious", "greenhouse_submission_supported_inflated",
+            "GreenhouseApplicationProvider.capabilities.submission_supported is True -- this must stay False "
+            "until a genuine, authorized, real-employer submission has been observed; a local fixture or the "
+            "existence of the submit engine/canary is never sufficient evidence on its own.",
+        ))
+
+
+def _check_greenhouse_submit_claim_double_attempt(conn, report: DoctorReport) -> None:
+    """The submit-once claim's whole reason to exist: no execution may ever
+    show more than one attempted submit action. The table's own
+    UNIQUE(execution_id) index already makes a second ROW impossible; this
+    checks the flag itself was never somehow reset (e.g. a manual DB edit)
+    to allow a second click."""
+    rows = conn.execute(
+        "SELECT execution_id, COUNT(*) AS c FROM greenhouse_submit_claims "
+        "WHERE submit_attempted = 1 GROUP BY execution_id HAVING COUNT(*) > 1"
+    ).fetchall()
+    for r in rows:
+        report.issues.append(Issue(
+            "serious", "greenhouse_submit_claim_double_attempt",
+            f"execution {r['execution_id']} has {r['c']} greenhouse_submit_claims rows with submit_attempted=1 "
+            f"-- at most one physical submit action may ever be attempted per execution",
+        ))
+
+
+def _check_greenhouse_claim_without_confirmed_receipt(conn, report: DoctorReport) -> None:
+    """A claim whose outcome is CONFIRMED must always have a matching
+    application_receipts row (the same 'APPLIED requires a receipt'
+    invariant `_check_applied_execution_missing_receipt` already enforces
+    for the rest of the project, restated here since this feature writes the
+    claim table as an additional, independent record of the same fact)."""
+    rows = conn.execute(
+        "SELECT c.execution_id FROM greenhouse_submit_claims c "
+        "LEFT JOIN application_receipts r ON r.execution_id = c.execution_id "
+        "WHERE c.outcome = 'CONFIRMED' AND r.id IS NULL"
+    ).fetchall()
+    for r in rows:
+        report.issues.append(Issue(
+            "serious", "greenhouse_claim_confirmed_without_receipt",
+            f"execution {r['execution_id']}'s greenhouse_submit_claims row is CONFIRMED but no "
+            f"application_receipts row exists for it",
         ))

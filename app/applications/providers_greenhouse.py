@@ -203,11 +203,19 @@ class GreenhouseApplicationProvider(ApplicationProvider):
             "Real Provider Execution V1 added canonical (board token, posting id) identity, a typed "
             "discovery outcome that tells a permanently-gone posting (404/410) apart from a transient "
             "failure, and the optional check_job_still_active()/classify_job_inactive_reason() hooks -- "
-            "all on the SAME documented public read API. Submission is still NOT implemented: "
+            "all on the SAME documented public read API. Submission via THIS ApplicationProvider (the "
+            "ordinary executor pipeline) is still NOT implemented and submission_supported stays False: "
             "Greenhouse's actual apply flow is not a documented public API for programmatic use, so "
             "ASSIST_ONLY per CLAUDE.md Phase 8 section 24. CAPTCHA/auth/confirmation detection is "
             "genuinely impossible on this JSON read API and is honestly left to the browser-assist "
-            "layer rather than faked here."
+            "layer rather than faked here. Greenhouse Verified Submission Contract V1 separately built a "
+            "complete, disabled-by-default real-browser submit engine and canary "
+            "(app.applications.greenhouse_submit_engine/greenhouse_canary) that CAN physically click a "
+            "real Greenhouse submit control end-to-end -- proven only against local fixtures so far, "
+            "never against a real employer. That engine is deliberately NOT wired into this class or the "
+            "ordinary AUTO_PERMITTED/approved-submit executor pipeline, and per CLAUDE.md's capability-"
+            "honesty rule a local fixture is never sufficient evidence to flip submission_supported here; "
+            "only a genuine, explicitly-authorized real-employer canary run could ever justify that."
         ),
     )
 

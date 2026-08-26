@@ -575,6 +575,25 @@ MIN_ALIGNMENT_FOR_AUTO_PREPARE = _env_int("MIN_ALIGNMENT_FOR_AUTO_PREPARE", 40)
 MAX_RESUMES_PER_CYCLE = _env_int("MAX_RESUMES_PER_CYCLE", 10)
 MAX_APPLICATIONS_PER_CYCLE = _env_int("MAX_APPLICATIONS_PER_CYCLE", 5)
 
+# --- Greenhouse Verified Submission Contract V1 -----------------------------
+# See docs/greenhouse-verified-submission-contract-v1.md.
+#
+# The CONTROLLED CANARY gate: off by default, matching every other real-
+# network/real-browser flag in this project (BROWSER_ASSIST_ENABLED,
+# REAL_ATS_CANARY_ENABLED). Even when true, `app.applications.greenhouse_canary`
+# additionally requires an explicit `confirm=True` on the specific call and a
+# current, verified, ACTIVE durable approval for the specific job -- this
+# flag alone never authorizes anything. No test in this project may set this
+# to True; tests exercise `app.applications.greenhouse_submit_engine`
+# directly against local `file://` fixtures instead.
+GREENHOUSE_SUBMIT_CANARY_ENABLED = _env_bool("GREENHOUSE_SUBMIT_CANARY_ENABLED", False)
+# Bounded wait for a genuine Playwright click on the identified FINAL_SUBMIT
+# control (app.applications.greenhouse_submit_engine._click_and_observe). A
+# disabled/unresponsive control raises a real Playwright TimeoutError before
+# this elapses -- the honest "no click was ever dispatched" signal used to
+# distinguish a pre-click timeout from a post-click one.
+GREENHOUSE_SUBMIT_CLICK_TIMEOUT_MS = _env_int("GREENHOUSE_SUBMIT_CLICK_TIMEOUT_MS", 10000)
+
 # CLAUDE.md Phase 15 section 42/44: a Phase 15 large-state benchmark
 # (scripts/phase15_release_benchmark.py) measured the unified dashboard's
 # rendered pipeline table growing unboundedly with total job count -- 24MB

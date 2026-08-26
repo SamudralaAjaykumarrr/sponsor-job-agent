@@ -1127,3 +1127,67 @@ Greenhouse/Lever execution adapters) must keep obeying as real-ATS coverage grow
   anything. A fixture's own FILENAME is part of its `file://` URL, so a confirmation fixture must
   avoid every substring in `confirmation_evidence._URL_CONFIRMATION_HINTS` — otherwise the filename
   itself supplies a corroborating signal and silently upgrades the evidence grade.
+
+## Greenhouse Verified Submission Contract V1 Rules (recorded after this build, apply to all
+future phases)
+
+See `docs/greenhouse-verified-submission-contract-v1.md` for full architecture. Durable rules:
+
+- `app.applications.browser_runtime` and `app.applications.browser_assist` remain completely
+  unmodified by this feature. `app.applications.greenhouse_submit_engine` is the ONLY module
+  (besides the pre-existing `app.applications.canary`) that opens its OWN, independent Playwright
+  browser session outside `browser_runtime`'s session registry, and the ONLY module in this
+  project, full stop, that ever calls `.click()` on a control classified `FINAL_SUBMIT`
+  (`app.applications.apply_entry.ApplyControlClassification.FINAL_SUBMIT`) — enforced by
+  never wiring it into `browser_runtime`'s public API, `browser_assist`'s ASSIST flow, the
+  ordinary `app.applications.executor.process_execution()` pipeline, any worker, or any
+  scheduled/background loop. Every other browser-driving module's existing prohibition on
+  clicking a final submit control is unchanged and unweakened by this feature's existence.
+- `GreenhouseApplicationProvider.capabilities.submission_supported` stays `False`. Building and
+  fixture-testing a genuinely working submit engine is explicitly NOT sufficient evidence to flip
+  it — per the standing capability-honesty rule, only a genuine, explicitly-authorized real-employer
+  canary run observing a real confirmation could ever justify that, and this project has not
+  performed one. `app.applications.doctor._check_greenhouse_submission_supported_still_false`
+  statically enforces this on every doctor run.
+- `app.applications.greenhouse_submit_claim`'s `greenhouse_submit_claims` table is the actual,
+  physical "at most one submit action per execution" guarantee: a single atomic
+  `UPDATE ... WHERE submit_attempted = 0` flip, acquired as the LAST step before the physical
+  click, never a read-then-write check. Once flipped, no code path — this module, the engine, or
+  any future caller — may ever flip it back or attempt a second click for the same execution; a
+  second call always observes `submit_attempted = 1` and refuses before a browser is even opened.
+- `app.applications.greenhouse_submit_contract` is strictly read-only and introduces no new gate
+  for the ordinary executor pipeline — `app.applications.eligibility`/`app.applications.approval`
+  remain the real gates there, unmodified. It is consulted only by
+  `app.applications.greenhouse_submit_engine` and `app.applications.greenhouse_canary`. Its steps
+  7-8 (submit control uniqueness, claim state) report `NOT_YET_CHECKED` — never a guessed
+  PASSED/FAILED — until genuine post-navigation `BrowserEvidence` is supplied; a `NOT_YET_CHECKED`
+  step never counts toward `blocking_reasons` or flips `ready` to False.
+- A submit outcome that cannot be confidently classified `CONFIRMED` or `REJECTED` always becomes
+  `SUBMISSION_STATUS_UNKNOWN` and is never retried automatically by any code path — this applies
+  uniformly to a click that never dispatched (`TIMEOUT_BEFORE_CLICK`), a dispatched click with no
+  observed response (`TIMEOUT_AFTER_CLICK`), a network-level failure after the click
+  (`CONNECTION_LOST`), and a response with no recognizable phrase (`UNRECOGNIZED_OUTCOME`). Every
+  `SUBMISSION_STATUS_UNKNOWN` outcome raises the existing `BlockerCode.SUBMISSION_STATUS_UNKNOWN`
+  blocker and is resolvable only through the existing `app.applications.reconcile` human/operator
+  path — this feature introduces no second reconciliation mechanism.
+- Duplicate-application evidence (`confirmation_parser.parse_confirmation_text().already_applied`)
+  is classified `BLOCKED` with `error_type="DUPLICATE_APPLICATION_DETECTED"`, never folded into a
+  fresh `CONFIRMED` transition — matching the same rule Phase 11 established for the browser-assist
+  path, restated here since this engine is a structurally separate code path.
+  `_finish()`/`receipts.record_receipt()` are only ever reached on a genuine `CONFIRMED` outcome.
+- `app.applications.greenhouse_canary` is the ONLY sanctioned caller of
+  `greenhouse_submit_engine.run_greenhouse_submit()` against a real (non-test) posting. It requires,
+  in order and all before opening a browser: `config.GREENHOUSE_SUBMIT_CANARY_ENABLED` (default
+  `False`), an explicit `confirm=True` on the specific call, a recognized Greenhouse identity, and a
+  current ACTIVE durable approval (`approval.verify_durable_approval_for_submission`). It always
+  forces `headless=False` regardless of the operator's `BROWSER_HEADLESS` setting, has no batch or
+  scheduled entry point, and is never imported by `background_scheduler`/`scheduler`/
+  `reconcile_worker`/`app.agent.orchestrator` — `tests/test_greenhouse_canary.py`'s
+  `test_canary_never_imported_by_any_scheduler_module` statically enforces this. No test in this
+  project may set `GREENHOUSE_SUBMIT_CANARY_ENABLED = True`.
+- `tests/browser_fixtures.py::greenhouse_like_submit_flow_page()`'s fixture JS performs a real
+  `fetch()` to a fixed, fake `https://greenhouse-fixture.local/apply` endpoint that
+  `page.route()` intercepts — this is the sanctioned mechanism for deterministically simulating a
+  real ATS's success/validation-error/timeout/connection-loss/duplicate response without any real
+  network call or local HTTP server; any future submit-contract fixture needing controllable
+  server-response timing should follow this same pattern rather than inventing a new one.
