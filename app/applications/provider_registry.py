@@ -5,15 +5,19 @@ never be merged."""
 
 from app.applications.mock_ats import MockATSProvider
 from app.applications.provider import ApplicationProvider
+from app.applications.providers_ashby import AshbyApplicationProvider
 from app.applications.providers_generic import GenericAssistOnlyProvider
 from app.applications.providers_greenhouse import GreenhouseApplicationProvider
 from app.applications.providers_lever import LeverApplicationProvider
+from app.applications.providers_workday import WorkdayApplicationProvider
 from app.models import Job
 
 _PROVIDERS: dict[str, ApplicationProvider] = {
     "mock_ats": MockATSProvider(),
     "greenhouse": GreenhouseApplicationProvider(),
     "lever": LeverApplicationProvider(),
+    "ashby": AshbyApplicationProvider(),
+    "workday": WorkdayApplicationProvider(),
 }
 
 _GENERIC = GenericAssistOnlyProvider()

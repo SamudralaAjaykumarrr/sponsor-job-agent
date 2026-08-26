@@ -1,11 +1,18 @@
-"""Real Provider Execution V1: real-Chromium E2E coverage for the Greenhouse
-and Lever ASSIST execution flows.
+"""Real Provider Execution V1: real-Chromium E2E coverage for the Greenhouse,
+Lever, Workday, and Ashby ASSIST execution flows.
 
 Every URL is a LOCAL `file://` fixture (tests/browser_fixtures.py's
-`greenhouse_like_*` / `lever_like_*` pages, shaped from each provider's
-genuine documented/observed field names). No real employer is ever contacted,
-no network access is required, and nothing is ever submitted anywhere -- the
-whole point of this suite is proving the flow stops safely before that.
+`greenhouse_like_*` / `lever_like_*` / `workday_like_*` / `ashby_like_*`
+pages, shaped from each provider's genuine documented/observed field names).
+No real employer is ever contacted, no network access is required, and
+nothing is ever submitted anywhere -- the whole point of this suite is
+proving the flow stops safely before that.
+
+Workday + Ashby Provider Execution V1 added `workday`/`ashby` to `PROVIDERS`
+below: this whole suite was already written provider-agnostically (it drives
+`app.applications.browser_runtime`'s genuinely provider-agnostic DOM engine,
+never per-provider code), so extending coverage to two more providers is
+purely a matter of adding their fixture pages -- no test logic changes.
 
 Marked `browser`: skipped automatically unless Playwright AND its Chromium
 binary are genuinely launchable.
@@ -19,7 +26,7 @@ from app import config
 
 pytestmark = pytest.mark.browser
 
-PROVIDERS = ("greenhouse", "lever")
+PROVIDERS = ("greenhouse", "lever", "workday", "ashby")
 
 
 @pytest.fixture(autouse=True)
@@ -94,6 +101,18 @@ def _fixture(provider: str, kind: str):
     return getattr(fixtures, f"{provider}_like_{kind}")
 
 
+# Each provider's real resume-upload field `name` and its unknown-question
+# field `id`, per tests/browser_fixtures.py's `_provider_form_page` layouts --
+# the field *names* genuinely differ per provider (the normalized form model
+# matches on LABEL text, never on these), so a handful of DOM-querying tests
+# below must look up the right one per provider rather than assuming
+# Greenhouse/Lever's specific names.
+_RESUME_FIELD_NAME = {"greenhouse": "resume", "lever": "resume", "workday": "resumeAttachment",
+                       "ashby": "_systemfield_resume"}
+_UNKNOWN_FIELD_ID = {"greenhouse": "gh_unknown", "lever": "lever_unknown", "workday": "wd_unknown",
+                      "ashby": "ashby_unknown"}
+
+
 # =============================================================================
 # Form discovery + standard/known field mapping
 # =============================================================================
@@ -147,9 +166,11 @@ def test_resume_upload_field_is_populated_on_the_real_form(tmp_path, _prepared, 
     session_id = session["session_id"]
     try:
         live = browser_runtime._REGISTRY[session_id]
+        field_name = _RESUME_FIELD_NAME[provider]
         uploaded = live.run(lambda: live.page.evaluate(
-            "() => { const el = document.querySelector('input[type=file][name=resume]');"
-            "return el && el.files.length ? el.files[0].name : ''; }"
+            "(name) => { const el = document.querySelector(`input[type=file][name=${name}]`);"
+            "return el && el.files.length ? el.files[0].name : ''; }",
+            field_name,
         ))
         assert uploaded == "resume.pdf"
     finally:
@@ -178,12 +199,46 @@ def test_the_exact_job_specific_resume_artifact_is_bound_on_upload(tmp_path, _pr
         assert binding["job_id"] == job.id
         assert binding["artifact_sha256"] == expected
         assert binding["artifact_filename"] == "resume.pdf"
-        assert binding["provider_field_id"] == "resume"
+        assert binding["provider_field_id"] == _RESUME_FIELD_NAME[provider]
         assert binding["resume_variant_id"] == "var_bound"
         assert binding["provider"] == provider
         assert binding["execution_id"] == execution_id
         assert binding["verified"] == 1
         assert binding["checkpoint"].startswith("browser_assist:")
+    finally:
+        _close(session["session_id"])
+
+
+@pytest.mark.parametrize("provider", PROVIDERS)
+def test_the_exact_job_specific_cover_letter_artifact_is_bound_on_upload(tmp_path, tmp_env, _prepared, provider):
+    """Same guarantee as the resume binding test above, for the cover-letter
+    document kind -- "do the same for cover letter when present"."""
+    import hashlib
+
+    from app.applications import browser_assist, document_binding
+    from app.jobs_repo import update_job
+
+    url = _fixture(provider, "application_page")(tmp_path)
+    job, execution_id = _prepared(url, provider=provider, variant_id="var_cover")
+    # Mirrors the resume artifact's own /<job_id>/ path-ownership convention
+    # (app.applications.document_binding.verify_artifact_matches_job).
+    job_dir = tmp_env["output_dir"] / str(job.id)
+    cover_path = job_dir / "cover_letter.pdf"
+    cover_path.write_bytes(b"%PDF-1.4 tailored cover letter")
+    update_job(job.id, cover_letter_path=str(cover_path))
+    session = browser_assist.start_session(execution_id)["session"]
+    try:
+        bindings = document_binding.list_bindings_for_session(session["session_id"])
+        cover_bindings = [b for b in bindings if b["document_kind"] == "COVER_LETTER"]
+        assert len(cover_bindings) == 1
+        binding = cover_bindings[0]
+        expected = hashlib.sha256(cover_path.read_bytes()).hexdigest()
+        assert binding["job_id"] == job.id
+        assert binding["artifact_sha256"] == expected
+        assert binding["artifact_filename"] == "cover_letter.pdf"
+        assert binding["provider"] == provider
+        assert binding["execution_id"] == execution_id
+        assert binding["verified"] == 1
     finally:
         _close(session["session_id"])
 
@@ -245,9 +300,11 @@ def test_unknown_question_is_never_answered_with_a_fabricated_value(tmp_path, _p
     session_id = session["session_id"]
     try:
         live = browser_runtime._REGISTRY[session_id]
+        field_id = _UNKNOWN_FIELD_ID[provider]
         value = live.run(lambda: live.page.evaluate(
-            "() => { const el = document.querySelector('#gh_unknown, #lever_unknown');"
-            "return el ? el.value : null; }"
+            "(id) => { const el = document.getElementById(id);"
+            "return el ? el.value : null; }",
+            field_id,
         ))
         assert value == ""
     finally:
@@ -272,6 +329,30 @@ def test_captcha_pauses_with_a_needs_captcha_blocker(tmp_path, _prepared, provid
         assert blocker["blocker_code"] == "NEEDS_CAPTCHA"
         assert blocker["blocker_class"] == "RESUMABLE"
         # Nothing was filled -- the flow stopped before touching the form.
+        assert (session["mapped_field_count"] or 0) == 0
+    finally:
+        _close(session["session_id"])
+
+
+@pytest.mark.parametrize("provider", PROVIDERS)
+def test_otp_challenge_pauses_with_a_needs_otp_blocker(tmp_path, _prepared, provider):
+    """OTP/CAPTCHA -> human intervention only. Distinct from the plain
+    password sign-in wall: this exercises the MFA-phrase detection path
+    (`app.applications.browser_runtime._MFA_PHRASES`), proven here to be
+    genuinely provider-agnostic across all four providers, not something
+    added only for Workday/Ashby."""
+    from app.applications import blockers, browser_assist
+
+    url = _fixture(provider, "otp_page")(tmp_path)
+    job, execution_id = _prepared(url, provider=provider)
+    session = browser_assist.start_session(execution_id)["session"]
+    try:
+        assert session["status"] == "PAUSED_MFA_REQUIRED"
+        assert session["needs_user_action"] == 1
+        blocker = blockers.get_active_blocker_for_execution(execution_id)
+        assert blocker["blocker_code"] == "NEEDS_OTP"
+        assert blockers.blocker_class_for(blockers.BlockerCode.NEEDS_OTP) == blockers.BlockerClass.RESUMABLE
+        # Nothing was filled and no code was ever typed in.
         assert (session["mapped_field_count"] or 0) == 0
     finally:
         _close(session["session_id"])

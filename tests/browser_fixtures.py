@@ -764,6 +764,66 @@ _LEVER_COVER_LETTER = """
   <label for="lever_cover">Cover letter</label><input id="lever_cover" name="cover_letter" type="file">
 """
 
+# Workday + Ashby Provider Execution V1: field shapes modeled on each real
+# provider's genuine label conventions (Workday's "Legal Name" wizard step,
+# Ashby's system fields), even though neither provider's real DOM field
+# *names* are guessable without live-opening a real tenant/board (the
+# normalized form model matches on LABEL text, exactly like the Lever fixture
+# above -- the field `name` attribute is never load-bearing for matching).
+_WORKDAY_STANDARD_FIELDS = """
+  <label for="firstName">Legal Name - First Name</label>
+  <input id="firstName" name="legalName--firstName" type="text" required>
+  <label for="lastName">Legal Name - Last Name</label>
+  <input id="lastName" name="legalName--lastName" type="text" required>
+  <label for="email">Email Address</label><input id="email" name="email" type="text" required>
+  <label for="phone">Phone Number</label><input id="phone" name="phoneNumber" type="text">
+  <label for="resume">Resume/CV</label><input id="resume" name="resumeAttachment" type="file" required>
+"""
+
+_ASHBY_STANDARD_FIELDS = """
+  <label for="name">Full name</label><input id="name" name="_systemfield_name" type="text" required>
+  <label for="email">Email</label><input id="email" name="_systemfield_email" type="text" required>
+  <label for="phone">Phone</label><input id="phone" name="phone" type="text">
+  <label for="linkedin">LinkedIn URL</label><input id="linkedin" name="field_linkedin" type="text">
+  <label for="resume">Resume</label><input id="resume" name="_systemfield_resume" type="file" required>
+"""
+
+_WORKDAY_SPONSORSHIP_QUESTION = """
+  <fieldset>
+    <legend>Are you legally authorized to work in the country in which this position is based, and will you
+    now or in the future require sponsorship for employment visa status?</legend>
+    <label><input type="radio" name="sponsorshipRequired" value="Yes"> Yes</label>
+    <label><input type="radio" name="sponsorshipRequired" value="No"> No</label>
+  </fieldset>
+"""
+
+_ASHBY_SPONSORSHIP_QUESTION = """
+  <fieldset>
+    <legend>Will you now or in the future require visa sponsorship to work in the United States?</legend>
+    <label><input type="radio" name="field_sponsorship" value="Yes"> Yes</label>
+    <label><input type="radio" name="field_sponsorship" value="No"> No</label>
+  </fieldset>
+"""
+
+_WORKDAY_UNKNOWN_QUESTION = """
+  <label for="wd_unknown">What is your expected start date and how many hours can you commit weekly?</label>
+  <input id="wd_unknown" name="q_unknown_workday" type="text" required>
+"""
+
+_ASHBY_UNKNOWN_QUESTION = """
+  <label for="ashby_unknown">What's a project you're most proud of and why?</label>
+  <textarea id="ashby_unknown" name="field_unknown_ashby" required></textarea>
+"""
+
+_WORKDAY_COVER_LETTER = """
+  <label for="cover_letter">Cover Letter (optional)</label>
+  <input id="cover_letter" name="coverLetterAttachment" type="file">
+"""
+
+_ASHBY_COVER_LETTER = """
+  <label for="ashby_cover">Cover Letter</label><input id="ashby_cover" name="_systemfield_coverletter" type="file">
+"""
+
 
 def _provider_form_page(
     tmp_path: Path, name: str, standard: str, *, sponsorship: str = "", unknown: str = "",
@@ -847,6 +907,23 @@ def greenhouse_like_login_page(tmp_path: Path) -> str:
     """))
 
 
+def greenhouse_like_otp_page(tmp_path: Path) -> str:
+    """A Greenhouse-shaped one-time-passcode challenge -- distinct from the
+    plain sign-in wall above, exercising the MFA phrase-detection path
+    (`app.applications.browser_runtime._MFA_PHRASES`) rather than the
+    `input[type=password]` heuristic. Added by Workday + Ashby Provider
+    Execution V1 to prove the generic engine's MFA detection is genuinely
+    provider-agnostic, not just added for the two new providers."""
+    return _write(tmp_path, "greenhouse_otp.html", textwrap.dedent("""
+        <h1>Verify Your Identity</h1>
+        <p>Enter the one-time code we sent to your email to continue.</p>
+        <form>
+          <label for="gh_otp">Verification code</label><input id="gh_otp" name="otp" type="text">
+          <button type="submit">Verify</button>
+        </form>
+    """))
+
+
 def greenhouse_like_expired_page(tmp_path: Path) -> str:
     """The page a closed Greenhouse posting shows: no form at all, and no
     apply control -- the "job expired" terminal case."""
@@ -922,6 +999,19 @@ def lever_like_login_page(tmp_path: Path) -> str:
     """))
 
 
+def lever_like_otp_page(tmp_path: Path) -> str:
+    """A Lever-shaped one-time-passcode challenge -- see
+    greenhouse_like_otp_page's docstring."""
+    return _write(tmp_path, "lever_otp.html", textwrap.dedent("""
+        <h1>Two-Factor Authentication</h1>
+        <p>Enter your authentication code to continue.</p>
+        <form>
+          <label for="lv_otp">Authentication code</label><input id="lv_otp" name="otp" type="text">
+          <button type="submit">Verify</button>
+        </form>
+    """))
+
+
 def lever_like_expired_page(tmp_path: Path) -> str:
     return _write(tmp_path, "lever_expired.html", textwrap.dedent("""
         <div>
@@ -950,6 +1040,199 @@ def lever_like_confirmation_page(tmp_path: Path) -> str:
     """))
 
 
+# --- Workday-shaped ----------------------------------------------------------
+
+def workday_like_application_page(
+    tmp_path: Path, *, with_cover_letter: bool = True, with_unknown_question: bool = False,
+    title: str = DEFAULT_JOB_TITLE, company: str = DEFAULT_JOB_COMPANY,
+) -> str:
+    """A complete Workday-shaped application form: the standard legal-name/
+    email/phone/resume block, a genuine sponsorship radio GROUP whose
+    question text lives in the fieldset legend, optionally a cover-letter
+    upload, and optionally an employer-specific question this project has no
+    verified answer for."""
+    return _provider_form_page(
+        tmp_path, "workday_form.html", _WORKDAY_STANDARD_FIELDS,
+        sponsorship=_WORKDAY_SPONSORSHIP_QUESTION,
+        unknown=_WORKDAY_UNKNOWN_QUESTION if with_unknown_question else "",
+        cover_letter=_WORKDAY_COVER_LETTER if with_cover_letter else "",
+        title=title, company=company,
+    )
+
+
+def workday_like_form_changed_page(tmp_path: Path) -> str:
+    """The SAME requisition's form after the tenant changed it -- one field
+    replaced -- producing a genuinely different field fingerprint (the
+    PAUSED_FORM_CHANGED / stale-authorization case)."""
+    changed_standard = _WORKDAY_STANDARD_FIELDS.replace(
+        '<label for="phone">Phone Number</label><input id="phone" name="phoneNumber" type="text">',
+        '<label for="location_pref">Preferred Location</label>'
+        '<input id="location_pref" name="locationPreference" type="text">',
+    )
+    return _provider_form_page(
+        tmp_path, "workday_form_changed.html", changed_standard, sponsorship=_WORKDAY_SPONSORSHIP_QUESTION,
+    )
+
+
+def workday_like_captcha_page(tmp_path: Path) -> str:
+    """A Workday-shaped form behind a genuinely RENDERED CAPTCHA widget -- a
+    real element carrying "captcha" in its class, not merely a referenced
+    script tag."""
+    return _write(tmp_path, "workday_captcha.html", _jsonld_block() + textwrap.dedent(f"""
+        <h1>{DEFAULT_JOB_TITLE}</h1>
+        <form>
+          {_WORKDAY_STANDARD_FIELDS}
+          <div class="g-recaptcha" data-sitekey="local-fixture-key">Verify you are human.</div>
+          <button type="submit">Submit Application</button>
+        </form>
+    """))
+
+
+def workday_like_login_page(tmp_path: Path) -> str:
+    """A Workday-shaped candidate account sign-in wall reached instead of the
+    form (Workday's real apply flow commonly requires an account)."""
+    return _write(tmp_path, "workday_login.html", textwrap.dedent("""
+        <h1>Sign In to Apply</h1>
+        <form>
+          <label for="wd_user">Email</label><input id="wd_user" name="email" type="text">
+          <label for="wd_pass">Password</label><input id="wd_pass" name="password" type="password">
+          <button type="submit">Sign In</button>
+        </form>
+    """))
+
+
+def workday_like_otp_page(tmp_path: Path) -> str:
+    """A Workday-shaped one-time-passcode challenge -- distinct from the
+    plain sign-in wall above, exercising the MFA phrase-detection path
+    (`app.applications.browser_runtime._MFA_PHRASES`) rather than the
+    `input[type=password]` heuristic."""
+    return _write(tmp_path, "workday_otp.html", textwrap.dedent("""
+        <h1>Verify Your Identity</h1>
+        <p>Enter the one-time code we sent to your email to continue your application.</p>
+        <form>
+          <label for="wd_otp">Verification code</label><input id="wd_otp" name="otp" type="text">
+          <button type="submit">Verify</button>
+        </form>
+    """))
+
+
+def workday_like_expired_page(tmp_path: Path) -> str:
+    """The page a closed Workday requisition shows: no form at all, and no
+    apply control -- the "job expired" terminal case."""
+    return _write(tmp_path, "workday_expired.html", textwrap.dedent("""
+        <div>
+          <h1>This requisition is no longer accepting applications</h1>
+          <p>The position you are looking for is closed. Search our other open roles.</p>
+        </div>
+    """))
+
+
+def workday_like_confirmation_page(tmp_path: Path) -> str:
+    """A Workday-shaped post-submission confirmation page, carrying both a
+    trusted success phrase and a confirmation id (the STRONG-evidence
+    case)."""
+    return _write(tmp_path, "workday_confirmation.html", textwrap.dedent("""
+        <div>
+          <h1>Thank you for applying to Acme Corp</h1>
+          <p>Your application has been submitted. Confirmation Number: WD-2026-77201</p>
+        </div>
+    """))
+
+
+# --- Ashby-shaped --------------------------------------------------------------
+
+def ashby_like_application_page(
+    tmp_path: Path, *, with_cover_letter: bool = True, with_unknown_question: bool = False,
+    title: str = DEFAULT_JOB_TITLE, company: str = DEFAULT_JOB_COMPANY,
+) -> str:
+    """A complete Ashby-shaped application form: the standard name/email/
+    phone/LinkedIn/resume block, a genuine sponsorship radio GROUP whose
+    question text lives in the fieldset legend, optionally a cover-letter
+    upload, and optionally an employer-specific question this project has no
+    verified answer for."""
+    return _provider_form_page(
+        tmp_path, "ashby_form.html", _ASHBY_STANDARD_FIELDS,
+        sponsorship=_ASHBY_SPONSORSHIP_QUESTION,
+        unknown=_ASHBY_UNKNOWN_QUESTION if with_unknown_question else "",
+        cover_letter=_ASHBY_COVER_LETTER if with_cover_letter else "",
+        title=title, company=company,
+    )
+
+
+def ashby_like_form_changed_page(tmp_path: Path) -> str:
+    changed_standard = _ASHBY_STANDARD_FIELDS.replace(
+        '<label for="linkedin">LinkedIn URL</label><input id="linkedin" name="field_linkedin" type="text">',
+        '<label for="portfolio">Portfolio URL</label><input id="portfolio" name="field_portfolio" type="text">',
+    )
+    return _provider_form_page(
+        tmp_path, "ashby_form_changed.html", changed_standard, sponsorship=_ASHBY_SPONSORSHIP_QUESTION,
+    )
+
+
+def ashby_like_captcha_page(tmp_path: Path) -> str:
+    return _write(tmp_path, "ashby_captcha.html", _jsonld_block() + textwrap.dedent(f"""
+        <h1>{DEFAULT_JOB_TITLE}</h1>
+        <form>
+          {_ASHBY_STANDARD_FIELDS}
+          <div class="g-recaptcha" data-sitekey="local-fixture-key">Verify you are human.</div>
+          <button type="submit">Submit Application</button>
+        </form>
+    """))
+
+
+def ashby_like_login_page(tmp_path: Path) -> str:
+    return _write(tmp_path, "ashby_login.html", textwrap.dedent("""
+        <h1>Sign in to continue</h1>
+        <form>
+          <label for="ab_user">Email</label><input id="ab_user" name="email" type="text">
+          <label for="ab_pass">Password</label><input id="ab_pass" name="password" type="password">
+          <button type="submit">Sign In</button>
+        </form>
+    """))
+
+
+def ashby_like_otp_page(tmp_path: Path) -> str:
+    """An Ashby-shaped one-time-passcode challenge -- see
+    workday_like_otp_page's docstring."""
+    return _write(tmp_path, "ashby_otp.html", textwrap.dedent("""
+        <h1>Two-Factor Authentication</h1>
+        <p>Enter your authentication code to continue.</p>
+        <form>
+          <label for="ab_otp">Authentication code</label><input id="ab_otp" name="otp" type="text">
+          <button type="submit">Verify</button>
+        </form>
+    """))
+
+
+def ashby_like_expired_page(tmp_path: Path) -> str:
+    return _write(tmp_path, "ashby_expired.html", textwrap.dedent("""
+        <div>
+          <h1>This job is no longer available</h1>
+          <p>This posting has closed. View all open positions.</p>
+        </div>
+    """))
+
+
+def ashby_like_confirmation_page(tmp_path: Path) -> str:
+    """An Ashby-shaped post-submission confirmation page, carrying both a
+    trusted success phrase and a confirmation id (the STRONG-evidence
+    case)."""
+    return _write(tmp_path, "ashby_confirmation.html", textwrap.dedent("""
+        <div>
+          <h1>Thank you for applying to Acme Corp</h1>
+          <p>Your application has been submitted. Confirmation Number: AB-2026-31940</p>
+        </div>
+    """))
+
+
+_STANDARD_FIELDS_BY_PROVIDER = {
+    "greenhouse": lambda: _GREENHOUSE_STANDARD_FIELDS,
+    "lever": lambda: _LEVER_STANDARD_FIELDS,
+    "workday": lambda: _WORKDAY_STANDARD_FIELDS,
+    "ashby": lambda: _ASHBY_STANDARD_FIELDS,
+}
+
+
 def provider_like_identity_mismatch_pages(tmp_path: Path, *, provider: str) -> tuple[str, str]:
     """Two genuinely different requisitions on the same provider: the session
     is opened against the first, and the live page ends up on the second.
@@ -960,7 +1243,7 @@ def provider_like_identity_mismatch_pages(tmp_path: Path, *, provider: str) -> t
     rather than guess when it cannot)."""
     other = _provider_form_page(
         tmp_path, f"{provider}_other_requisition.html",
-        _GREENHOUSE_STANDARD_FIELDS if provider == "greenhouse" else _LEVER_STANDARD_FIELDS,
+        _STANDARD_FIELDS_BY_PROVIDER[provider](),
         title="Frontend Software Engineer", company="Globex Industries",
     )
     session_page = _write(tmp_path, f"{provider}_session_landing.html", textwrap.dedent(f"""
