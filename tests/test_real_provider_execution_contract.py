@@ -156,12 +156,28 @@ def test_build_matrix_rows_are_serializable_dicts():
 
 
 def test_providers_without_a_dedicated_adapter_report_the_generic_fallback_policy():
-    """Ashby/Workday/... have no dedicated ApplicationProvider, so the
-    product genuinely falls back to GenericAssistOnlyProvider -- the audit
-    must report that ASSIST_ONLY reality rather than a bare UNSUPPORTED."""
-    contract = build_contract("ashby")
+    """SmartRecruiters/Workable/... have no dedicated ApplicationProvider, so
+    the product genuinely falls back to GenericAssistOnlyProvider -- the
+    audit must report that ASSIST_ONLY reality rather than a bare
+    UNSUPPORTED. (Ashby and Workday gained dedicated adapters in the Workday +
+    Ashby Provider Execution V1 build -- see test_providers_workday.py /
+    test_providers_ashby.py for their own dedicated-adapter contract tests.)"""
+    contract = build_contract("smartrecruiters")
     assert contract.has_application_adapter is False
     assert contract.automation_policy == "ASSIST_ONLY"
+
+
+def test_ashby_and_workday_now_have_dedicated_adapters():
+    """Workday + Ashby Provider Execution V1: both gained dedicated
+    ApplicationProvider adapters (canonical identity, liveness checks), while
+    remaining ASSIST_ONLY / submission_supported=False -- browser fill
+    capability is still not submission capability."""
+    for provider in ("ashby", "workday"):
+        contract = build_contract(provider)
+        assert contract.has_application_adapter is True
+        assert contract.automation_policy == "ASSIST_ONLY"
+        assert contract.submission_supported is False
+        assert contract.submission_source == CapabilitySource.NONE
 
 
 def test_doctor_contract_checks_pass_on_the_real_registries(tmp_env):

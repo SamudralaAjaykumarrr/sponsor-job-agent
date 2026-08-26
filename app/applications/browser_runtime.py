@@ -521,10 +521,19 @@ class _LiveSession:
             return DiscoveryOutcome(pause_reason="CAPTCHA_PRESENT", current_url=current_url)
 
         login_wall = page.locator("input[type=password]").count() > 0
-        if login_wall:
+        # Workday + Ashby Provider Execution V1: a real-Chromium OTP fixture
+        # caught this live -- a standalone one-time-passcode/2FA challenge
+        # screen (no `input[type=password]` at all, just a code field) was
+        # previously invisible to this check entirely (it fell through to
+        # ordinary field detection), because MFA phrase matching was gated
+        # behind `login_wall`. An MFA phrase is specific and narrow enough
+        # (see `_MFA_PHRASES`) to stand on its own as a genuine auth-gate
+        # signal, independent of whether a password field is also present.
+        has_mfa_phrase = any(p in content_lower for p in _MFA_PHRASES)
+        if login_wall or has_mfa_phrase:
             provider_health.record_failure(self.provider, provider_health.FailureKind.AUTH_GATE,
                                             tenant=self.tenant, site=self.site)
-            if any(p in content_lower for p in _MFA_PHRASES):
+            if has_mfa_phrase:
                 return DiscoveryOutcome(pause_reason="MFA_REQUIRED", current_url=current_url)
             return DiscoveryOutcome(pause_reason="LOGIN_REQUIRED", current_url=current_url)
 
