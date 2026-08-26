@@ -41,6 +41,38 @@ def test_greenhouse_provider_normalizes_jobs():
     assert job.published_at == "2026-08-21T10:00:00Z"
 
 
+def test_greenhouse_provider_strips_html_entity_encoded_content():
+    # Real bug caught live during pumpcareers canary prep: a real board's
+    # `?content=true` response HTML-entity-encodes its markup
+    # (`&lt;h3&gt;...`), not literal tags. `_strip_html` must unescape
+    # BEFORE stripping tags, or the entities decode back into raw,
+    # un-stripped tags afterward.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "jobs": [
+                    {
+                        "id": 4754286008,
+                        "title": "Backend Engineer",
+                        "content": "&lt;h3&gt;&lt;strong&gt;About&lt;/strong&gt;&lt;/h3&gt;\n"
+                                   "&lt;p&gt;Build APIs &amp; ship fast.&lt;/p&gt;",
+                        "absolute_url": "https://job-boards.greenhouse.io/pumpcareers/jobs/4754286008",
+                        "updated_at": "2026-08-21T10:00:00Z",
+                        "location": {"name": "San Francisco, CA"},
+                    }
+                ]
+            },
+        )
+
+    provider = GreenhouseProvider(["pumpcareers"], client=_client_returning(handler))
+    jobs = provider.fetch_jobs(max_jobs=10)
+    assert len(jobs) == 1
+    assert jobs[0].description == "About Build APIs & ship fast."
+    assert "<" not in jobs[0].description
+    assert "&lt;" not in jobs[0].description
+
+
 def test_greenhouse_provider_isolates_board_errors():
     def handler(request: httpx.Request) -> httpx.Response:
         if "badboard" in str(request.url):
