@@ -824,6 +824,67 @@ _ASHBY_COVER_LETTER = """
   <label for="ashby_cover">Cover Letter</label><input id="ashby_cover" name="_systemfield_coverletter" type="file">
 """
 
+# SmartRecruiters + Workable Provider Execution V1: field shapes modeled on
+# each real provider's genuine, live-verified read-API conventions
+# (app.applications.providers_smartrecruiters/providers_workable's own
+# module docstrings) even though neither provider's actual candidate-facing
+# form field *names* are directly capturable from the public JSON APIs (both
+# genuinely expose no application-question schema -- that's the whole reason
+# form discovery stays UNSUPPORTED on the API path for both). The normalized
+# form model matches on LABEL text, exactly like every other provider fixture
+# in this module -- the field `name` attribute is never load-bearing for
+# matching.
+_SMARTRECRUITERS_STANDARD_FIELDS = """
+  <label for="firstName">First Name</label><input id="firstName" name="firstName" type="text" required>
+  <label for="lastName">Last Name</label><input id="lastName" name="lastName" type="text" required>
+  <label for="email">Email</label><input id="email" name="email" type="text" required>
+  <label for="phone">Phone Number</label><input id="phone" name="phoneNumber" type="text">
+  <label for="resume">Resume/CV</label><input id="resume" name="resume" type="file" required>
+"""
+
+_WORKABLE_STANDARD_FIELDS = """
+  <label for="name">Full Name</label><input id="name" name="candidate[name]" type="text" required>
+  <label for="email">Email</label><input id="email" name="candidate[email]" type="text" required>
+  <label for="phone">Phone</label><input id="phone" name="candidate[phone]" type="text">
+  <label for="address">Address</label><input id="address" name="candidate[address]" type="text">
+  <label for="linkedin">LinkedIn URL</label><input id="linkedin" name="candidate[linkedin_url]" type="text">
+  <label for="resume">Resume</label><input id="resume" name="resume" type="file" required>
+"""
+
+_SMARTRECRUITERS_SPONSORSHIP_QUESTION = """
+  <fieldset>
+    <legend>Will you now or in the future require sponsorship for employment visa status?</legend>
+    <label><input type="radio" name="customField_sponsorship" value="Yes"> Yes</label>
+    <label><input type="radio" name="customField_sponsorship" value="No"> No</label>
+  </fieldset>
+"""
+
+_WORKABLE_SPONSORSHIP_QUESTION = """
+  <fieldset>
+    <legend>Will you now or in the future require visa sponsorship to work in this location?</legend>
+    <label><input type="radio" name="candidate[answers][sponsorship]" value="Yes"> Yes</label>
+    <label><input type="radio" name="candidate[answers][sponsorship]" value="No"> No</label>
+  </fieldset>
+"""
+
+_SMARTRECRUITERS_UNKNOWN_QUESTION = """
+  <label for="sr_unknown">What differentiates you from other applicants for this role?</label>
+  <textarea id="sr_unknown" name="customField_unknown" required></textarea>
+"""
+
+_WORKABLE_UNKNOWN_QUESTION = """
+  <label for="wk_unknown">Why do you want to work at this company specifically?</label>
+  <textarea id="wk_unknown" name="candidate[answers][unknown]" required></textarea>
+"""
+
+_SMARTRECRUITERS_COVER_LETTER = """
+  <label for="sr_cover">Cover Letter</label><input id="sr_cover" name="coverLetter" type="file">
+"""
+
+_WORKABLE_COVER_LETTER = """
+  <label for="wk_cover">Cover Letter</label><input id="wk_cover" name="candidate[cover_letter]" type="file">
+"""
+
 
 def _provider_form_page(
     tmp_path: Path, name: str, standard: str, *, sponsorship: str = "", unknown: str = "",
@@ -1225,11 +1286,207 @@ def ashby_like_confirmation_page(tmp_path: Path) -> str:
     """))
 
 
+# --- SmartRecruiters-shaped --------------------------------------------------
+
+def smartrecruiters_like_application_page(
+    tmp_path: Path, *, with_cover_letter: bool = True, with_unknown_question: bool = False,
+    title: str = DEFAULT_JOB_TITLE, company: str = DEFAULT_JOB_COMPANY,
+) -> str:
+    """A complete SmartRecruiters-shaped application form: the standard
+    first/last name/email/phone/resume block, a genuine sponsorship radio
+    GROUP whose question text lives in the fieldset legend, optionally a
+    cover-letter upload, and optionally an employer-specific question this
+    project has no verified answer for. This is deliberately the "classic"
+    server-rendered form shape -- the CAPTCHA-blocked oneclick-ui SPA shape
+    is exercised separately by `smartrecruiters_like_spa_page`."""
+    return _provider_form_page(
+        tmp_path, "smartrecruiters_form.html", _SMARTRECRUITERS_STANDARD_FIELDS,
+        sponsorship=_SMARTRECRUITERS_SPONSORSHIP_QUESTION,
+        unknown=_SMARTRECRUITERS_UNKNOWN_QUESTION if with_unknown_question else "",
+        cover_letter=_SMARTRECRUITERS_COVER_LETTER if with_cover_letter else "",
+        title=title, company=company,
+    )
+
+
+def smartrecruiters_like_form_changed_page(tmp_path: Path) -> str:
+    """The SAME posting's form after the company changed it -- one field
+    replaced -- producing a genuinely different field fingerprint (the
+    PAUSED_FORM_CHANGED / stale-authorization case)."""
+    changed_standard = _SMARTRECRUITERS_STANDARD_FIELDS.replace(
+        '<label for="phone">Phone Number</label><input id="phone" name="phoneNumber" type="text">',
+        '<label for="location_pref">Preferred Location</label>'
+        '<input id="location_pref" name="locationPreference" type="text">',
+    )
+    return _provider_form_page(
+        tmp_path, "smartrecruiters_form_changed.html", changed_standard,
+        sponsorship=_SMARTRECRUITERS_SPONSORSHIP_QUESTION,
+    )
+
+
+def smartrecruiters_like_captcha_page(tmp_path: Path) -> str:
+    """A SmartRecruiters-shaped form behind a genuinely RENDERED CAPTCHA
+    widget -- matching the real, live-observed DataDome CAPTCHA challenge
+    this project found on the newer oneclick-ui posting shape (see
+    app.applications.browser_capability_matrix's smartrecruiters row)."""
+    return _write(tmp_path, "smartrecruiters_captcha.html", _jsonld_block() + textwrap.dedent(f"""
+        <h1>{DEFAULT_JOB_TITLE}</h1>
+        <form>
+          {_SMARTRECRUITERS_STANDARD_FIELDS}
+          <div class="captcha-delivery" data-sitekey="local-fixture-key">Verify you are human.</div>
+          <button type="submit">Submit Application</button>
+        </form>
+    """))
+
+
+def smartrecruiters_like_login_page(tmp_path: Path) -> str:
+    """A SmartRecruiters-shaped candidate sign-in wall reached instead of the
+    form."""
+    return _write(tmp_path, "smartrecruiters_login.html", textwrap.dedent("""
+        <h1>Sign in to apply</h1>
+        <form>
+          <label for="sr_user">Email</label><input id="sr_user" name="email" type="text">
+          <label for="sr_pass">Password</label><input id="sr_pass" name="password" type="password">
+          <button type="submit">Sign In</button>
+        </form>
+    """))
+
+
+def smartrecruiters_like_otp_page(tmp_path: Path) -> str:
+    """A SmartRecruiters-shaped one-time-passcode challenge -- distinct from
+    the plain sign-in wall above, exercising the MFA phrase-detection path
+    rather than the `input[type=password]` heuristic."""
+    return _write(tmp_path, "smartrecruiters_otp.html", textwrap.dedent("""
+        <h1>Verify Your Identity</h1>
+        <p>Enter the one-time code we sent to your email to continue your application.</p>
+        <form>
+          <label for="sr_otp">Verification code</label><input id="sr_otp" name="otp" type="text">
+          <button type="submit">Verify</button>
+        </form>
+    """))
+
+
+def smartrecruiters_like_expired_page(tmp_path: Path) -> str:
+    """The page a closed SmartRecruiters posting shows: no form at all, and
+    no apply control -- the "job expired" terminal case."""
+    return _write(tmp_path, "smartrecruiters_expired.html", textwrap.dedent("""
+        <div>
+          <h1>This job is no longer accepting applications</h1>
+          <p>This posting has been closed. Browse our other open roles.</p>
+        </div>
+    """))
+
+
+def smartrecruiters_like_confirmation_page(tmp_path: Path) -> str:
+    """A SmartRecruiters-shaped post-submission confirmation page, carrying
+    both a trusted success phrase and a confirmation id (the STRONG-evidence
+    case)."""
+    return _write(tmp_path, "smartrecruiters_confirmation.html", textwrap.dedent("""
+        <div>
+          <h1>Thank you for applying to Acme Corp</h1>
+          <p>Your application has been submitted. Confirmation Number: SR-2026-40218</p>
+        </div>
+    """))
+
+
+# --- Workable-shaped ----------------------------------------------------------
+
+def workable_like_application_page(
+    tmp_path: Path, *, with_cover_letter: bool = True, with_unknown_question: bool = False,
+    title: str = DEFAULT_JOB_TITLE, company: str = DEFAULT_JOB_COMPANY,
+) -> str:
+    """A complete Workable-shaped application form: the standard name/email/
+    phone/address/LinkedIn/resume block (matching the 14 real fields
+    live-verified on a real Workable tenant -- see
+    app.applications.browser_capability_matrix's workable row), a genuine
+    sponsorship radio GROUP whose question text lives in the fieldset
+    legend, optionally a cover-letter upload, and optionally an
+    employer-specific question this project has no verified answer for."""
+    return _provider_form_page(
+        tmp_path, "workable_form.html", _WORKABLE_STANDARD_FIELDS,
+        sponsorship=_WORKABLE_SPONSORSHIP_QUESTION,
+        unknown=_WORKABLE_UNKNOWN_QUESTION if with_unknown_question else "",
+        cover_letter=_WORKABLE_COVER_LETTER if with_cover_letter else "",
+        title=title, company=company,
+    )
+
+
+def workable_like_form_changed_page(tmp_path: Path) -> str:
+    changed_standard = _WORKABLE_STANDARD_FIELDS.replace(
+        '<label for="address">Address</label><input id="address" name="candidate[address]" type="text">',
+        '<label for="portfolio">Portfolio URL</label>'
+        '<input id="portfolio" name="candidate[portfolio_url]" type="text">',
+    )
+    return _provider_form_page(
+        tmp_path, "workable_form_changed.html", changed_standard, sponsorship=_WORKABLE_SPONSORSHIP_QUESTION,
+    )
+
+
+def workable_like_captcha_page(tmp_path: Path) -> str:
+    """A Workable-shaped form behind a genuinely RENDERED CAPTCHA widget --
+    matching the real, live-observed CAPTCHA challenge this project found on
+    the real 'flosum' tenant's posting."""
+    return _write(tmp_path, "workable_captcha.html", _jsonld_block() + textwrap.dedent(f"""
+        <h1>{DEFAULT_JOB_TITLE}</h1>
+        <form>
+          {_WORKABLE_STANDARD_FIELDS}
+          <div class="g-recaptcha" data-sitekey="local-fixture-key">Verify you are human.</div>
+          <button type="submit">Submit Application</button>
+        </form>
+    """))
+
+
+def workable_like_login_page(tmp_path: Path) -> str:
+    return _write(tmp_path, "workable_login.html", textwrap.dedent("""
+        <h1>Sign in to continue</h1>
+        <form>
+          <label for="wk_user">Email</label><input id="wk_user" name="email" type="text">
+          <label for="wk_pass">Password</label><input id="wk_pass" name="password" type="password">
+          <button type="submit">Sign In</button>
+        </form>
+    """))
+
+
+def workable_like_otp_page(tmp_path: Path) -> str:
+    """A Workable-shaped one-time-passcode challenge -- see
+    smartrecruiters_like_otp_page's docstring."""
+    return _write(tmp_path, "workable_otp.html", textwrap.dedent("""
+        <h1>Two-Factor Authentication</h1>
+        <p>Enter your authentication code to continue.</p>
+        <form>
+          <label for="wk_otp">Authentication code</label><input id="wk_otp" name="otp" type="text">
+          <button type="submit">Verify</button>
+        </form>
+    """))
+
+
+def workable_like_expired_page(tmp_path: Path) -> str:
+    return _write(tmp_path, "workable_expired.html", textwrap.dedent("""
+        <div>
+          <h1>This job is no longer available</h1>
+          <p>This position has closed. View all open jobs.</p>
+        </div>
+    """))
+
+
+def workable_like_confirmation_page(tmp_path: Path) -> str:
+    """A Workable-shaped post-submission confirmation page, carrying both a
+    trusted success phrase and a confirmation id (the STRONG-evidence
+    case)."""
+    return _write(tmp_path, "workable_confirmation.html", textwrap.dedent("""
+        <div>
+          <h1>Thank you for applying to Acme Corp</h1>
+          <p>Your application has been submitted. Confirmation Number: WK-2026-55302</p>
+        </div>
+    """))
+
+
 _STANDARD_FIELDS_BY_PROVIDER = {
     "greenhouse": lambda: _GREENHOUSE_STANDARD_FIELDS,
     "lever": lambda: _LEVER_STANDARD_FIELDS,
     "workday": lambda: _WORKDAY_STANDARD_FIELDS,
     "ashby": lambda: _ASHBY_STANDARD_FIELDS,
+    "smartrecruiters": lambda: _SMARTRECRUITERS_STANDARD_FIELDS,
+    "workable": lambda: _WORKABLE_STANDARD_FIELDS,
 }
 
 

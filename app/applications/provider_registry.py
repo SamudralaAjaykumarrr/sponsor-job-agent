@@ -9,6 +9,8 @@ from app.applications.providers_ashby import AshbyApplicationProvider
 from app.applications.providers_generic import GenericAssistOnlyProvider
 from app.applications.providers_greenhouse import GreenhouseApplicationProvider
 from app.applications.providers_lever import LeverApplicationProvider
+from app.applications.providers_smartrecruiters import SmartRecruitersApplicationProvider
+from app.applications.providers_workable import WorkableApplicationProvider
 from app.applications.providers_workday import WorkdayApplicationProvider
 from app.models import Job
 
@@ -18,6 +20,8 @@ _PROVIDERS: dict[str, ApplicationProvider] = {
     "lever": LeverApplicationProvider(),
     "ashby": AshbyApplicationProvider(),
     "workday": WorkdayApplicationProvider(),
+    "smartrecruiters": SmartRecruitersApplicationProvider(),
+    "workable": WorkableApplicationProvider(),
 }
 
 _GENERIC = GenericAssistOnlyProvider()

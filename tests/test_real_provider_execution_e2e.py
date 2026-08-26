@@ -1,18 +1,21 @@
 """Real Provider Execution V1: real-Chromium E2E coverage for the Greenhouse,
-Lever, Workday, and Ashby ASSIST execution flows.
+Lever, Workday, Ashby, SmartRecruiters, and Workable ASSIST execution flows.
 
 Every URL is a LOCAL `file://` fixture (tests/browser_fixtures.py's
-`greenhouse_like_*` / `lever_like_*` / `workday_like_*` / `ashby_like_*`
-pages, shaped from each provider's genuine documented/observed field names).
-No real employer is ever contacted, no network access is required, and
-nothing is ever submitted anywhere -- the whole point of this suite is
-proving the flow stops safely before that.
+`greenhouse_like_*` / `lever_like_*` / `workday_like_*` / `ashby_like_*` /
+`smartrecruiters_like_*` / `workable_like_*` pages, shaped from each
+provider's genuine documented/observed field names). No real employer is
+ever contacted, no network access is required, and nothing is ever submitted
+anywhere -- the whole point of this suite is proving the flow stops safely
+before that.
 
 Workday + Ashby Provider Execution V1 added `workday`/`ashby` to `PROVIDERS`
-below: this whole suite was already written provider-agnostically (it drives
-`app.applications.browser_runtime`'s genuinely provider-agnostic DOM engine,
-never per-provider code), so extending coverage to two more providers is
-purely a matter of adding their fixture pages -- no test logic changes.
+below; SmartRecruiters + Workable Provider Execution V1 added
+`smartrecruiters`/`workable`: this whole suite was already written
+provider-agnostically (it drives `app.applications.browser_runtime`'s
+genuinely provider-agnostic DOM engine, never per-provider code), so
+extending coverage to more providers is purely a matter of adding their
+fixture pages -- no test logic changes.
 
 Marked `browser`: skipped automatically unless Playwright AND its Chromium
 binary are genuinely launchable.
@@ -26,7 +29,7 @@ from app import config
 
 pytestmark = pytest.mark.browser
 
-PROVIDERS = ("greenhouse", "lever", "workday", "ashby")
+PROVIDERS = ("greenhouse", "lever", "workday", "ashby", "smartrecruiters", "workable")
 
 
 @pytest.fixture(autouse=True)
@@ -108,9 +111,10 @@ def _fixture(provider: str, kind: str):
 # below must look up the right one per provider rather than assuming
 # Greenhouse/Lever's specific names.
 _RESUME_FIELD_NAME = {"greenhouse": "resume", "lever": "resume", "workday": "resumeAttachment",
-                       "ashby": "_systemfield_resume"}
+                       "ashby": "_systemfield_resume", "smartrecruiters": "resume",
+                       "workable": "resume"}
 _UNKNOWN_FIELD_ID = {"greenhouse": "gh_unknown", "lever": "lever_unknown", "workday": "wd_unknown",
-                      "ashby": "ashby_unknown"}
+                      "ashby": "ashby_unknown", "smartrecruiters": "sr_unknown", "workable": "wk_unknown"}
 
 
 # =============================================================================
