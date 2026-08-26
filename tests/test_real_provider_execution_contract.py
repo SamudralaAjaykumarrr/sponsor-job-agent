@@ -44,10 +44,12 @@ def test_only_mock_ats_ever_reports_submission_supported():
     assert submitters == ["mock_ats"]
 
 
-@pytest.mark.parametrize("provider", ["greenhouse", "lever"])
+@pytest.mark.parametrize("provider", ["greenhouse", "lever", "workable"])
 def test_browser_fill_capability_is_not_submission_capability(provider):
-    """The heart of the brief: Greenhouse and Lever both have genuinely
-    working fill/upload/assist capability, and both still report
+    """The heart of the brief: Greenhouse, Lever, and Workable all have
+    genuinely working fill/upload/assist capability (Workable's via the
+    LIVE_FORM_VERIFIED browser row, added by SmartRecruiters + Workable
+    Provider Execution V1), and all three still report
     submission_supported=False."""
     contract = build_contract(provider)
     assert contract.fill_supported is True
@@ -84,6 +86,20 @@ def test_greenhouse_form_discovery_is_api_sourced():
     contract = build_contract("greenhouse")
     assert contract.form_discovery_supported is True
     assert contract.form_discovery_source == CapabilitySource.PROVIDER_API
+
+
+def test_workable_form_discovery_is_browser_sourced_not_api_sourced():
+    """Workable's public v2 detail API genuinely exposes no question schema
+    (live-checked this build), so the adapter's own ApplicationCapabilities
+    keeps form_discovery_supported False -- while the unified contract
+    honestly reports the capability as reachable through the live-verified
+    browser engine, naming that source, exactly mirroring Lever's case."""
+    from app.applications.providers_workable import WorkableApplicationProvider
+
+    assert WorkableApplicationProvider.get_capabilities().form_discovery_supported is False
+    contract = build_contract("workable")
+    assert contract.form_discovery_supported is True
+    assert contract.form_discovery_source == CapabilitySource.BROWSER_LIVE_VERIFIED
 
 
 def test_untested_providers_report_no_assist_capability():
@@ -156,13 +172,14 @@ def test_build_matrix_rows_are_serializable_dicts():
 
 
 def test_providers_without_a_dedicated_adapter_report_the_generic_fallback_policy():
-    """SmartRecruiters/Workable/... have no dedicated ApplicationProvider, so
-    the product genuinely falls back to GenericAssistOnlyProvider -- the
+    """BambooHR/Breezy/Recruitee/... have no dedicated ApplicationProvider,
+    so the product genuinely falls back to GenericAssistOnlyProvider -- the
     audit must report that ASSIST_ONLY reality rather than a bare
-    UNSUPPORTED. (Ashby and Workday gained dedicated adapters in the Workday +
-    Ashby Provider Execution V1 build -- see test_providers_workday.py /
-    test_providers_ashby.py for their own dedicated-adapter contract tests.)"""
-    contract = build_contract("smartrecruiters")
+    UNSUPPORTED. (Ashby/Workday gained dedicated adapters in the Workday +
+    Ashby Provider Execution V1 build, SmartRecruiters/Workable in the
+    SmartRecruiters + Workable Provider Execution V1 build -- see their own
+    test_providers_*.py files for dedicated-adapter contract tests.)"""
+    contract = build_contract("bamboohr")
     assert contract.has_application_adapter is False
     assert contract.automation_policy == "ASSIST_ONLY"
 
@@ -173,6 +190,19 @@ def test_ashby_and_workday_now_have_dedicated_adapters():
     remaining ASSIST_ONLY / submission_supported=False -- browser fill
     capability is still not submission capability."""
     for provider in ("ashby", "workday"):
+        contract = build_contract(provider)
+        assert contract.has_application_adapter is True
+        assert contract.automation_policy == "ASSIST_ONLY"
+        assert contract.submission_supported is False
+        assert contract.submission_source == CapabilitySource.NONE
+
+
+def test_smartrecruiters_and_workable_now_have_dedicated_adapters():
+    """SmartRecruiters + Workable Provider Execution V1: both gained
+    dedicated ApplicationProvider adapters (canonical identity, liveness
+    checks), while remaining ASSIST_ONLY / submission_supported=False --
+    browser fill capability is still not submission capability."""
+    for provider in ("smartrecruiters", "workable"):
         contract = build_contract(provider)
         assert contract.has_application_adapter is True
         assert contract.automation_policy == "ASSIST_ONLY"

@@ -153,6 +153,8 @@ def test_capability_audit_is_backend_independent(pg_db):
 
     assert build_contract("greenhouse").submission_supported is False
     assert build_contract("lever").submission_supported is False
+    assert build_contract("smartrecruiters").submission_supported is False
+    assert build_contract("workable").submission_supported is False
     assert build_contract("mock_ats").submission_supported is True
 
 

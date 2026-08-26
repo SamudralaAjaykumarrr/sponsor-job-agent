@@ -32,29 +32,54 @@ def test_generic_provider_never_claims_discovery_or_submission():
 
 def test_generic_row_honestly_names_the_real_providers_it_covers():
     """Provider Post-Approval Execution V1: the single 'generic' capability
-    row must name which real, named providers (SmartRecruiters/Workable, plus
-    any other discovery-registered provider with no dedicated application-
-    layer adapter) it actually stands in for -- purely derived from
+    row must name which real, named providers (any discovery-registered
+    provider with no dedicated application-layer adapter, e.g. BambooHR/
+    Breezy/Recruitee) it actually stands in for -- purely derived from
     app.providers.registry.all_provider_names() minus the app-layer
     _PROVIDERS keys, never a hand-maintained duplicate list that could drift.
 
     Ashby and Workday gained dedicated adapters in the Workday + Ashby
     Provider Execution V1 build (see test_providers_ashby.py /
-    test_providers_workday.py), so they are no longer covered here."""
+    test_providers_workday.py); SmartRecruiters and Workable gained theirs in
+    the SmartRecruiters + Workable Provider Execution V1 build (see
+    test_providers_smartrecruiters.py / test_providers_workable.py), so none
+    of the four are covered here any more."""
     matrix = all_application_capabilities()
     generic_row = next(c for c in matrix if c["provider"] == "generic")
-    for name in ("smartrecruiters", "workable"):
+    for name in ("bamboohr", "breezy", "recruitee"):
         assert name in generic_row["covers_provider_names"]
-    # mock_ats/greenhouse/lever/ashby/workday all have dedicated adapters --
-    # never listed here.
+    # mock_ats/greenhouse/lever/ashby/workday/smartrecruiters/workable all
+    # have dedicated adapters -- never listed here.
     assert "greenhouse" not in generic_row["covers_provider_names"]
     assert "lever" not in generic_row["covers_provider_names"]
     assert "mock_ats" not in generic_row["covers_provider_names"]
     assert "ashby" not in generic_row["covers_provider_names"]
     assert "workday" not in generic_row["covers_provider_names"]
+    assert "smartrecruiters" not in generic_row["covers_provider_names"]
+    assert "workable" not in generic_row["covers_provider_names"]
     for c in matrix:
         if c["provider"] != "generic":
             assert "covers_provider_names" not in c
+
+
+def test_smartrecruiters_honestly_unsupported_for_form_discovery():
+    from app.applications.providers_smartrecruiters import SmartRecruitersApplicationProvider
+
+    caps = SmartRecruitersApplicationProvider.get_capabilities()
+    assert caps.form_discovery_supported is False
+    assert caps.submission_supported is False
+    assert caps.support_level.value == "UNSUPPORTED"
+    assert caps.live_validated is True  # the ABSENCE of the interface was itself verified live
+
+
+def test_workable_honestly_unsupported_for_form_discovery():
+    from app.applications.providers_workable import WorkableApplicationProvider
+
+    caps = WorkableApplicationProvider.get_capabilities()
+    assert caps.form_discovery_supported is False
+    assert caps.submission_supported is False
+    assert caps.support_level.value == "UNSUPPORTED"
+    assert caps.live_validated is True  # the ABSENCE of the interface was itself verified live
 
 
 def test_ashby_honestly_unsupported_for_form_discovery():
