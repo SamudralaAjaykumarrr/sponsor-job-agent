@@ -272,7 +272,16 @@ def _verify_resume(job: Job) -> tuple[bool, str, str]:
     path = Path(path_str)
     if not path.exists():
         return False, f"resume artifact missing on disk: {path}", ""
-    if path.parent.name != str(job.id):
+    # Matches app.applications.executor._verify_resume_artifact's and
+    # app.applications.doctor._check_wrong_resume_job_mapping's own
+    # "/<job_id>/" path-segment convention -- an exact immediate-parent-name
+    # match breaks the resume_optimizer's nested
+    # output/<job_id>/optimized/<variant_id>/ layout (same real integration
+    # gap documented in CLAUDE.md's Real Provider Execution V1 section for
+    # the executor's sibling check; this function had not been updated to
+    # match).
+    normalized = str(path).replace("\\", "/")
+    if f"/{job.id}/" not in normalized:
         return False, f"resume artifact path '{path}' does not correspond to this job", ""
     freshness = resume_integrity.verify_resume_freshness(job)
     if not freshness.fresh:
