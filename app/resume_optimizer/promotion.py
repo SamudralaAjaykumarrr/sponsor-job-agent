@@ -10,10 +10,24 @@ from app.resume_optimizer.repo import get_current_variant
 
 
 def promote_variant(job_id: int, variant: dict) -> None:
+    # `resume_jd_fingerprint` is compared against `job.jd_sponsorship_fingerprint`
+    # by app.applications.resume_integrity.verify_resume_freshness() and
+    # app.applications.approval.is_current_valid() -- CLAUDE.md Phase 13's
+    # documented contract for this column is that it "reuses the existing
+    # jd_sponsorship_fingerprint value rather than a second, parallel
+    # fingerprinting scheme" (see app.pipeline.generate_assist_outputs, which
+    # already follows this). `variant["jd_fingerprint"]` is a DIFFERENT,
+    # resume_optimizer-internal hash (different algorithm, different
+    # truncation length) used only for resume_variants' own identity tuple --
+    # writing it here made every promoted one-page resume look permanently
+    # stale to both of those checks. Match the job's own current sponsorship
+    # fingerprint instead, exactly like the legacy pipeline does.
+    job = get_job(job_id)
+    resume_jd_fingerprint = job.jd_sponsorship_fingerprint if job is not None else ""
     update_job(
         job_id,
         resume_docx_path=variant["resume_docx_path"], resume_pdf_path=variant["resume_pdf_path"],
-        resume_txt_path=variant["resume_txt_path"], resume_jd_fingerprint=variant["jd_fingerprint"],
+        resume_txt_path=variant["resume_txt_path"], resume_jd_fingerprint=resume_jd_fingerprint,
         promoted_resume_variant_id=variant["variant_id"],
     )
 

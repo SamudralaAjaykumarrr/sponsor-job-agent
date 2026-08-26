@@ -33,6 +33,23 @@ def test_extract_min_years_required_none_when_absent():
     assert extract_min_years_required("We build great software.") is None
 
 
+def test_extract_min_years_required_handles_en_dash_and_em_dash_ranges():
+    # Real bug caught live during pumpcareers canary prep: a real JD's
+    # "3–15 years" (en-dash) range was silently reduced to the range's
+    # UPPER bound (15) because only ASCII "-" was recognized as a range
+    # separator -- wrongly hard-skipping a job whose actual floor (3) the
+    # candidate meets.
+    assert extract_min_years_required("3–15 years of experience") == 3
+    assert extract_min_years_required("3—15 years of experience") == 3
+    assert extract_min_years_required("3-15 years of experience") == 3
+
+
+def test_seniority_passes_for_en_dash_range_within_candidate_experience():
+    ok, reason, years = evaluate_seniority("Backend Engineer", "3–15 years of professional experience required.")
+    assert ok
+    assert years == 3
+
+
 # --- compensation --------------------------------------------------------------
 
 def test_compensation_passes_when_unpublished():

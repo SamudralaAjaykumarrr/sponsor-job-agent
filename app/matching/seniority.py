@@ -9,7 +9,15 @@ SENIOR_TITLE_TOKENS = [
 ]
 
 _YEARS_PATTERN = re.compile(
-    r"(\d{1,2})\s*\+?\s*(?:-|to)?\s*(\d{1,2})?\s*\+?\s*years?", re.IGNORECASE
+    # Real bug caught live during pumpcareers canary prep: a range separator
+    # of only ASCII "-" missed en-dash (–) / em-dash (—), which
+    # rich-text JD editors (Greenhouse's included) commonly emit for "N-M
+    # years" ranges. Without matching them, "3–15 years" isn't
+    # recognized as a range at all -- the regex skips past the unmatched
+    # dash and the unconsumed lower bound, then matches standalone "15
+    # years", extracting the RANGE'S UPPER bound as if it were the sole/
+    # minimum requirement (3–15 years actually means a floor of 3).
+    r"(\d{1,2})\s*\+?\s*(?:[-–—]|to)?\s*(\d{1,2})?\s*\+?\s*years?", re.IGNORECASE
 )
 
 MAX_ACCEPTABLE_YEARS = 5

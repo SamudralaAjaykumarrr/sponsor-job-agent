@@ -13,9 +13,19 @@ REMOTE_PATTERNS = [
 
 HYBRID_PATTERNS = [
     r"\bhybrid\b",
-    r"\d+\s*days?\s*(?:a|per)\s*week\s+(?:in[\s-]?office|onsite|in\s+the\s+office)",
-    r"in[\s-]?office\s+\d+\s*days?",
 ]
+
+# "N days a week in office" only signals HYBRID when N is a PARTIAL week
+# (1-4) -- a real JD's "5 days a week in office" (a standard, full onsite
+# week, paired elsewhere with "No remote work will be considered") matched
+# the old un-bounded \d+ pattern and was mis-tagged HYBRID, silently
+# outranking ONSITE in the priority tier despite the JD's own explicit
+# no-remote statement. Caught live during pumpcareers canary prep.
+_DAYS_IN_OFFICE_PATTERN = re.compile(
+    r"([1-4])\s*days?\s*(?:a|per)\s*week\s+(?:in[\s-]?office|onsite|in\s+the\s+office)"
+    r"|in[\s-]?office\s+([1-4])\s*days?",
+    re.IGNORECASE,
+)
 
 ONSITE_PATTERNS = [
     r"\bon[\s-]?site\b",
@@ -34,7 +44,7 @@ def classify_work_arrangement(location: str, description: str) -> WorkArrangemen
     combined = f"{location}\n{description}".lower()
 
     is_remote = _matches_any(REMOTE_PATTERNS, combined)
-    is_hybrid = _matches_any(HYBRID_PATTERNS, combined)
+    is_hybrid = _matches_any(HYBRID_PATTERNS, combined) or _DAYS_IN_OFFICE_PATTERN.search(combined) is not None
     is_onsite = _matches_any(ONSITE_PATTERNS, combined)
 
     # Hybrid/onsite signals win over a bare "remote" mention elsewhere in the text

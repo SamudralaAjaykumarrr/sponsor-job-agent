@@ -17,8 +17,15 @@ GREENHOUSE_JOBS_URL = "https://boards-api.greenhouse.io/v1/boards/{token}/jobs"
 
 
 def _strip_html(raw_html: str) -> str:
-    text = re.sub(r"<[^>]+>", " ", raw_html or "")
-    text = unescape(text)
+    # Unescape BEFORE stripping tags: a real live board (caught during
+    # canary prep against pumpcareers' actual `content=true` response)
+    # returns its `content` field as HTML-entity-encoded markup
+    # (`&lt;h3&gt;...&lt;/h3&gt;`), not literal `<h3>` tags. Stripping first
+    # matched nothing (no literal `<` yet), so the entities decoded back
+    # into raw, un-stripped tags afterward -- every description from every
+    # tenant that encodes this way came through HTML-polluted.
+    text = unescape(raw_html or "")
+    text = re.sub(r"<[^>]+>", " ", text)
     return re.sub(r"\s+", " ", text).strip()
 
 
