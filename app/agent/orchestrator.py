@@ -372,22 +372,47 @@ class AgentOrchestrator:
         counters = CycleCounters()
 
         self._heartbeat(stage="discovering")
-        try:
-            summary = run_discovery_cycle()
-            counters.jobs_processed += summary.get("jobs_fetched", 0)
-            counters.skipped += summary.get("hard_skips", 0)
-            counters.errors += len(summary.get("errors", []))
-            counters.detail["discovery"] = {
-                k: summary.get(k) for k in ("jobs_new", "jobs_deduplicated", "confirmed_sponsors", "likely_sponsors")
-            }
+        if test_mode:
+            # TEST MODE's entire contract (module docstring: "the full
+            # discover->...->READY_FOR_APPROVAL loop can be watched end to
+            # end without ever touching a real employer") is demonstrated by
+            # the seeded mock_ats fixture alone (_seed_test_fixture_if_needed),
+            # never by real discovery. run_discovery_cycle() drives BOTH the
+            # legacy static-provider path (app.agent.cycle._discover_from_
+            # static_config -- ENABLED_PROVIDERS defaults to real greenhouse/
+            # lever, with real default board tokens GREENHOUSE_BOARD_TOKENS=
+            # ["gitlab"] / LEVER_COMPANY_SLUGS=["leverdemo"]) and the
+            # company_registry-driven path -- calling it unconditionally here
+            # meant every TEST MODE cycle, including one driven by a browser/
+            # test-mode fixture with no network mocking, made real HTTP/DNS
+            # calls to boards-api.greenhouse.io and api.lever.co. That is a
+            # real regression against the "never touch a real employer"
+            # promise, and its transient latency (retries/backoff against a
+            # real, shared, rate-limited public demo endpoint) is what made
+            # TEST MODE's own dashboard timeouts (READY FOR APPROVAL card,
+            # STOP AGENT appearing) intermittently blow through their bounded
+            # waits. Real (non-test-mode) discovery is completely unaffected.
             run_state_mod.log_activity(
-                "discovery_completed",
-                f"found {summary.get('jobs_fetched', 0)} jobs, "
-                f"{summary.get('jobs_new', 0)} new, {summary.get('hard_skips', 0)} hard-skipped",
+                "discovery_skipped_test_mode",
+                "discovery stage skipped in TEST MODE -- demo content comes from the seeded mock_ats fixture only",
             )
-        except Exception:  # noqa: BLE001 -- one stage failing must never abort the rest of the cycle
-            logger.exception("discovery stage failed")
-            counters.errors += 1
+        else:
+            try:
+                summary = run_discovery_cycle()
+                counters.jobs_processed += summary.get("jobs_fetched", 0)
+                counters.skipped += summary.get("hard_skips", 0)
+                counters.errors += len(summary.get("errors", []))
+                counters.detail["discovery"] = {
+                    k: summary.get(k) for k in ("jobs_new", "jobs_deduplicated", "confirmed_sponsors", "likely_sponsors")
+                }
+                run_state_mod.log_activity(
+                    "discovery_completed",
+                    f"found {summary.get('jobs_fetched', 0)} jobs, "
+                    f"{summary.get('jobs_new', 0)} new, {summary.get('hard_skips', 0)} hard-skipped",
+                )
+            except Exception:  # noqa: BLE001 -- one stage failing must never abort the rest of the cycle
+                logger.exception("discovery stage failed")
+                counters.errors += 1
 
         self._heartbeat(stage="generating_resumes")
         try:
