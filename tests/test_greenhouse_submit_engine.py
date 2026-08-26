@@ -1,0 +1,310 @@
+"""Greenhouse Verified Submission Contract V1: real Chromium-driven E2E tests
+for `app.applications.greenhouse_submit_engine`. Every posting is a local
+`file://` fixture (tests/browser_fixtures.py) -- never a real website, never
+a real employer. The fixture's own "Submit" button performs a `fetch()` to a
+fixed, fake `https://greenhouse-fixture.local/apply` endpoint that Playwright
+`page.route()` intercepts deterministically per scenario -- there is no real
+network call anywhere in this file.
+
+Marked `browser`: skipped automatically unless Playwright AND its Chromium
+binary are actually launchable."""
+
+import httpx
+import pytest
+
+from app import config
+from app.applications import greenhouse_submit_claim as claim
+from app.applications import provider_registry
+from app.applications.greenhouse_submit_contract import SubmitOutcome
+from app.applications.greenhouse_submit_engine import run_greenhouse_submit
+from app.applications.providers_greenhouse import GreenhouseApplicationProvider
+from app.candidate.profile import save_profile
+from app.models import ApplicationMode, Job
+from app.pipeline import ingest_and_process
+
+from tests.test_greenhouse_submit_contract import MINIMAL_PAYLOAD, _drive_to_approved
+
+pytestmark = pytest.mark.browser
+
+JD_TEXT = (
+    "We are hiring a Backend Software Engineer to build REST APIs in Python using FastAPI. "
+    "This is a full-time position. H-1B sponsorship is available for this role."
+)
+
+
+@pytest.fixture(autouse=True)
+def _require_chromium_launchable():
+    playwright = pytest.importorskip("playwright.sync_api", reason="playwright not installed")
+    try:
+        with playwright.sync_playwright() as p:
+            p.chromium.launch(headless=True).close()
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(f"chromium browser binary not launchable: {exc}")
+
+
+@pytest.fixture(autouse=True)
+def _timeouts(monkeypatch):
+    monkeypatch.setattr(config, "BROWSER_ASSIST_ENABLED", True)
+    monkeypatch.setattr(config, "BROWSER_ASSIST_TIMEOUT_SECONDS", 15)
+    monkeypatch.setattr(config, "BROWSER_DOM_STABILIZATION_TIMEOUT_MS", 6000)
+    monkeypatch.setattr(config, "BROWSER_DOM_STABILIZATION_POLL_MS", 100)
+    monkeypatch.setattr(config, "GREENHOUSE_SUBMIT_CLICK_TIMEOUT_MS", 3000)
+    # This module never enables the real canary -- every test exercises the
+    # engine directly.
+    monkeypatch.setattr(config, "GREENHOUSE_SUBMIT_CANARY_ENABLED", False)
+    monkeypatch.setattr(config, "APPLICATION_EXECUTOR_ENABLED", True)
+    monkeypatch.setattr(config, "AUTO_SUBMIT_ENABLED", False)
+
+
+@pytest.fixture(autouse=True)
+def _mock_greenhouse_api():
+    """Installed for the WHOLE test (setup AND the later run_greenhouse_submit
+    call, which independently re-derives the provider via
+    app.applications.provider_registry.get_application_provider) -- never
+    just during job setup, or the contract's own re-checks inside the engine
+    would silently fall through to a real network call."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=MINIMAL_PAYLOAD)
+
+    original = provider_registry._PROVIDERS["greenhouse"]
+    provider_registry._PROVIDERS["greenhouse"] = GreenhouseApplicationProvider(
+        client=httpx.Client(transport=httpx.MockTransport(handler))
+    )
+    yield
+    provider_registry._PROVIDERS["greenhouse"] = original
+
+
+def _approved_job(tmp_env, sample_profile, url: str, external_job_id: str) -> Job:
+    """Drives a real job through the unmodified executor/approval pipeline
+    (mocked Greenhouse Job Board API -- no live network) to a current, ACTIVE
+    approval, with `canonical_url` set to a local file:// fixture BEFORE
+    approval is recorded (so the approval's job-identity fingerprint already
+    covers this exact URL)."""
+    save_profile(sample_profile)
+    job = ingest_and_process(Job(
+        title="Backend Software Engineer", company="Acme Corp", location="Remote - US",
+        description=JD_TEXT, employment_type="Full-time", provider="greenhouse",
+        external_job_id=external_job_id, company_identifier="acme", mode=ApplicationMode.ASSIST,
+        canonical_url=url, url=url,
+    ))
+    _drive_to_approved(job)
+    return job
+
+
+def _route_returning(status: int, body: str):
+    def hook(page):
+        page.route(
+            "https://greenhouse-fixture.local/apply",
+            lambda route: route.fulfill(status=status, content_type="text/html", body=body),
+        )
+    return hook
+
+
+def _route_hanging():
+    def hook(page):
+        # Never call fulfill/continue_/abort -- the fetch stays pending
+        # indefinitely, exactly the "timeout after a possible submit" case.
+        page.route("https://greenhouse-fixture.local/apply", lambda route: None)
+    return hook
+
+
+def _route_connection_reset():
+    def hook(page):
+        page.route("https://greenhouse-fixture.local/apply", lambda route: route.abort("connectionreset"))
+    return hook
+
+
+def test_successful_submit_reaches_confirmed(tmp_env, sample_profile, tmp_path):
+    from tests.browser_fixtures import greenhouse_like_submit_flow_page
+
+    url = greenhouse_like_submit_flow_page(tmp_path)
+    job = _approved_job(tmp_env, sample_profile, url, "gh-eng-success")
+    monkeypatch_route = _route_returning(
+        200, "<h1>Thank you for applying to Acme Corp</h1><p>Confirmation Number: GH-2026-99881</p>",
+    )
+
+    result = run_greenhouse_submit(job.id, headless=True, _test_route_hook=monkeypatch_route)
+
+    assert result.outcome == SubmitOutcome.CONFIRMED, result.detail
+    assert result.confirmation_id == "GH-2026-99881"
+
+    from app.jobs_repo import get_job
+
+    refreshed = get_job(job.id)
+    assert refreshed.application_state.value == "APPLIED"
+
+    from app.applications import receipts
+
+    receipt_rows = receipts.list_receipts(provider="greenhouse")
+    assert any(r["confirmation_id"] == "GH-2026-99881" for r in receipt_rows)
+
+
+def test_server_validation_error_is_rejected(tmp_env, sample_profile, tmp_path):
+    from tests.browser_fixtures import greenhouse_like_submit_flow_page
+
+    url = greenhouse_like_submit_flow_page(tmp_path)
+    job = _approved_job(tmp_env, sample_profile, url, "gh-eng-validation")
+    hook = _route_returning(422, '<div class="error" role="alert">This field is required</div>')
+
+    result = run_greenhouse_submit(job.id, headless=True, _test_route_hook=hook)
+
+    assert result.outcome == SubmitOutcome.REJECTED
+    assert "validation" in result.detail.lower() or "required" in result.detail.lower()
+
+
+def test_duplicate_confirmation_handling_is_blocked_not_confirmed(tmp_env, sample_profile, tmp_path):
+    from tests.browser_fixtures import greenhouse_like_submit_flow_page
+
+    url = greenhouse_like_submit_flow_page(tmp_path)
+    job = _approved_job(tmp_env, sample_profile, url, "gh-eng-duplicate")
+    hook = _route_returning(200, "<p>You have already applied to this position.</p>")
+
+    result = run_greenhouse_submit(job.id, headless=True, _test_route_hook=hook)
+
+    assert result.outcome == SubmitOutcome.BLOCKED
+    assert result.error_type == "DUPLICATE_APPLICATION_DETECTED"
+
+
+def test_unrecognized_response_becomes_unknown(tmp_env, sample_profile, tmp_path):
+    from tests.browser_fixtures import greenhouse_like_submit_flow_page
+
+    url = greenhouse_like_submit_flow_page(tmp_path)
+    job = _approved_job(tmp_env, sample_profile, url, "gh-eng-unknown")
+    hook = _route_returning(200, "<p>Please wait while we process your request.</p>")
+
+    result = run_greenhouse_submit(job.id, headless=True, _test_route_hook=hook)
+
+    assert result.outcome == SubmitOutcome.SUBMISSION_STATUS_UNKNOWN
+    assert result.error_type == "UNRECOGNIZED_OUTCOME"
+
+
+def test_timeout_after_possible_submit_is_unknown_never_confirmed(tmp_env, sample_profile, tmp_path):
+    from tests.browser_fixtures import greenhouse_like_submit_flow_page
+
+    url = greenhouse_like_submit_flow_page(tmp_path)
+    job = _approved_job(tmp_env, sample_profile, url, "gh-eng-timeout-after")
+
+    result = run_greenhouse_submit(job.id, headless=True, _test_route_hook=_route_hanging())
+
+    assert result.outcome == SubmitOutcome.SUBMISSION_STATUS_UNKNOWN
+    assert result.error_type == "TIMEOUT_AFTER_CLICK"
+
+
+def test_connection_loss_after_click_is_unknown_never_confirmed(tmp_env, sample_profile, tmp_path):
+    from tests.browser_fixtures import greenhouse_like_submit_flow_page
+
+    url = greenhouse_like_submit_flow_page(tmp_path)
+    job = _approved_job(tmp_env, sample_profile, url, "gh-eng-connloss")
+
+    result = run_greenhouse_submit(job.id, headless=True, _test_route_hook=_route_connection_reset())
+
+    assert result.outcome == SubmitOutcome.SUBMISSION_STATUS_UNKNOWN
+    assert result.error_type == "CONNECTION_LOST"
+
+
+def test_timeout_before_submit_never_dispatches_a_click(tmp_env, sample_profile, tmp_path):
+    """A permanently-disabled submit control -- Playwright's own click()
+    actionability wait genuinely times out before any click is ever
+    dispatched, distinct from a hung post-click fetch."""
+    from tests.browser_fixtures import greenhouse_like_submit_flow_page
+
+    url = greenhouse_like_submit_flow_page(tmp_path, disabled_submit=True)
+    job = _approved_job(tmp_env, sample_profile, url, "gh-eng-timeout-before")
+
+    result = run_greenhouse_submit(job.id, headless=True)
+
+    assert result.outcome == SubmitOutcome.SUBMISSION_STATUS_UNKNOWN
+    assert result.error_type == "TIMEOUT_BEFORE_CLICK"
+    assert "no click was ever dispatched" in result.detail
+
+
+def test_captcha_is_blocked_never_bypassed(tmp_env, sample_profile, tmp_path):
+    from tests.browser_fixtures import greenhouse_like_captcha_page
+
+    url = greenhouse_like_captcha_page(tmp_path)
+    job = _approved_job(tmp_env, sample_profile, url, "gh-eng-captcha")
+
+    result = run_greenhouse_submit(job.id, headless=True)
+
+    assert result.outcome == SubmitOutcome.BLOCKED
+    assert "CAPTCHA" in result.error_type
+
+
+def test_login_wall_is_blocked_never_bypassed(tmp_env, sample_profile, tmp_path):
+    from tests.browser_fixtures import greenhouse_like_login_page
+
+    url = greenhouse_like_login_page(tmp_path)
+    job = _approved_job(tmp_env, sample_profile, url, "gh-eng-login")
+
+    result = run_greenhouse_submit(job.id, headless=True)
+
+    assert result.outcome == SubmitOutcome.BLOCKED
+    assert "LOGIN" in result.error_type
+
+
+def test_expired_job_page_is_blocked(tmp_env, sample_profile, tmp_path):
+    from tests.browser_fixtures import greenhouse_like_expired_page
+
+    url = greenhouse_like_expired_page(tmp_path)
+    job = _approved_job(tmp_env, sample_profile, url, "gh-eng-expired-page")
+
+    result = run_greenhouse_submit(job.id, headless=True)
+
+    assert result.outcome == SubmitOutcome.BLOCKED
+
+
+def test_double_submit_is_refused_without_opening_a_second_browser(tmp_env, sample_profile, tmp_path):
+    from tests.browser_fixtures import greenhouse_like_submit_flow_page
+
+    url = greenhouse_like_submit_flow_page(tmp_path)
+    job = _approved_job(tmp_env, sample_profile, url, "gh-eng-doubleclick")
+    hook = _route_returning(
+        200, "<h1>Thank you for applying to Acme Corp</h1><p>Confirmation Number: GH-2026-11223</p>",
+    )
+
+    first = run_greenhouse_submit(job.id, headless=True, _test_route_hook=hook)
+    assert first.outcome == SubmitOutcome.CONFIRMED
+
+    second = run_greenhouse_submit(job.id, headless=True, _test_route_hook=hook)
+    assert second.outcome == SubmitOutcome.BLOCKED
+    # The first call already left the execution APPLIED (terminal, no
+    # longer "active"), so the second call's own contract lookup honestly
+    # reports NO_EXECUTION -- an equally safe refusal as ALREADY_ATTEMPTED,
+    # since no browser is opened and no second click is ever attempted
+    # either way. The claim row's own state (checked below) is the actual
+    # ground truth for "was a submit action ever attempted twice".
+    assert second.error_type in ("ALREADY_ATTEMPTED", "NO_EXECUTION")
+
+    # Exactly one attempted claim row for this execution.
+    from app.applications import repo
+
+    execution = repo.list_executions_for_job(job.id)[-1]
+    claim_row = claim.get_claim(execution["execution_id"])
+    assert claim_row["submit_attempted"] == 1
+    assert claim_row["outcome"] == "CONFIRMED"
+
+
+def test_submit_control_not_uniquely_identified_is_blocked(tmp_env, sample_profile, tmp_path, monkeypatch):
+    """Two visible FINAL_SUBMIT-classified controls on the same page must
+    never be resolved by guessing -- BLOCKED, never a click."""
+    from tests.browser_fixtures import _write, _jsonld_block, _GREENHOUSE_STANDARD_FIELDS
+    import textwrap
+
+    url = _write(tmp_path, "greenhouse_two_submits.html", _jsonld_block() + textwrap.dedent(f"""
+        <form id="application-form">
+          {_GREENHOUSE_STANDARD_FIELDS}
+          <button type="submit" id="submit-btn-1">Submit Application</button>
+          <button type="submit" id="submit-btn-2">Submit Application</button>
+        </form>
+    """))
+    job = _approved_job(tmp_env, sample_profile, url, "gh-eng-ambiguous")
+
+    result = run_greenhouse_submit(job.id, headless=True)
+
+    assert result.outcome == SubmitOutcome.BLOCKED
+    assert result.error_type == "SUBMIT_CONTROL_NOT_UNIQUE"
+
+    from app.applications import repo
+
+    execution = repo.get_active_execution_for_job(job.id)
+    assert claim.already_attempted(execution["execution_id"]) is False

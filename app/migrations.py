@@ -1574,6 +1574,56 @@ def _m057_application_document_bindings_table(conn, backend: str) -> None:
     )
 
 
+def _m058_greenhouse_submit_claims_table(conn, backend: str) -> None:
+    """Greenhouse Verified Submission Contract V1: the submit-once execution
+    claim for the (disabled-by-default) real Greenhouse canary submission
+    engine (`app.applications.greenhouse_submit_engine`).
+
+    Exactly one row per execution (UNIQUE execution_id). `submit_attempted`
+    starts at 0 and is flipped to 1 by a single atomic
+    `UPDATE ... WHERE submit_attempted = 0` immediately before -- and only
+    immediately before -- the engine physically clicks a real submit
+    control, mirroring this project's existing atomic-claim idiom
+    (`app.applications.approval._claim_ready_execution`,
+    `app.workers.leasing`, `app.applications.queue`) rather than a
+    read-then-write check. Once flipped, no code path in this project ever
+    flips it back or re-attempts a click for the same execution -- a second
+    call always observes `submit_attempted = 1` and refuses before ever
+    opening a browser, which is the actual, physical "at most one submit
+    action per execution" guarantee this table exists to provide (on top of,
+    never instead of, `application_executions(job_id) WHERE active = 1`'s
+    existing coarser duplicate-execution guard). `outcome` records the
+    typed SubmitOutcome (CONFIRMED/REJECTED/BLOCKED/
+    SUBMISSION_STATUS_UNKNOWN) once known; a row that was inserted but never
+    reached the claim (contract not ready) has `submit_attempted = 0` and
+    `outcome` empty, so a genuinely fresh, uncontended future attempt for a
+    NEW execution of the same job is never blocked by an old row that never
+    actually attempted anything."""
+    id_column = "id BIGSERIAL PRIMARY KEY" if backend == "postgres" else "id INTEGER PRIMARY KEY AUTOINCREMENT"
+    conn.execute(
+        f"""CREATE TABLE IF NOT EXISTS greenhouse_submit_claims (
+            {id_column},
+            execution_id TEXT NOT NULL,
+            job_id INTEGER NOT NULL,
+            claimed_at TEXT NOT NULL DEFAULT '',
+            claimed_by TEXT NOT NULL DEFAULT '',
+            submit_attempted INTEGER NOT NULL DEFAULT 0,
+            submit_attempted_at TEXT NOT NULL DEFAULT '',
+            outcome TEXT NOT NULL DEFAULT '',
+            outcome_detail TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_greenhouse_submit_claims_execution "
+        "ON greenhouse_submit_claims (execution_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_greenhouse_submit_claims_job ON greenhouse_submit_claims (job_id)"
+    )
+
+
 MIGRATIONS: list[tuple[int, str, Callable]] = [
     (2, "phase6_worker_identity_columns", _m002_worker_identity_columns),
     (3, "phase6_schema_drift_table", _m003_schema_drift_table),
@@ -1631,6 +1681,7 @@ MIGRATIONS: list[tuple[int, str, Callable]] = [
     (55, "application_receipts_table", _m055_application_receipts_table),
     (56, "application_blockers_table", _m056_application_blockers_table),
     (57, "application_document_bindings_table", _m057_application_document_bindings_table),
+    (58, "greenhouse_submit_claims_table", _m058_greenhouse_submit_claims_table),
 ]
 
 # Version 1 is the implicit Phase 1-5 baseline schema, applied by

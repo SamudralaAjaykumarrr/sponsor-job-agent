@@ -1008,6 +1008,46 @@ def greenhouse_like_confirmation_page(tmp_path: Path) -> str:
     """))
 
 
+# =============================================================================
+# Greenhouse Verified Submission Contract V1: a fillable Greenhouse-shaped
+# form whose Submit button performs a real `fetch()` to a fixed, fake
+# endpoint (`https://greenhouse-fixture.local/apply`) instead of a normal
+# form POST/navigation. Tests intercept that fetch with Playwright's
+# `page.route()` to deterministically control exactly what the "server"
+# responds with (success/validation-error/duplicate/unrecognized) or to
+# simulate a hung/aborted request (timeout/connection-loss) -- never a real
+# network call, never a real HTTP server. Used only by
+# tests/test_greenhouse_submit_engine.py.
+# =============================================================================
+
+def greenhouse_like_submit_flow_page(tmp_path: Path, *, disabled_submit: bool = False) -> str:
+    """`disabled_submit=True` produces a submit button that is permanently
+    disabled -- Playwright's own actionability wait on `.click()` then
+    genuinely times out before ever dispatching the click, the honest
+    "timeout BEFORE submit" case (distinct from a fetch that hangs AFTER a
+    real click, which the test controls via `page.route()` instead)."""
+    disabled_attr = "disabled" if disabled_submit else ""
+    return _write(tmp_path, "greenhouse_submit_flow.html", _jsonld_block() + textwrap.dedent(f"""
+        <h1>{DEFAULT_JOB_TITLE}</h1>
+        <form id="application-form">
+          {_GREENHOUSE_STANDARD_FIELDS}
+          <button type="submit" id="submit-btn" {disabled_attr}>Submit Application</button>
+        </form>
+        <div id="network-error"></div>
+        <script>
+          document.getElementById('application-form').addEventListener('submit', function (e) {{
+            e.preventDefault();
+            fetch('https://greenhouse-fixture.local/apply', {{ method: 'POST' }})
+              .then(function (r) {{ return r.text(); }})
+              .then(function (text) {{ document.body.innerHTML = text; }})
+              .catch(function (err) {{
+                document.getElementById('network-error').innerText = 'Error submitting application: ' + (err && err.message);
+              }});
+          }});
+        </script>
+    """))
+
+
 # --- Lever-shaped ------------------------------------------------------------
 
 def lever_like_application_page(

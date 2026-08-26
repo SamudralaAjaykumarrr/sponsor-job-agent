@@ -331,6 +331,37 @@ def _cmd_job_identity(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_greenhouse_contract(args: argparse.Namespace) -> int:
+    from app.applications.greenhouse_submit_contract import build_submit_contract, render_text
+
+    contract = build_submit_contract(args.job_id)
+    if contract is None:
+        print(f"job {args.job_id} not found")
+        return 1
+    print(render_text(contract), end="")
+    return 0 if contract.ready else 1
+
+
+def _cmd_greenhouse_canary(args: argparse.Namespace) -> int:
+    """Requires --confirm on top of GREENHOUSE_SUBMIT_CANARY_ENABLED -- see
+    app.applications.greenhouse_canary's module docstring. Never runs in a
+    batch: exactly one job id per invocation."""
+    from app.applications import greenhouse_canary
+
+    if not args.confirm:
+        print("refusing: pass --confirm to explicitly authorize a real Greenhouse submit attempt for this job "
+              "(also requires GREENHOUSE_SUBMIT_CANARY_ENABLED=true and a current, approved application)")
+        return 1
+    try:
+        result = greenhouse_canary.run_greenhouse_submit_canary(args.job_id, confirm=True)
+    except (greenhouse_canary.CanaryDisabled, greenhouse_canary.CanaryNotAuthorized) as exc:
+        print(f"canary refused: {exc}")
+        return 1
+    for k, v in result.items():
+        print(f"  {k}: {v}")
+    return 0 if result.get("outcome") == "CONFIRMED" else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m app.applications.cli")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -470,6 +501,23 @@ def build_parser() -> argparse.ArgumentParser:
     p_job_identity.add_argument("--job-id", type=int, default=None, dest="job_id")
     p_job_identity.add_argument("--limit", type=int, default=50)
     p_job_identity.set_defaults(func=_cmd_job_identity)
+
+    p_gh_contract = sub.add_parser(
+        "greenhouse-contract",
+        help="print the Greenhouse Verified Submission Contract V1 pre-submit readiness report for a job",
+    )
+    p_gh_contract.add_argument("job_id", type=int)
+    p_gh_contract.set_defaults(func=_cmd_greenhouse_contract)
+
+    p_gh_canary = sub.add_parser(
+        "greenhouse-canary",
+        help="[DANGEROUS, disabled by default] attempt a real submit action for one specific, "
+             "already-approved Greenhouse job -- requires GREENHOUSE_SUBMIT_CANARY_ENABLED=true and --confirm",
+    )
+    p_gh_canary.add_argument("job_id", type=int)
+    p_gh_canary.add_argument("--confirm", action="store_true",
+                              help="explicit, required acknowledgement that this may submit a real application")
+    p_gh_canary.set_defaults(func=_cmd_greenhouse_canary)
 
     return parser
 
