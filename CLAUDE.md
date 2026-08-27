@@ -1191,3 +1191,82 @@ See `docs/greenhouse-verified-submission-contract-v1.md` for full architecture. 
   real ATS's success/validation-error/timeout/connection-loss/duplicate response without any real
   network call or local HTTP server; any future submit-contract fixture needing controllable
   server-response timing should follow this same pattern rather than inventing a new one.
+
+## Autonomous UX & Reliability V1 Rules (recorded after this build, apply to all future phases)
+
+This build closed a set of gaps between what earlier phases had already provisioned (a defined
+`ExecutionStatus.RETRYABLE_SUBMISSION_FAILURE`, a `retryable=` field on attempt records, CTA copy
+for it, an unused `mock_ats.RETRYABLE_ERROR_TYPES` constant, an unused `APPLICATION_DEAD_LETTER_
+MAX_ATTEMPTS`) and what was actually wired up. No new orchestration system, lifecycle model, or
+persisted state machine was introduced — every mechanism below is a completion of an existing one.
+
+- `app.applications.models.SUBMIT_RETRYABLE_ERROR_TYPES` is the single shared source of truth for
+  which `SubmitResult.error_type` values mean "the provider affirmatively did NOT process this
+  attempt" (paired with `success=False, status_unknown=False`) — both `app.applications.executor`'s
+  bounded-retry classification and any `ApplicationProvider` that can produce one of these
+  (currently only `app.applications.mock_ats`) read from this one set. `status_unknown=True` (an
+  AMBIGUOUS "may have gone through" outcome) is NEVER retried regardless of its `error_type` —
+  `SUBMISSION_STATUS_UNKNOWN` remains a dead end for automatic processing, resolvable only through
+  `app.applications.reconcile`, unchanged by this feature.
+- A retryable submit failure becomes `ExecutionStatus.RETRYABLE_SUBMISSION_FAILURE` (not terminal,
+  `active` stays 1) while `attempt_count < config.APPLICATION_SUBMIT_RETRY_MAX_ATTEMPTS`, else
+  `PERMANENT_SUBMISSION_FAILURE` (terminal) with an informational `BlockerCode.APPLICATION_ERROR`
+  blocker. Backoff is deliberately implemented by extending the EXISTING execution lease
+  (`app.applications.queue.extend_execution_lease`, exponential, capped by
+  `APPLICATION_SUBMIT_RETRY_BACKOFF_MAX_SECONDS`) rather than a new schema column — no migration
+  was needed for this feature. `app.applications.worker._execute_claimed` passes `approved=True`
+  ONLY when reclaiming an execution whose claimed status was `RETRYABLE_SUBMISSION_FAILURE` (never
+  for any other status) — `process_execution()`'s own `_approved_submit_permitted` gate re-verifies
+  the durable approval row fresh regardless, so this never grants authority that wasn't already
+  genuinely there; it only prevents a worker's automatic reclaim from silently reverting an
+  already-approved retry back to `SUBMISSION_READY`/`APPROVED` and stalling on a second human click.
+- `app.applications.scheduler.run_cycle()` isolates each candidate job's `queue_application()` call
+  with its own try/except — only `ExecutorDisabledError` (a global condition every remaining
+  candidate would also raise) stops the whole cycle; any other exception is logged, recorded in
+  `SchedulerCycleResult.errors`, and the loop continues to the next candidate. This was a real gap
+  (previously only `ExecutorDisabledError` was caught) that would have let one job's unexpected
+  failure silently abort auto-prepare for every other job in the same cycle.
+- `app.applications.browser_runtime._discard()` (used when `open_session()`'s `_do_open()` raises
+  after `browser.launch()` already succeeded, e.g. a navigation timeout) submits `_do_close` to the
+  session's own dedicated thread before dropping it from the registry — never just drops the Python
+  reference. This was a real orphan-Chromium-process leak (the browser/context/Playwright driver
+  were never closed on this path) caught by this build's own review; any future code path that
+  removes a `_LiveSession` from `_REGISTRY` outside the normal `close_session()` call must go
+  through `_discard()`, never a bare `_REGISTRY.pop()`.
+- `app.agent.run_state.display_state()` is a pure, read-time projection over `(actual_state,
+  desired_state, run history)` onto five plain-language labels (RUNNING/RECOVERING/PAUSED_BY_USER/
+  STOPPED/IDLE) for the dashboard's calm status area — it introduces no new persisted state and
+  every existing gate/scheduler decision keeps reading the real `AgentRunState` values unchanged.
+  RECOVERING means STARTING with prior run history already on record (the restart-recovery case);
+  PAUSED_BY_USER means stopped with `desired_state == STOPPED` and prior run history; STOPPED
+  (unexpected) means halted despite `desired_state` still being RUNNING (lease loss / crash / ERROR
+  not yet recovered); IDLE means never started this install.
+- `_seed_mixed_batch_fixtures()` is deliberately SEPARATE from, and NEVER auto-called by,
+  `AgentOrchestrator.start(test_mode=True)` (which continues to call only the unchanged, original
+  `_seed_test_fixture_if_needed()`) — a real live-browser E2E regression caught live during this
+  build's own validation: the START AGENT (TEST MODE) button's existing, tested contract is a
+  guided single-happy-path demo (one clean fixture, one Approve click, reliably reaches Confirmed),
+  which several READY_FOR_APPROVAL-eligible competing fixtures (some deliberately unable to reach
+  APPLIED on a first click, by design) would silently break for both existing tests and a real
+  user clicking whichever card renders first. `_seed_mixed_batch_fixtures()` remains fully
+  implemented and tested — `tests/test_failure_isolation.py` calls it directly, driving cycles the
+  same way `tests/test_agent_orchestrator.py` already does, which is the actual mechanism CLAUDE.md
+  section L's "do not require me to manually babysit the demo during automated validation" asks
+  for. Any future UI entry point for the mixed-batch demo must be a clearly SEPARATE action from
+  the single-fixture START AGENT (TEST MODE) button, never silently folded into it again. The
+  mixed batch's 7 fixtures (`_MIXED_BATCH_FIXTURES`) are idempotent, `is_test_fixture=1`,
+  never-collide-with-a-real-identifier (`agent-test-mode-fixture-*`), matching every other
+  benchmark/fixture convention in this project.
+- `mock_ats`'s `"transient_then_recovers"` scenario deterministically fails with a retryable
+  `error_type` on the execution's first submit attempt (read live from `application_executions.
+  attempt_count`, already incremented and persisted by the executor before `submit()` is called)
+  and succeeds from the second attempt onward — the sanctioned mechanism for exercising the bounded
+  submit-retry path end to end without any real network call; any future scenario needing
+  "fails N times then recovers" behavior should follow this same live-attempt-count-read pattern.
+- `app.applications.doctor._check_queue_starvation` and `_check_submission_circuit_open_too_long`
+  are read-only (report, never auto-repair, matching every doctor in this project). Queue
+  starvation is distinct from `_check_expired_execution_lease` — starvation catches an execution
+  that was NEVER claimed at all (`lease_owner IS NULL`), lease-expiry catches one that WAS claimed
+  and then abandoned. A circuit staying OPEN long past its own cooldown is surfaced as a warning
+  only — this check never closes the circuit itself; `app.applications.circuit`'s own self-healing
+  HALF_OPEN probe remains the only path back to CLOSED.

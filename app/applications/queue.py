@@ -29,6 +29,12 @@ from app.db import db_session
 # those is made safe by executor.process_execution()'s own resume guard,
 # which converts it straight to SUBMISSION_STATUS_UNKNOWN rather than ever
 # calling provider.submit() a second time -- never a blind retry.
+#
+# RETRYABLE_SUBMISSION_FAILURE (autonomous-ux-reliability-v1) is included so
+# a bounded, backoff-cooled submit retry (see app.applications.executor's
+# _RETRYABLE_SUBMIT_ERROR_TYPES handling) can be reclaimed and reprocessed
+# from scratch -- never SUBMISSION_STATUS_UNKNOWN, which stays permanently
+# unclaimable here and can only be resolved by explicit reconciliation.
 _ACTIVE_CLAIMABLE_STATUSES = (
     ExecutionStatus.QUEUED.value,
     ExecutionStatus.STARTED.value,
@@ -37,6 +43,7 @@ _ACTIVE_CLAIMABLE_STATUSES = (
     ExecutionStatus.FORM_FILLED.value,
     ExecutionStatus.SUBMITTING.value,
     ExecutionStatus.SUBMITTED.value,
+    ExecutionStatus.RETRYABLE_SUBMISSION_FAILURE.value,
 )
 
 

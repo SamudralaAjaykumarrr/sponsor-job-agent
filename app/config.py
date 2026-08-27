@@ -329,6 +329,22 @@ APPLICATION_SUPERVISOR_MAX_WORKERS = _env_int("APPLICATION_SUPERVISOR_MAX_WORKER
 # section 40.
 APPLICATION_SKIP_COOLDOWN_SECONDS = _env_int("APPLICATION_SKIP_COOLDOWN_SECONDS", 10)
 
+# Autonomous-ux-reliability-v1: bounded retry for a submission attempt that
+# genuinely failed BEFORE the provider processed it (result.success=False,
+# result.status_unknown=False, e.g. HTTP 429/503) -- distinct from
+# APPLICATION_DEAD_LETTER_MAX_ATTEMPTS above (permanent-failure dead-
+# lettering, still unused/reserved) and never applied to a
+# SUBMISSION_STATUS_UNKNOWN outcome (an ambiguous "may have gone through"
+# result is NEVER retried, see ExecutionStatus.SUBMISSION_STATUS_UNKNOWN).
+# Each retry re-runs the full process_execution() pipeline from scratch, so
+# job identity / eligibility / approval / resume-artifact-hash / form
+# fingerprint are always revalidated fresh before a retried submit, never
+# reused stale. Backoff is exponential (base * 2**(attempt-1)), capped, so a
+# reclaimed execution never busy-spins across workers.
+APPLICATION_SUBMIT_RETRY_MAX_ATTEMPTS = _env_int("APPLICATION_SUBMIT_RETRY_MAX_ATTEMPTS", 3)
+APPLICATION_SUBMIT_RETRY_BACKOFF_BASE_SECONDS = _env_int("APPLICATION_SUBMIT_RETRY_BACKOFF_BASE_SECONDS", 60)
+APPLICATION_SUBMIT_RETRY_BACKOFF_MAX_SECONDS = _env_int("APPLICATION_SUBMIT_RETRY_BACKOFF_MAX_SECONDS", 900)
+
 # Per-provider submission concurrency -- deliberately tiny (never treated
 # like discovery's PROVIDER_CONCURRENCY_DEFAULT=3+) since a real submission
 # in flight is a consequential, rate-limited action, not a cheap GET.

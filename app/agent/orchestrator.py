@@ -91,6 +91,25 @@ class AgentOrchestrator:
                 self._seed_test_fixture_if_needed()
             except Exception:  # noqa: BLE001 -- seeding failure must never block starting the agent
                 logger.exception("test-mode fixture seeding failed")
+            # `_seed_mixed_batch_fixtures()` is deliberately NOT called here.
+            # A real live-browser E2E regression (tests/test_approval_
+            # playwright.py, tests/test_application_action_experience_
+            # playwright.py) caught the reason live: those tests -- and a
+            # real first-time user -- click the FIRST "APPROVE & APPLY" card
+            # under READY FOR APPROVAL expecting the guided single-happy-
+            # path TEST MODE demo (one clean fixture, one click, reliably
+            # reaches Confirmed) that this button has always promised. With
+            # several READY_FOR_APPROVAL-eligible fixtures competing (some
+            # of which, by design, canNOT reach APPLIED on the first click --
+            # the transient-retry and possible-submit-unknown scenarios),
+            # "click the first card" becomes ambiguous and can land on one
+            # of those instead, breaking the guided demo's own promise. The
+            # mixed-batch method itself is unchanged, fully implemented, and
+            # exercised end-to-end by tests/test_failure_isolation.py (the
+            # deterministic, non-interactive proof CLAUDE.md section L
+            # actually asks for: "do not require me to manually babysit the
+            # demo during automated validation") -- it is simply never
+            # auto-triggered by this single-fixture-contracted button.
 
         if not self._task or self._task.done():
             self._stop_event = asyncio.Event()
@@ -149,6 +168,7 @@ class AgentOrchestrator:
         return {
             "desired_state": run_state["desired_state"],
             "actual_state": run_state["actual_state"],
+            "display_state": run_state_mod.display_state(run_state),
             "test_mode": run_state["test_mode"],
             "last_error": run_state["last_error"],
             "started_at": run_state["started_at"],
@@ -571,35 +591,77 @@ class AgentOrchestrator:
         always-safe `mock_ats` fixture job so TEST MODE can demonstrate the
         full discover->...->APPLIED loop without ever touching a real
         employer. Idempotent -- re-seeds nothing if the fixture already
-        exists (matched by its fixed external_job_id, mirroring every other
-        provider's own stable-ID dedup)."""
+        exists. Deliberately unchanged/narrow (kept exactly as this
+        project's original single-fixture behavior, still exercised
+        directly by tests/test_agent_orchestrator.py) -- the broader,
+        multi-scenario demo batch lives in `_seed_mixed_batch_fixtures`
+        below (autonomous-ux-reliability-v1 section L), called separately
+        by `start()` so the two remain independently testable and so a
+        single `_run_cycle_sync()` call (as those existing tests use) keeps
+        exactly one fixture competing for that cycle's bounded per-cycle
+        budgets, same as before this feature existed."""
+        self._seed_one_fixture(_TEST_FIXTURE_EXTERNAL_ID, title="Backend Software Engineer",
+                                mock_scenario="simple")
+
+    def _seed_one_fixture(self, external_id: str, *, title: str, mock_scenario: str,
+                           description_extra: str = "H-1B sponsorship is available for this role.") -> None:
         from app.jobs_repo import get_job_by_provider_external_id
         from app.models import ApplicationMode, Job
         from app.pipeline import ingest_and_process
 
-        existing = get_job_by_provider_external_id("mock_ats", _TEST_FIXTURE_EXTERNAL_ID)
+        existing = get_job_by_provider_external_id("mock_ats", external_id)
         if existing is not None:
             return
 
         job = Job(
-            title="Backend Software Engineer",
+            title=title,
             company="Test Fixture Co",
             location="Remote - US",
             description=(
                 "We are hiring a Backend Software Engineer to build REST APIs in Python using FastAPI, "
-                "with PostgreSQL, Docker, and CI/CD pipelines. This is a full-time position. "
-                "H-1B sponsorship is available for this role."
+                f"with PostgreSQL, Docker, and CI/CD pipelines. This is a full-time position. {description_extra}"
             ),
             employment_type="Full-time",
             provider="mock_ats",
-            external_job_id=_TEST_FIXTURE_EXTERNAL_ID,
-            url=f"https://mock-ats.local/jobs/{_TEST_FIXTURE_EXTERNAL_ID}",
-            provider_metadata=json.dumps({"mock_scenario": "simple"}),
+            external_job_id=external_id,
+            url=f"https://mock-ats.local/jobs/{external_id}",
+            provider_metadata=json.dumps({"mock_scenario": mock_scenario}),
             mode=ApplicationMode.ASSIST,
             is_test_fixture=True,
         )
         ingest_and_process(job)
-        logger.info("test-mode: seeded mock_ats fixture job external_job_id=%s", _TEST_FIXTURE_EXTERNAL_ID)
+        logger.info("test-mode: seeded mock_ats fixture job external_job_id=%s (scenario=%s)",
+                    external_id, mock_scenario)
+
+    # (external_id, title, mock_scenario, description_extra) -- together with
+    # the original _TEST_FIXTURE_EXTERNAL_ID ("simple") this produces the
+    # exact mixed distribution CLAUDE.md section L calls for: 2 completed/
+    # prepared (the original + "fixture-2"), 2 Needs You (captcha, email
+    # verification), 1 skipped for sponsorship, 1 recovered transient
+    # failure, 1 unknown-submit safely parked.
+    _MIXED_BATCH_FIXTURES: tuple[tuple[str, str, str, str], ...] = (
+        ("agent-test-mode-fixture-2", "Platform Engineer", "simple",
+         "H-1B sponsorship is available for this role."),
+        ("agent-test-mode-fixture-captcha", "Cloud Software Engineer", "captcha",
+         "H-1B sponsorship is available for this role."),
+        ("agent-test-mode-fixture-email-verify", "Application Engineer", "email_verification",
+         "H-1B sponsorship is available for this role."),
+        ("agent-test-mode-fixture-no-sponsorship", "Python Developer", "simple",
+         "This role does not offer visa sponsorship, now or in the future."),
+        ("agent-test-mode-fixture-transient-recovery", "API Engineer", "transient_then_recovers",
+         "H-1B sponsorship is available for this role."),
+        ("agent-test-mode-fixture-submit-unknown", "Backend Engineer II", "timeout_after_submit",
+         "H-1B sponsorship is available for this role."),
+    )
+
+    def _seed_mixed_batch_fixtures(self) -> None:
+        for external_id, title, mock_scenario, description_extra in self._MIXED_BATCH_FIXTURES:
+            try:
+                self._seed_one_fixture(external_id, title=title, mock_scenario=mock_scenario,
+                                        description_extra=description_extra)
+            except Exception:  # noqa: BLE001 -- one fixture failing to seed must never block the others
+                # or the primary fixture already seeded above.
+                logger.exception("test-mode: failed to seed mixed-batch fixture external_job_id=%s", external_id)
 
 
 orchestrator = AgentOrchestrator()

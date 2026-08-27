@@ -83,11 +83,6 @@ _PAGE_TWO_FIELDS = [
     FormField("linkedin_url", "LinkedIn Profile", "input_text", required=False),
 ]
 
-# Error types recognized as safe-to-retry (never used to bypass "never blindly
-# retry an AMBIGUOUS outcome" -- these are all DEFINITE, known failures where
-# nothing was submitted, distinct from status_unknown).
-RETRYABLE_ERROR_TYPES = frozenset({"TIMEOUT", "RATE_LIMITED", "TEMPORARY_HTTP"})
-
 
 def _scenario_for(job: Job) -> str:
     try:
@@ -323,6 +318,27 @@ class MockATSProvider(ApplicationProvider):
         if scenario == "service_unavailable":
             return SubmitResult(success=False, error_type="TEMPORARY_HTTP",
                                  error_message_safe="mock_ats: 503 Service Unavailable.")
+        if scenario == "transient_then_recovers":
+            # Autonomous-ux-reliability-v1: deterministically fails with a
+            # RETRYABLE error_type (app.applications.models.
+            # SUBMIT_RETRYABLE_ERROR_TYPES) on the first submit attempt, then
+            # succeeds -- demonstrates the bounded submit-retry path
+            # (executor.process_execution -> ExecutionStatus.
+            # RETRYABLE_SUBMISSION_FAILURE -> reclaimed after backoff ->
+            # retried -> succeeds) end to end without ever touching a real
+            # network. `attempt_count` already reflects THIS attempt (the
+            # executor increments and persists it immediately before calling
+            # submit()), so >= 2 means this is a retry.
+            with db_session() as conn:
+                row = conn.execute(
+                    "SELECT attempt_count FROM application_executions WHERE job_id = ? AND active = 1",
+                    (job.id,),
+                ).fetchone()
+            attempt_count = row["attempt_count"] if row else 1
+            if attempt_count < 2:
+                return SubmitResult(success=False, error_type="TEMPORARY_HTTP",
+                                     error_message_safe="mock_ats: 503 Service Unavailable (recovers on retry).")
+            # Falls through to the ordinary success path below.
         if scenario == "rejection":
             return SubmitResult(success=False, error_type="SUBMISSION_REJECTED",
                                  error_message_safe="mock_ats: application rejected by ATS-side validation.")

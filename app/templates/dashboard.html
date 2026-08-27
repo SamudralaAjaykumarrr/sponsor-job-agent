@@ -16,7 +16,7 @@
 
 <section class="agent-hero" data-live-agent aria-label="Agent status">
   <div class="hero-top">
-    <span>Agent Status: <span class="state-pill state-{{ o.actual_state }}">{{ o.actual_state }}</span></span>
+    <span>Agent Status: <span class="state-pill state-{{ o.actual_state }}">{{ o.display_state or o.actual_state }}</span></span>
     {% if o.test_mode %}<span class="state-pill" style="background:var(--info-bg);color:var(--info);">TEST MODE</span>
       <a href="/?include_test_data=true" class="faint">view test job &rarr;</a>{% endif %}
     <span class="topbar-spacer"></span>
@@ -100,6 +100,18 @@
     <div class="step-metric"><b>{{ summary.applied_today }}</b> applied today</div></div>
 </div>
 
+<div class="hero-meta" aria-label="Calm summary" style="margin:0.5rem 0 1rem;">
+  <span>{{ o.display_state or o.actual_state }}</span>
+  <span>·</span>
+  <span class="{{ 'is-nonzero' if summary.needs_user_action else '' }}">Needs You: <strong>{{ summary.needs_user_action }}</strong></span>
+  <span>·</span>
+  <span>Applied: <strong>{{ summary.applied_today }}</strong></span>
+  <span>·</span>
+  <span>Skipped: <strong>{{ summary.skipped }}</strong></span>
+  <span>·</span>
+  <span class="{{ 'warn-if-nonzero is-nonzero' if summary.failed_attention else '' }}">Issues: <strong>{{ summary.failed_attention }}</strong></span>
+</div>
+
 <div class="stat-grid" data-live-summary aria-label="Pipeline summary">
   <div class="stat-card"><div class="num" id="stat-jobs_discovered">{{ summary.jobs_discovered }}</div><div class="label">Jobs found</div></div>
   <div class="stat-card"><div class="num" id="stat-fresh_jobs">{{ summary.fresh_jobs }}</div><div class="label">Fresh jobs</div></div>
@@ -113,6 +125,7 @@
   <div class="stat-card accent {{ 'is-nonzero' if summary.ready_for_approval else '' }}"><div class="num" id="stat-ready_for_approval">{{ summary.ready_for_approval }}</div><div class="label">Ready for approval</div></div>
   <div class="stat-card"><div class="num" id="stat-applied_today">{{ summary.applied_today }}</div><div class="label">Applied today</div></div>
   <div class="stat-card"><div class="num" id="stat-skipped">{{ summary.skipped }}</div><div class="label">Skipped</div></div>
+  <div class="stat-card accent {{ 'warn-if-nonzero' if summary.failed_attention else '' }} {{ 'is-nonzero' if summary.failed_attention else '' }}"><div class="num" id="stat-failed_attention">{{ summary.failed_attention }}</div><div class="label">Issues</div></div>
 </div>
 
 {% if ready_for_approval_queue %}

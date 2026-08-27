@@ -315,6 +315,18 @@ class ValidationResult:
     detail: list[str] = field(default_factory=list)
 
 
+# Autonomous-ux-reliability-v1: SubmitResult.error_type values that mean "the
+# provider affirmatively did NOT process this submit attempt" (e.g. an HTTP
+# 429/503 before the ATS ever looked at the payload) -- always paired with
+# success=False, status_unknown=False. Single shared source of truth for
+# app.applications.executor's bounded submit-retry classification and every
+# ApplicationProvider (currently only app.applications.mock_ats) that can
+# produce one of these deterministically. Never includes a value that can
+# ever be paired with status_unknown=True (an ambiguous "may have gone
+# through" outcome is never retried, regardless of its error_type).
+SUBMIT_RETRYABLE_ERROR_TYPES = frozenset({"RATE_LIMITED", "TEMPORARY_HTTP", "SERVICE_UNAVAILABLE", "TRANSIENT_NETWORK"})
+
+
 @dataclass
 class SubmitResult:
     success: bool

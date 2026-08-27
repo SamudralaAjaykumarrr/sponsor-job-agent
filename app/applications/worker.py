@@ -258,8 +258,24 @@ class ApplicationWorker:
         correlation_id = item.get("correlation_id") or ""
         draining_now = self._is_draining()
 
+        # Autonomous-ux-reliability-v1: an execution reclaimed while in
+        # RETRYABLE_SUBMISSION_FAILURE can only have reached that status by
+        # already having genuinely cleared a submit gate once (either
+        # _auto_submit_permitted's AUTO_PERMITTED+AUTO_SUBMIT_ENABLED path,
+        # which needs no `approved` flag at all, or _approved_submit_
+        # permitted's human-approval path). Passing approved=True here is
+        # what lets this SECOND case actually retry the submit rather than
+        # silently falling back to SUBMISSION_READY/APPROVED and stalling
+        # until a human clicks Approve a second time -- process_execution()
+        # always re-verifies the durable approval row fresh regardless (see
+        # _approved_submit_permitted), so this never grants authority that
+        # wasn't already genuinely there. Never passed for any OTHER
+        # reclaimed status -- an execution that was never approved must
+        # never be pushed to ExecutionStatus.APPROVED by this worker.
+        was_retryable = item.get("status") == ExecutionStatus.RETRYABLE_SUBMISSION_FAILURE.value
         try:
-            execution = process_execution(execution_id, allow_submission=not draining_now, attempt_id=attempt_id)
+            execution = process_execution(execution_id, allow_submission=not draining_now, attempt_id=attempt_id,
+                                           approved=was_retryable)
         except Exception as exc:  # noqa: BLE001 -- final safety net: an attempt must ALWAYS be
             # recorded and the lease ALWAYS released, even for a failure mode
             # process_execution()'s own handling didn't anticipate. Releasing
@@ -312,6 +328,25 @@ class ApplicationWorker:
             error_type=execution.get("error_type") or "", safe_error_message=(execution.get("error_message_safe") or "")[:500],
             correlation_id=correlation_id,
         ))
+
+        if status == ExecutionStatus.RETRYABLE_SUBMISSION_FAILURE.value:
+            # Autonomous-ux-reliability-v1: RETRYABLE_SUBMISSION_FAILURE IS
+            # in claim_execution_batch's claimable-status set (see
+            # app.applications.queue), so an unconditional release here
+            # would let another worker reclaim it almost immediately -- a
+            # busy-spin, exactly the pattern _cooldown_skip above already
+            # avoids for skipped-without-attempt items. Extend the lease
+            # with exponential backoff instead, same "cooldown, never bare
+            # release" principle.
+            attempt_count = execution.get("attempt_count") or 1
+            backoff = min(
+                config.APPLICATION_SUBMIT_RETRY_BACKOFF_BASE_SECONDS * (2 ** max(0, attempt_count - 1)),
+                config.APPLICATION_SUBMIT_RETRY_BACKOFF_MAX_SECONDS,
+            )
+            ok = app_queue.extend_execution_lease(execution_id, item["lease_attempt_id"], lease_seconds=backoff)
+            if not ok:
+                app_queue.release_execution_lease(execution_id, expected_attempt_id=item["lease_attempt_id"])
+            return
 
         # Always release -- whatever status process_execution() left this
         # execution in, it will never again match claim_execution_batch's

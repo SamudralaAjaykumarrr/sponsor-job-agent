@@ -24,7 +24,13 @@ from app.applications import approval, duplicate, rate_limit, receipts, repo
 from app.applications import blockers, document_binding
 from app.applications.eligibility import evaluate_executor_eligibility
 from app.applications.fingerprint import check_and_record_baseline
-from app.applications.models import AutomationPolicy, ExecutionMode, ExecutionStatus, PolicyReason
+from app.applications.models import (
+    AutomationPolicy,
+    ExecutionMode,
+    ExecutionStatus,
+    PolicyReason,
+    SUBMIT_RETRYABLE_ERROR_TYPES,
+)
 from app.applications.provider_registry import get_application_provider
 from app.applications.schema import build_application_fields
 from app.candidate.profile import load_profile
@@ -487,8 +493,9 @@ def process_execution(execution_id: str, *, allow_submission: bool = True, appro
         repo.log_event(execution_id, job_id, "failed", detail="duplicate at submit time", correlation_id=correlation_id)
         return repo.get_execution(execution_id)
 
+    attempt_count_now = execution["attempt_count"] + 1
     repo.update_execution(execution_id, job_id, ExecutionStatus.SUBMITTING,
-                           attempt_count=execution["attempt_count"] + 1,
+                           attempt_count=attempt_count_now,
                            automation_policy=validation.policy.value, policy_reasons=policy_reasons_json)
     repo.log_event(execution_id, job_id, "submit_attempted", detail=f"provider={provider.name}",
                     correlation_id=correlation_id)
@@ -508,10 +515,41 @@ def process_execution(execution_id: str, *, allow_submission: bool = True, appro
         return repo.get_execution(execution_id)
 
     if not result.success:
+        # Autonomous-ux-reliability-v1: a submit failure the provider
+        # affirmatively reported as not-yet-processed (rate limit / temporary
+        # HTTP error -- never an ambiguous status_unknown outcome, already
+        # handled above and always excluded here) gets a bounded number of
+        # retries with exponential backoff before being treated as
+        # permanent. Every retry is a fresh call to process_execution()
+        # (via the worker reclaiming the execution once its backoff lease
+        # expires -- see app.applications.queue/app.applications.worker),
+        # so identity/eligibility/approval/resume-hash/form-fingerprint are
+        # always revalidated from scratch, never reused stale.
+        retryable_error = result.error_type in SUBMIT_RETRYABLE_ERROR_TYPES
+        if retryable_error and attempt_count_now < config.APPLICATION_SUBMIT_RETRY_MAX_ATTEMPTS:
+            repo.update_execution(execution_id, job_id, ExecutionStatus.RETRYABLE_SUBMISSION_FAILURE,
+                                   error_type=result.error_type, error_message_safe=result.error_message_safe,
+                                   submission_method=provider.name)
+            repo.log_event(execution_id, job_id, "failed",
+                            detail=f"retryable_submit_failure:{result.error_type} attempt={attempt_count_now}",
+                            correlation_id=correlation_id)
+            return repo.get_execution(execution_id)
+
         repo.update_execution(execution_id, job_id, ExecutionStatus.PERMANENT_SUBMISSION_FAILURE,
                                error_type=result.error_type, error_message_safe=result.error_message_safe,
                                submission_method=provider.name)
         repo.log_event(execution_id, job_id, "failed", detail=result.error_type, correlation_id=correlation_id)
+        if retryable_error:
+            # Retries exhausted -- park as an issue for a human; never
+            # retried again automatically (blocker is informational only,
+            # execution is already terminal via PERMANENT_SUBMISSION_FAILURE
+            # above).
+            blockers.raise_blocker(
+                execution_id, job_id, blockers.BlockerCode.APPLICATION_ERROR, provider=provider.name,
+                detail=f"submission failed after {attempt_count_now} attempts ({result.error_type}): "
+                       f"{result.error_message_safe}",
+                attempt_id=attempt_id, source="executor.submit_retry_exhausted",
+            )
         return repo.get_execution(execution_id)
 
     repo.update_execution(execution_id, job_id, ExecutionStatus.SUBMITTED, submission_method=provider.name)

@@ -151,6 +151,62 @@ def release_orchestrator_lease(instance_id: str) -> None:
         )
 
 
+# --- calm display state (autonomous-ux-reliability-v1 section G) ----------
+# A derived, read-time projection over the SAME persisted fields above --
+# never a second stored state machine (CLAUDE.md WORK MODE: "do not invent a
+# second application lifecycle model", extended here to the orchestrator's
+# own lifecycle). Purely for the dashboard's calm status area; every gate/
+# scheduler decision in this project keeps reading the real AgentRunState
+# values (actual_state/desired_state) unchanged.
+
+DISPLAY_STATE_RUNNING = "RUNNING"
+DISPLAY_STATE_PAUSED_BY_USER = "PAUSED_BY_USER"
+DISPLAY_STATE_STOPPED = "STOPPED"
+DISPLAY_STATE_RECOVERING = "RECOVERING"
+DISPLAY_STATE_IDLE = "IDLE"
+
+
+def display_state(run_state: dict) -> str:
+    """Maps the real (actual_state, desired_state, run history) onto the
+    five plain-language labels a calm status UI needs:
+
+      RUNNING        -- actively working (including the brief STARTING
+                         window for a genuinely first-ever start).
+      RECOVERING      -- STARTING again with prior run history already on
+                         record (cycle_number/last_cycle_started_at set) --
+                         the exact restart-recovery scenario app.main's
+                         lifespan handles by calling start() again when
+                         desired_state was RUNNING across a process restart.
+      PAUSED_BY_USER  -- stopped (or stopping) because desired_state was
+                         explicitly set to STOPPED (the STOP AGENT action),
+                         and it has run at least once before.
+      STOPPED         -- halted despite desired_state still being RUNNING
+                         (a lease loss, crash, or ERROR state not yet
+                         recovered) -- an unexpected halt, not a user pause.
+      IDLE            -- never started this install; nothing to resume.
+    """
+    actual = run_state.get("actual_state")
+    desired = run_state.get("desired_state")
+    has_run_before = bool(run_state.get("started_at"))
+
+    if actual == AgentRunState.RUNNING.value:
+        return DISPLAY_STATE_RUNNING
+    if actual == AgentRunState.STARTING.value:
+        if run_state.get("cycle_number") or run_state.get("last_cycle_started_at"):
+            return DISPLAY_STATE_RECOVERING
+        return DISPLAY_STATE_RUNNING
+    if actual == AgentRunState.STOPPING.value:
+        return DISPLAY_STATE_PAUSED_BY_USER if desired == AgentRunState.STOPPED.value else DISPLAY_STATE_STOPPED
+    if actual == AgentRunState.ERROR.value:
+        return DISPLAY_STATE_STOPPED
+    # actual == STOPPED (or a legacy/unknown value -- degrade the same way)
+    if desired == AgentRunState.RUNNING.value:
+        return DISPLAY_STATE_STOPPED
+    if has_run_before:
+        return DISPLAY_STATE_PAUSED_BY_USER
+    return DISPLAY_STATE_IDLE
+
+
 def is_running() -> bool:
     """True only once the orchestrator's own loop has genuinely reached
     RUNNING -- never true merely because the user clicked START (that's
