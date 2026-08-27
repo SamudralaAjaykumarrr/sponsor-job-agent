@@ -24,7 +24,10 @@
       {% if o.actual_state in ('RUNNING', 'STARTING', 'STOPPING') %}
       <form method="post" action="/agent/stop"><button class="btn btn-stop" type="submit">STOP AGENT</button></form>
       {% else %}
-      <form method="post" action="/agent/start"><button class="btn btn-primary" type="submit">START AGENT</button></form>
+      <form method="post" action="/agent/start">
+        {% if o.display_state == 'PAUSED_BY_USER' and o.test_mode %}<input type="hidden" name="test_mode" value="true">{% endif %}
+        <button class="btn btn-primary" type="submit">START AGENT</button>
+      </form>
       <form method="post" action="/agent/start">
         <input type="hidden" name="test_mode" value="true">
         <button class="btn btn-test" type="submit">START AGENT (TEST MODE)</button>
@@ -233,9 +236,15 @@ window.submitBulkApprove = function (evt) {
   {% for item in needs_action_queue %}
   <div class="action-item">
     <span class="co">{{ item.company }}</span> — {{ item.role }}
-    <br>Stage: {{ item.stage }} · Reason: {{ item.reason }}
+    {% if item.time_blocked %}<span class="faint">· blocked {{ item.time_blocked }}</span>{% endif %}
+    <br><strong>{{ item.human_title }}</strong> — {{ item.human_message }}
     <br><span class="faint">Already completed: {{ item.completed }}</span>
-    <br><a href="/jobs/{{ item.job_id }}">Continue &rarr;</a>
+    <br>
+    {% if item.action_kind == 'open_application' and item.session_id %}
+    <a href="/applications/browser-sessions/{{ item.session_id }}">Open Application &rarr;</a>
+    {% else %}
+    <a href="/jobs/{{ item.job_id }}">Resume / Continue &rarr;</a>
+    {% endif %}
   </div>
   {% endfor %}
 </section>

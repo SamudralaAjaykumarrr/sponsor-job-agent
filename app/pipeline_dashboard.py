@@ -162,7 +162,8 @@ _NEEDS_ACTION_QUERIES: list[dict] = [
         # SUBMISSION_READY -- normal final review, which belongs in the
         # READY FOR APPROVAL queue below, never here).
         "kind": "execution",
-        "sql": """SELECT j.id AS job_id, j.company, j.title, e.status, e.user_action_reason
+        "sql": """SELECT j.id AS job_id, j.company, j.title, e.status, e.user_action_reason,
+                         e.execution_id AS execution_id, e.updated_at AS updated_at
                   FROM application_executions e JOIN jobs j ON j.id = e.job_id
                   WHERE e.active = 1 AND j.is_test_fixture = 0
                         AND e.status IN ('NEEDS_USER_ACTION', 'VALIDATION_REQUIRED', 'SUBMISSION_STATUS_UNKNOWN')
@@ -172,7 +173,8 @@ _NEEDS_ACTION_QUERIES: list[dict] = [
     },
     {
         "kind": "browser_session",
-        "sql": """SELECT j.id AS job_id, j.company, j.title, s.status, s.user_action_reason
+        "sql": """SELECT j.id AS job_id, j.company, j.title, s.status, s.user_action_reason,
+                         s.session_id AS session_id, s.updated_at AS updated_at
                   FROM browser_assist_sessions s JOIN jobs j ON j.id = s.job_id
                   WHERE s.active = 1 AND s.needs_user_action = 1 AND j.is_test_fixture = 0
                   ORDER BY s.updated_at DESC""",
@@ -182,7 +184,8 @@ _NEEDS_ACTION_QUERIES: list[dict] = [
     {
         "kind": "review_required",
         "sql": """SELECT id AS job_id, company, title, 'LIKELY_SPONSOR' AS status,
-                         'Historical sponsorship signal only -- verify before applying.' AS user_action_reason
+                         'Historical sponsorship signal only -- verify before applying.' AS user_action_reason,
+                         updated_at AS updated_at
                   FROM jobs
                   WHERE sponsorship_status = 'LIKELY_SPONSOR' AND application_state = 'REVIEW_REQUIRED'
                         AND is_test_fixture = 0
@@ -193,7 +196,8 @@ _NEEDS_ACTION_QUERIES: list[dict] = [
     {
         "kind": "resume_overflow",
         "sql": """SELECT rv.job_id AS job_id, j.company, j.title, 'RESUME_REVIEW_REQUIRED' AS status,
-                         'One page could not be safely achieved within the compression bounds.' AS user_action_reason
+                         'One page could not be safely achieved within the compression bounds.' AS user_action_reason,
+                         rv.updated_at AS updated_at
                   FROM resume_variants rv JOIN jobs j ON j.id = rv.job_id
                   WHERE rv.current = 1 AND rv.status = 'REVIEW_REQUIRED' AND j.is_test_fixture = 0
                   ORDER BY rv.updated_at DESC""",
@@ -201,6 +205,49 @@ _NEEDS_ACTION_QUERIES: list[dict] = [
         "action": "Trim the candidate profile or manually review the resume.",
     },
 ]
+
+# CLAUDE.md one-click-application-experience-v1 section B: each Needs You
+# card must show "exactly what user must do" and the right action verb
+# (Resume/Continue in-app vs Open Application for genuine human browser
+# interaction). Keyed on the blocker/status text a source query can surface
+# -- deliberately simple substring matching over the SAME human-facing
+# reason text already shown to the user (never a second, hidden enum), so
+# this can never disagree with what the card itself displays.
+_BROWSER_HANDOFF_HINTS = ("captcha", "sign in", "log in", "mfa", "one-time", "verification code", "verify your email")
+
+
+def _needs_you_action_kind(reason: str, source_kind: str) -> str:
+    if source_kind == "browser_session":
+        return "open_application"
+    lowered = (reason or "").lower()
+    if any(h in lowered for h in _BROWSER_HANDOFF_HINTS):
+        return "open_application"
+    return "resume"
+
+
+def _time_blocked(updated_at: str | None) -> str:
+    """Plain-language elapsed time since the blocker's own last-updated
+    timestamp -- section B's "time blocked". Degrades to '' (never a raw
+    timestamp or a crash) when the value is missing/unparseable."""
+    if not updated_at:
+        return ""
+    try:
+        ts = datetime.fromisoformat(updated_at)
+    except ValueError:
+        return ""
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    seconds = max(0, (datetime.now(timezone.utc) - ts).total_seconds())
+    if seconds < 60:
+        return "just now"
+    minutes = int(seconds // 60)
+    if minutes < 60:
+        return f"{minutes}m"
+    hours = int(minutes // 60)
+    if hours < 24:
+        return f"{hours}h"
+    days = int(hours // 24)
+    return f"{days}d"
 
 
 def count_needs_action() -> int:
@@ -308,14 +355,40 @@ def build_needs_action_queue(limit: int = 25) -> list[dict]:
     reconcile, resume browser session). Built from the SAME _NEEDS_ACTION_QUERIES
     source list count_needs_action() uses, so the displayed list and the
     summary card can never disagree (CLAUDE.md section 32)."""
+    from app.applications import blockers as applications_blockers
+
     items: list[dict] = []
     with db_session() as conn:
         for source in _NEEDS_ACTION_QUERIES:
             for r in conn.execute(source["sql"]).fetchall():
+                row = dict(r)
+                reason = row.get("user_action_reason") or "action required"
+                human_title, human_message = None, None
+                blocked_at = row.get("updated_at")
+                execution_id = row.get("execution_id")
+                if execution_id:
+                    # Reuse the SAME durable blocker record (application-
+                    # lifecycle-exception-resume-v1) the consumer board
+                    # already renders -- never a second, less specific copy
+                    # of "what exactly must the user do" for the same
+                    # underlying condition.
+                    blocker = applications_blockers.get_active_blocker_for_execution(execution_id)
+                    if blocker is not None:
+                        human_title, human_message = blocker["human_title"], blocker["human_message"]
+                        blocked_at = blocker["created_at"]
                 items.append({
-                    "job_id": r["job_id"], "company": r["company"], "role": r["title"],
-                    "stage": r["status"], "reason": r["user_action_reason"] or "action required",
+                    "job_id": row["job_id"], "company": row["company"], "role": row["title"],
+                    "stage": row["status"], "reason": reason,
+                    "human_title": human_title or reason,
+                    "human_message": human_message or reason,
                     "completed": source["completed"], "action": source["action"], "kind": source["kind"],
+                    # "Resume/Continue" (safe, in-app) vs "Open Application"
+                    # (genuine human browser interaction required) -- section
+                    # B's required CTA distinction.
+                    "action_kind": _needs_you_action_kind(reason, source["kind"]),
+                    "time_blocked": _time_blocked(blocked_at),
+                    "execution_id": execution_id,
+                    "session_id": row.get("session_id"),
                 })
     return items[:limit]
 

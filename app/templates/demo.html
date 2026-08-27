@@ -5,9 +5,12 @@
 <div class="page-header">
   <div>
     <h1>Demo / Test Mode</h1>
-    <p class="subtitle">Nine deterministic scenarios, built entirely on a local mock ATS — no real employer is ever
+    <p class="subtitle">Deterministic scenarios, built entirely on a local mock ATS — no real employer is ever
       contacted. Use these to see the full Needs Action / Ready to Apply / Submitted / Issues experience.</p>
   </div>
+  <form method="post" action="/demo/run-all">
+    <button type="submit" class="btn btn-primary">Run All Demos</button>
+  </form>
 </div>
 
 <div class="job-grid">
@@ -26,7 +29,12 @@
     <div class="jc-diag"><strong>{{ s.blocker.human_title }}</strong><br>{{ s.blocker.human_message }}</div>
     {% elif s.execution.status == 'NEEDS_USER_ACTION' and s.execution.user_action_reason %}
     <div class="jc-diag"><strong>Needs your attention</strong><br>{{ s.execution.user_action_reason }}</div>
+    {% elif s.execution.status == 'RETRYABLE_SUBMISSION_FAILURE' %}
+    <div class="jc-diag"><strong>Temporary failure</strong><br>{{ s.execution.error_message_safe or 'A retryable error occurred -- click Resolve & Continue to retry.' }}</div>
     {% endif %}
+    {% elif s.job_application_state and s.job_application_state.startswith('SKIPPED') %}
+    <div class="jc-footer"><span class="tag tag-neutral">{{ s.job_application_state }}</span></div>
+    <div class="jc-diag"><strong>Skipped</strong><br>Hard-skipped before an application was ever queued.</div>
     {% else %}
     <div class="jc-footer"><span class="faint">Not run yet</span></div>
     {% endif %}
@@ -35,7 +43,7 @@
       <form method="post" action="/demo/{{ s.key }}/run">
         <button type="submit" class="btn btn-sm">{{ 'Re-run demo' if s.execution else 'Run demo' }}</button>
       </form>
-      {% if s.blocker and s.resolve_kind %}
+      {% if s.resolve_kind and (s.blocker or (s.execution and s.execution.status == 'RETRYABLE_SUBMISSION_FAILURE')) %}
       <form method="post" action="/demo/{{ s.key }}/resolve">
         <button type="submit" class="btn btn-sm btn-cta-primary">
           {{ 'Check Application Status' if s.resolve_kind == 'reconcile' else 'Resolve & Continue' }}

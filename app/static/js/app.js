@@ -72,11 +72,29 @@
       .catch(function () { /* best-effort */ });
   }
 
+  function pollNotifications() {
+    // Every page has the notification bell in the topbar (base.html) --
+    // this is a single, cheap, bounded poll (matching this app's
+    // "bounded polling, never SSE/websockets" architecture), never a
+    // per-page re-implementation.
+    fetch("/api/notifications?limit=1", { headers: { Accept: "application/json" } })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (body) {
+        if (!body) return;
+        document.querySelectorAll("[data-notif-count]").forEach(function (el) {
+          el.textContent = body.unread_count ? " " + body.unread_count : "";
+        });
+      })
+      .catch(function () { /* best-effort */ });
+  }
+
   function startPolling() {
     pollAgentStatus();
     pollSummary();
+    pollNotifications();
     setInterval(pollAgentStatus, 5000);
     setInterval(pollSummary, 12000);
+    setInterval(pollNotifications, 15000);
   }
 
   if (document.readyState === "loading") {

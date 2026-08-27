@@ -7,7 +7,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from app import apply_settings, config
+from app import apply_settings, config, notifications
 from app.agent import state as agent_state
 from app.agent import run_state as agent_run_state
 from app.agent.orchestrator import orchestrator as agent_orchestrator
@@ -166,8 +166,12 @@ app.mount("/static", StaticFiles(directory=str(BASE_DIR / "app" / "static")), na
 def _nav_ctx() -> dict:
     """Shared context every page extending templates/base.html needs for its
     topbar agent-status chip -- a thin read of the orchestrator's own status()
-    (never a second/duplicate status computation)."""
-    return {"orchestrator_state": agent_orchestrator.status()["actual_state"]}
+    (never a second/duplicate status computation) -- and its notification
+    bell's unread count (one-click-application-experience-v1 section J)."""
+    return {
+        "orchestrator_state": agent_orchestrator.status()["actual_state"],
+        "notifications_unread_count": notifications.unread_count(),
+    }
 
 
 FILE_FIELDS = {
@@ -569,6 +573,43 @@ async def settings_save_sponsorship(request: Request):
     if not result.ok:
         return templates.TemplateResponse(request, "settings.html", _settings_context(errors=result.errors), status_code=400)
     return RedirectResponse(url="/settings?saved=sponsorship", status_code=303)
+
+
+@app.get("/notifications", response_class=HTMLResponse)
+def notifications_page(request: Request):
+    """One-click-application-experience-v1 (CLAUDE.md section J): the
+    notification bell's target page -- a plain, chronological list with a
+    per-row and a bulk "mark all read" action. Never a second state machine:
+    every row is a read-only projection of app.notifications' own durable
+    log."""
+    return templates.TemplateResponse(
+        request, "notifications.html",
+        {**_nav_ctx(), "rows": notifications.list_notifications(limit=100)},
+    )
+
+
+@app.post("/notifications/{notification_id}/read")
+def notification_mark_read(notification_id: int, request: Request):
+    notifications.mark_read(notification_id)
+    if "application/json" in (request.headers.get("accept") or ""):
+        return JSONResponse({"ok": True, "unread_count": notifications.unread_count()})
+    return RedirectResponse(url="/notifications", status_code=303)
+
+
+@app.post("/notifications/mark-all-read")
+def notifications_mark_all_read(request: Request):
+    notifications.mark_all_read()
+    if "application/json" in (request.headers.get("accept") or ""):
+        return JSONResponse({"ok": True, "unread_count": notifications.unread_count()})
+    return RedirectResponse(url="/notifications", status_code=303)
+
+
+@app.get("/api/notifications")
+def api_notifications(unread_only: bool = False, limit: int = 20):
+    return JSONResponse({
+        "unread_count": notifications.unread_count(),
+        "items": notifications.list_notifications(unread_only=unread_only, limit=limit),
+    })
 
 
 @app.get("/api/dashboard/live")
@@ -1214,6 +1255,12 @@ def applications_board_page(request: Request):
 
 @app.get("/applications/{execution_id}/detail", response_class=HTMLResponse)
 def application_detail_page(request: Request, execution_id: str):
+    """One-click-application-experience-v1 section C: the full tabbed
+    Overview / Job / Resume / Cover Letter / Answers / Timeline / Issues /
+    Receipt experience for one application. Every piece of context here is
+    read from an already-existing, unmodified module (never a second
+    computation of stage/CTA/quality/eligibility) -- this route only
+    assembles them for one template."""
     execution = applications_repo.get_execution(execution_id)
     if execution is None:
         raise HTTPException(404, "application execution not found")
@@ -1228,6 +1275,32 @@ def application_detail_page(request: Request, execution_id: str):
     audit_log = applications_repo.list_audit_log(execution_id=execution_id)
     receipt = applications_receipts.get_latest_receipt_for_execution(execution_id)
     approval_freshness = applications_approval.check_approval_freshness(job.id)
+    active_session = browser_session.get_active_session_for_job(job.id)
+    eligibility = evaluate_executor_eligibility(job)
+    cta = compute_apply_cta(
+        job.id, job.application_state.value, execution=execution, browser_session=active_session,
+    )
+
+    # Section E (Resume Review) / F (Approval) diagnostics -- the SAME
+    # resume_optimizer/JD-analysis read layer job_detail() already uses,
+    # never a second computation.
+    current_variant = resume_optimizer_repo.get_current_variant(job.id)
+    if current_variant is not None and isinstance(current_variant.get("compression_log"), str):
+        try:
+            current_variant["compression_log"] = json.loads(current_variant["compression_log"] or "[]")
+        except json.JSONDecodeError:
+            current_variant["compression_log"] = []
+    quality_row = resume_optimizer_repo.get_quality_report_for_job(job.id)
+    jd_fingerprint = compute_jd_fingerprint(job.title, job.company, job.description)
+    jd_analysis_row = resume_optimizer_repo.get_jd_analysis(job.id, jd_fingerprint)
+
+    submission_supported = None
+    try:
+        from app.applications.provider_registry import get_application_provider
+
+        submission_supported = get_application_provider(job).capabilities.submission_supported
+    except Exception:  # noqa: BLE001 -- diagnostics-only; never break the page over a provider lookup issue
+        submission_supported = None
 
     # Timeline: audit-log events and blocker raise/resolve events merged by
     # time -- never fabricated, both are genuine durable records.
@@ -1249,8 +1322,27 @@ def application_detail_page(request: Request, execution_id: str):
         request, "application_detail.html",
         {
             **_nav_ctx(), "job": job, "execution": execution, "answers": answers, "timeline": timeline,
-            "receipt": receipt, "active_blocker": active_blocker, "approval_freshness": approval_freshness,
-            "stage_label": stage_info.label,
+            "receipt": receipt, "active_blocker": active_blocker, "blocker_history": blocker_history,
+            "approval_freshness": approval_freshness, "stage_label": stage_info.label,
+            "cta": cta.as_dict(), "eligibility": eligibility, "submission_supported": submission_supported,
+            "current_variant": current_variant, "quality_report": quality_row["report"] if quality_row else None,
+            "jd_analysis": jd_analysis_row,
+            "auto_submit_enabled": config.AUTO_SUBMIT_ENABLED,
+            # Advanced/debug section (section C): technical identifiers only
+            # -- never a raw lifecycle-state enum (execution.status/
+            # automation_policy/policy_reasons), which every OTHER section of
+            # this page already renders as plain language (stage_label,
+            # active_blocker.human_title, cta.label) instead.
+            "execution_json": json.dumps(
+                {
+                    k: execution.get(k) for k in (
+                        "execution_id", "job_id", "mode", "attempt_count", "started_at", "finished_at",
+                        "updated_at", "resume_artifact_hash", "answers_version", "submission_method",
+                        "correlation_id", "requires_user_action",
+                    )
+                },
+                indent=2, default=str,
+            ),
         },
     )
 
@@ -1262,6 +1354,16 @@ def demo_page(request: Request):
     return templates.TemplateResponse(
         request, "demo.html", {**_nav_ctx(), "scenarios": applications_demo.list_demo_status()},
     )
+
+
+@app.post("/demo/run-all")
+def demo_run_all():
+    """One-click-application-experience-v1 section L: a single action that
+    processes the entire local demo fixture set (prepared/completed, needs
+    action, skipped, transient-recovered, submission-ambiguous) without any
+    manual per-scenario babysitting."""
+    applications_demo.run_all_demos()
+    return RedirectResponse(url="/demo", status_code=303)
 
 
 @app.post("/demo/{scenario_key}/run")

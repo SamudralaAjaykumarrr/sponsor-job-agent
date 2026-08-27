@@ -1624,6 +1624,48 @@ def _m058_greenhouse_submit_claims_table(conn, backend: str) -> None:
     )
 
 
+def _m059_notifications_table(conn, backend: str) -> None:
+    """One-click-application-experience-v1 (CLAUDE.md section J): calm,
+    in-app notifications for meaningful events only (Needs You, application
+    submitted, application status unknown, agent stopped unexpectedly, daily
+    limit reached, serious health issue). This table is purely a durable
+    read/unread record with a dedupe key -- it introduces no new business
+    logic of its own; every notify() call site is a thin, best-effort
+    observer bolted onto an already-existing, narrow choke point (
+    app.applications.blockers.raise_blocker, app.applications.receipts.
+    record_receipt, the rate-limit block in app.applications.executor, and
+    app.agent.orchestrator's own crash/lease-loss handling) -- never a
+    second copy of any state those modules already own.
+
+    Dedup (spec section J: "meaningful notifications... must dedupe") is a
+    simple, best-effort check-then-insert keyed on `dedupe_key`: a new
+    notification for the same dedupe_key is skipped whenever an existing
+    UNREAD one already carries it, so a repeatedly-retried blocker or a
+    still-unresolved daily limit never floods the feed. This is
+    intentionally not the atomic partial-unique-index pattern this project
+    uses for safety-critical claims (leases/executions/blockers) -- a
+    notification is calm UX polish, not a correctness invariant, so a rare
+    race producing one extra duplicate row is harmless and never worth a
+    second locking mechanism."""
+    id_column = "id BIGSERIAL PRIMARY KEY" if backend == "postgres" else "id INTEGER PRIMARY KEY AUTOINCREMENT"
+    conn.execute(
+        f"""CREATE TABLE IF NOT EXISTS notifications (
+            {id_column},
+            kind TEXT NOT NULL,
+            title TEXT NOT NULL,
+            message TEXT NOT NULL DEFAULT '',
+            job_id INTEGER,
+            execution_id TEXT,
+            dedupe_key TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            read_at TEXT
+        )"""
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_notifications_created ON notifications (created_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_notifications_dedupe ON notifications (dedupe_key)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_notifications_unread ON notifications (read_at)")
+
+
 MIGRATIONS: list[tuple[int, str, Callable]] = [
     (2, "phase6_worker_identity_columns", _m002_worker_identity_columns),
     (3, "phase6_schema_drift_table", _m003_schema_drift_table),
@@ -1682,6 +1724,7 @@ MIGRATIONS: list[tuple[int, str, Callable]] = [
     (56, "application_blockers_table", _m056_application_blockers_table),
     (57, "application_document_bindings_table", _m057_application_document_bindings_table),
     (58, "greenhouse_submit_claims_table", _m058_greenhouse_submit_claims_table),
+    (59, "notifications_table", _m059_notifications_table),
 ]
 
 # Version 1 is the implicit Phase 1-5 baseline schema, applied by
