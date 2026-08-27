@@ -322,6 +322,25 @@ def raise_blocker(
             if refetched is not None:
                 return refetched
         raise
+
+    # One-click-application-experience-v1 (CLAUDE.md section J): a NEW
+    # resumable blocker is a genuine "Needs You" (or, for the specific
+    # SUBMISSION_STATUS_UNKNOWN code, "status unknown") notification --
+    # best-effort, deduped per-execution so a retried/re-raised occurrence
+    # of the SAME code never re-notifies while the prior one is still
+    # unread. Terminal blockers (job expired/removed/application closed)
+    # are deliberately not notified here -- they land in the consumer
+    # board's Issues bucket, not the Needs You notification set this
+    # section defines.
+    if blocker_class_for(code) == BlockerClass.RESUMABLE:
+        from app import notifications
+
+        kind = notifications.KIND_STATUS_UNKNOWN if code == BlockerCode.SUBMISSION_STATUS_UNKNOWN \
+            else notifications.KIND_NEEDS_YOU
+        notifications.notify(
+            kind, copy.human_title, copy.human_message,
+            dedupe_key=f"blocker:{execution_id}:{code.value}", job_id=job_id, execution_id=execution_id,
+        )
     return get_active_blocker_for_execution(execution_id) or row
 
 

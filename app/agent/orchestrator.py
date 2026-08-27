@@ -244,6 +244,17 @@ class AgentOrchestrator:
                 # instance that never acquired it in the first place.
                 logger.warning("orchestrator instance %s lost its lease -- stopping", self._instance_id)
                 run_state_mod.log_activity("orchestrator_lease_lost", f"instance={self._instance_id}")
+                # One-click-application-experience-v1 (CLAUDE.md section J):
+                # this is a genuine "agent stopped unexpectedly" -- desired
+                # state is still RUNNING, but this instance is halting
+                # without the user ever clicking STOP.
+                from app import notifications
+
+                notifications.notify(
+                    notifications.KIND_AGENT_STOPPED, "Agent stopped unexpectedly",
+                    "The agent lost its run lease and stopped -- it was not asked to stop.",
+                    dedupe_key=f"lease_lost:{run_id}",
+                )
                 lost_lease = True
                 break
             started = datetime.now(timezone.utc)
@@ -257,6 +268,17 @@ class AgentOrchestrator:
                 counters = CycleCounters(errors=1, detail={"crash": str(exc)})
                 run_state_mod.set_actual_state(AgentRunState.ERROR, last_error=str(exc)[:500])
                 run_state_mod.log_activity("error", f"cycle #{cycle_number} crashed: {exc}"[:500])
+                # One-click-application-experience-v1 (CLAUDE.md section J):
+                # "serious health issue" -- best-effort, never blocking the
+                # self-healing recovery immediately below. Deduped per cycle
+                # number so this never fires twice for the same crash.
+                from app import notifications
+
+                notifications.notify(
+                    notifications.KIND_HEALTH_ISSUE, "Agent hit a problem",
+                    f"Cycle #{cycle_number} crashed and was automatically recovered: {str(exc)[:300]}",
+                    dedupe_key=f"cycle_crash:{run_id}:{cycle_number}",
+                )
                 run_state_mod.set_actual_state(AgentRunState.RUNNING)  # self-healing: never permanently stuck in ERROR
                 run_state_mod.log_activity("recovered", f"cycle #{cycle_number}: resumed RUNNING after crash")
             finished = datetime.now(timezone.utc)

@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Notifications — Sponsor Job Agent{% endblock %}
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1>Notifications</h1>
+    <p class="subtitle">Calm, meaningful updates only — Needs You, applications submitted, status unknown, the
+      agent stopping unexpectedly, daily limits, and serious issues. Nothing here for routine internal steps.</p>
+  </div>
+  {% if rows %}
+  <form method="post" action="/notifications/mark-all-read"><button class="btn" type="submit">Mark all read</button></form>
+  {% endif %}
+</div>
+
+{% if not rows %}
+<div class="empty-state">
+  <div class="icon">🔔</div>
+  <p>Nothing here yet. You'll see an entry whenever something needs your attention or completes.</p>
+</div>
+{% else %}
+<ul class="timeline-list">
+  {% for r in rows %}
+  <li class="{{ 'is-unread' if not r.read_at else '' }}" style="{{ 'font-weight:600;' if not r.read_at else 'opacity:0.75;' }}">
+    <span class="faint">{{ r.created_at }}</span> — <strong>{{ r.title }}</strong>{% if r.message %}: {{ r.message }}{% endif %}
+    {% if r.job_id %}<a href="/jobs/{{ r.job_id }}" style="margin-left:0.4rem;">View job</a>{% endif %}
+    {% if not r.read_at %}
+    <form method="post" action="/notifications/{{ r.id }}/read" style="display:inline;">
+      <button type="submit" class="btn btn-sm btn-ghost" style="margin-left:0.4rem;">Mark read</button>
+    </form>
+    {% endif %}
+  </li>
+  {% endfor %}
+</ul>
+{% endif %}
+{% endblock %}

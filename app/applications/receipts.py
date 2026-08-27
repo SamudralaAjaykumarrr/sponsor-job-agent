@@ -76,6 +76,18 @@ def record_receipt(
              approval_id or "", now),
         )
         row = conn.execute("SELECT * FROM application_receipts WHERE receipt_id = ?", (receipt_id,)).fetchone()
+
+    # One-click-application-experience-v1 (CLAUDE.md section J): "application
+    # submitted" is a meaningful, one-time-per-execution notification --
+    # a receipt is only ever written once per execution (module docstring),
+    # so this fires exactly once per genuinely confirmed application.
+    from app import notifications
+
+    notifications.notify(
+        notifications.KIND_APPLIED, "Application submitted",
+        f"Confirmed via {provider or 'the employer'}'s application system.",
+        dedupe_key=f"receipt:{execution_id}", job_id=job_id, execution_id=execution_id,
+    )
     return dict(row)
 
 

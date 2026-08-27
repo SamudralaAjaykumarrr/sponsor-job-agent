@@ -76,6 +76,16 @@ SCENARIOS: list[DemoScenario] = [
     DemoScenario("application_limit", "Demo Application Limit Reached",
                  "Shows the friendly 'application limit reached' experience via a temporarily simulated "
                  "(never real) limit -- your actual application limits are never touched.", "simple", ""),
+    # One-click-application-experience-v1 section L: rounds out the local
+    # multi-job demo set with the two scenarios CLAUDE.md's Job C ("no
+    # sponsorship -> Skipped") and Job D ("transient failure -> recovered")
+    # ask for that the original 9 scenarios above didn't cover.
+    DemoScenario("no_sponsorship", "Demo No Sponsorship (Skipped)",
+                 "The posting explicitly says no sponsorship -- hard-skipped before an application is ever queued.",
+                 "simple", ""),
+    DemoScenario("transient_recovery", "Demo Transient Failure Recovered",
+                 "A submit attempt fails with a temporary provider error, then automatically succeeds on retry.",
+                 "transient_then_recovers", "retry_submit"),
 ]
 
 _BY_KEY: dict[str, DemoScenario] = {s.key: s for s in SCENARIOS}
@@ -101,14 +111,18 @@ def ensure_demo_job(key: str) -> Job:
     if existing is not None:
         return existing
 
+    sponsorship_sentence = (
+        "This role does not offer visa sponsorship, now or in the future."
+        if key == "no_sponsorship" else "H-1B sponsorship is available for this role."
+    )
     job = Job(
         title=f"Demo Backend Engineer -- {scenario.label}",
         company="Demo Fixture Co",
         location="Remote - US",
         description=(
             "We are hiring a Backend Software Engineer to build REST APIs in Python using FastAPI, "
-            "with PostgreSQL, Docker, and CI/CD pipelines. This is a full-time position. "
-            "H-1B sponsorship is available for this role. (Demo/test-mode fixture -- never a real employer.)"
+            f"with PostgreSQL, Docker, and CI/CD pipelines. This is a full-time position. "
+            f"{sponsorship_sentence} (Demo/test-mode fixture -- never a real employer.)"
         ),
         employment_type="Full-time",
         provider=PROVIDER_NAME,
@@ -222,6 +236,17 @@ def resolve_demo(key: str) -> dict:
             update_job(job.id, provider_metadata=json.dumps({"mock_scenario": "simple"}))
         if execution is not None:
             _with_executor_enabled(lambda: process_execution(execution["execution_id"]))
+    elif scenario.resolve_kind == "retry_submit":
+        # "transient_recovery": the mock scenario itself recovers based on
+        # the execution's own persisted attempt_count (see MockATSProvider.
+        # submit) -- never flips mock_scenario. `approved=True` mirrors
+        # app.applications.worker._execute_claimed's own exact reclaim
+        # convention for a RETRYABLE_SUBMISSION_FAILURE execution (see that
+        # module's docstring) -- process_execution() still re-verifies the
+        # durable approval row fresh regardless, so this never grants
+        # authority that wasn't already genuinely there.
+        if execution is not None and execution["status"] == ExecutionStatus.RETRYABLE_SUBMISSION_FAILURE.value:
+            _with_executor_enabled(lambda: process_execution(execution["execution_id"], approved=True))
     elif scenario.resolve_kind == "reconcile":
         if execution is not None and execution["status"] == ExecutionStatus.SUBMISSION_STATUS_UNKNOWN.value:
             fresh_job = get_job(job.id)
@@ -257,6 +282,10 @@ def describe_demo(key: str, job_id: int) -> dict:
         "key": scenario.key, "label": scenario.label, "description": scenario.description,
         "resolve_kind": scenario.resolve_kind, "job_id": job_id,
         "execution": execution, "blocker": latest_blocker, "approval": approval_freshness,
+        # No execution row at all (e.g. a hard-skipped "no_sponsorship" job
+        # never reaches queue_application) still deserves an honest label --
+        # never silently indistinguishable from "not run yet".
+        "job_application_state": job.application_state.value if job else None,
     }
 
 
@@ -267,7 +296,22 @@ def list_demo_status() -> list[dict]:
         if job is None:
             out.append({"key": scenario.key, "label": scenario.label, "description": scenario.description,
                         "resolve_kind": scenario.resolve_kind, "job_id": None, "execution": None,
-                        "blocker": None, "approval": {"has_approval": False}})
+                        "blocker": None, "approval": {"has_approval": False}, "job_application_state": None})
         else:
             out.append(describe_demo(scenario.key, job.id))
     return out
+
+
+def run_all_demos() -> list[dict]:
+    """One-click-application-experience-v1 section L: 'One Start action
+    should process the entire fixture set without manual babysitting.' One
+    scenario's failure must never stop the rest -- matches this project's
+    existing failure-isolation convention for batch fixture seeding
+    (app.agent.orchestrator._seed_mixed_batch_fixtures)."""
+    results = []
+    for scenario in SCENARIOS:
+        try:
+            results.append(run_demo(scenario.key))
+        except Exception as exc:  # noqa: BLE001 -- one demo failing must never block the rest
+            results.append({"key": scenario.key, "label": scenario.label, "error": str(exc)[:300]})
+    return results

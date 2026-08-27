@@ -484,6 +484,21 @@ def process_execution(execution_id: str, *, allow_submission: bool = True, appro
                                requires_user_action=1, user_action_reason=rl.reason,
                                automation_policy=validation.policy.value, policy_reasons=policy_reasons_json)
         repo.log_event(execution_id, job_id, "user_action_required", detail=rl.reason, correlation_id=correlation_id)
+        # One-click-application-experience-v1 (CLAUDE.md section J): "daily
+        # limit reached" is its own notification kind, deliberately separate
+        # from app.applications.blockers (rate limiting is never a
+        # first-class blocker there -- see that module's own docstring).
+        # Deduped per calendar day so a busy queue hitting the same limit
+        # repeatedly only notifies once until the day rolls over.
+        from datetime import datetime, timezone
+
+        from app import notifications
+
+        today = datetime.now(timezone.utc).date().isoformat()
+        notifications.notify(
+            notifications.KIND_DAILY_LIMIT, "Application limit reached", rl.reason,
+            dedupe_key=f"rate_limit:{today}", job_id=job_id, execution_id=execution_id,
+        )
         return repo.get_execution(execution_id)
 
     dup = duplicate.check_duplicate(fresh_job)
