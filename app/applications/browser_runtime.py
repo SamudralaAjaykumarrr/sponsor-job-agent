@@ -1257,9 +1257,24 @@ def close_session(session_id: str) -> None:
 
 
 def _discard(session_id: str) -> None:
+    """Used only when a session must be dropped WITHOUT a normal
+    close_session() call -- currently open_session()'s except-branch, when
+    `_do_open` itself raised (e.g. a navigation timeout after
+    `browser.launch()` already succeeded). Must still submit `_do_close` to
+    the session's own dedicated thread (never call it from this thread --
+    Playwright's sync API is not thread-safe) so the already-launched
+    Chromium/Playwright driver process is actually torn down rather than
+    orphaned. `wait=False` below only means this calling thread doesn't
+    block on it -- the submitted close still runs to completion on the
+    session's own worker thread once whatever `_do_open` was doing finishes
+    or raises."""
     with _REGISTRY_LOCK:
         live = _REGISTRY.pop(session_id, None)
     if live is not None:
+        try:
+            live.executor.submit(live._do_close)
+        except Exception:  # noqa: BLE001 -- best-effort cleanup, never raises
+            pass
         live.executor.shutdown(wait=False)
 
 

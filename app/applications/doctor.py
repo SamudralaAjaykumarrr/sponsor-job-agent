@@ -120,6 +120,9 @@ def run_doctor() -> DoctorReport:
         _check_greenhouse_submission_supported_still_false(report)
         _check_greenhouse_submit_claim_double_attempt(conn, report)
         _check_greenhouse_claim_without_confirmed_receipt(conn, report)
+        # --- Autonomous-ux-reliability-v1 (section I: health/self-healing) ---
+        _check_queue_starvation(conn, report)
+        _check_submission_circuit_open_too_long(conn, report)
     return report
 
 
@@ -1261,4 +1264,57 @@ def _check_greenhouse_claim_without_confirmed_receipt(conn, report: DoctorReport
             "serious", "greenhouse_claim_confirmed_without_receipt",
             f"execution {r['execution_id']}'s greenhouse_submit_claims row is CONFIRMED but no "
             f"application_receipts row exists for it",
+        ))
+
+
+def _check_queue_starvation(conn, report: DoctorReport) -> None:
+    """Autonomous-ux-reliability-v1 section I: an active, claimable
+    execution (QUEUED or otherwise not yet leased) that has sat unclaimed
+    far longer than a single lease window means SOMETHING stopped consuming
+    the queue (orchestrator not running, worker fleet down, an unhandled
+    exception outside every existing per-job try/except) -- distinct from
+    `_check_expired_execution_lease` above, which catches a lease that WAS
+    taken and then abandoned. Never auto-recovered here (read-only, matching
+    every doctor in this project); surfaced so an operator notices instead
+    of a silently growing backlog nobody is working."""
+    threshold = (
+        datetime.now(timezone.utc) - timedelta(seconds=max(60, config.APPLICATION_LEASE_SECONDS * 4))
+    ).isoformat()
+    rows = conn.execute(
+        "SELECT execution_id, job_id, status, started_at FROM application_executions "
+        "WHERE active = 1 AND lease_owner IS NULL AND started_at <= ? "
+        "AND status IN ('QUEUED', 'RETRYABLE_SUBMISSION_FAILURE') "
+        "ORDER BY started_at ASC LIMIT 20",
+        (threshold,),
+    ).fetchall()
+    for r in rows:
+        report.issues.append(Issue(
+            "serious", "application_queue_starvation",
+            f"execution {r['execution_id']} (job {r['job_id']}, status={r['status']}) has been unclaimed "
+            f"since {r['started_at']} -- no worker appears to be consuming the application queue.",
+        ))
+
+
+def _check_submission_circuit_open_too_long(conn, report: DoctorReport) -> None:
+    """A provider's submission circuit breaker staying OPEN for many times
+    its own cooldown window means every retry/half-open probe since has
+    also failed -- worth an operator's attention (a genuinely broken
+    provider integration, not a blip) without ever disabling the provider
+    here; `app.applications.circuit` remains the only thing that can ever
+    close it again, and it always keeps trying on its own (self-healing) --
+    this check is purely informational, matching every other doctor check's
+    read-only contract."""
+    threshold = (
+        datetime.now(timezone.utc) - timedelta(seconds=max(60, config.APPLICATION_CIRCUIT_BREAKER_COOLDOWN_SECONDS * 6))
+    ).isoformat()
+    rows = conn.execute(
+        "SELECT provider, opened_at, consecutive_failures FROM application_provider_circuit_state "
+        "WHERE state = 'OPEN' AND opened_at IS NOT NULL AND opened_at <= ?"
+    , (threshold,)).fetchall()
+    for r in rows:
+        report.issues.append(Issue(
+            "warning", "application_submission_circuit_open_too_long",
+            f"provider '{r['provider']}' submission circuit has been OPEN since {r['opened_at']} "
+            f"({r['consecutive_failures']} consecutive failures) -- repeated provider failure, still "
+            "self-healing on its own schedule, but worth reviewing.",
         ))

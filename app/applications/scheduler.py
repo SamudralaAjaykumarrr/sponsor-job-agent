@@ -12,6 +12,7 @@ APPLICATION_AUTO_PREPARE_ENABLED; it only ever queues in AUTO_PERMITTED mode
 for a specific job when AUTO_SUBMIT_ENABLED is ALSO true AND that job's own
 eligibility already clears auto_submit_eligible."""
 
+import logging
 from dataclasses import dataclass, field
 
 from app import apply_settings, config
@@ -23,6 +24,8 @@ from app.applications.repo import get_active_execution_for_job
 from app.db import db_session
 from app.jobs_repo import get_job
 from app.models import ApplicationState
+
+logger = logging.getLogger("applications.scheduler")
 
 
 @dataclass
@@ -136,8 +139,21 @@ def run_cycle(*, limit: int | None = None) -> SchedulerCycleResult:
         try:
             queue_result = queue_application(job_id, mode=mode.value)
         except ExecutorDisabledError as exc:
+            # Global condition -- every remaining candidate would raise the
+            # exact same error, so stopping the whole cycle here is correct,
+            # not a per-job-isolation violation.
             result.errors.append(str(exc))
             break
+        except Exception as exc:  # noqa: BLE001 -- one job's unexpected failure (e.g. a transient
+            # DB hiccup, a bug in duplicate/rate-limit lookups) must never abort
+            # auto-prepare for every OTHER candidate in this cycle -- matches
+            # this project's existing per-job isolation principle
+            # (app.agent.orchestrator._run_resume_stage's per-job try/except,
+            # app.applications.worker's per-execution isolation). A real gap:
+            # previously only ExecutorDisabledError was caught here.
+            logger.exception("auto-prepare: queue_application failed unexpectedly for job_id=%s", job_id)
+            result.errors.append(f"job {job_id}: {exc}")
+            continue
         if queue_result.queued:
             result.queued += 1
         else:

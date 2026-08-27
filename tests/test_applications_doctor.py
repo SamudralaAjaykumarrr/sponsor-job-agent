@@ -80,3 +80,59 @@ def test_doctor_catches_execution_missing_job(profile_saved):
     report = run_doctor()
     checks = {i.check for i in report.issues}
     assert "execution_missing_job" in checks
+
+
+# --- Autonomous-ux-reliability-v1 section I: health/self-healing checks ---
+
+
+def test_doctor_catches_queue_starvation(profile_saved):
+    job = ingest_and_process(_mock_job("doc-starve"))
+    queue_application(job.id, mode="ASSIST")  # leaves it QUEUED, never processed
+
+    with db_session() as conn:
+        conn.execute(
+            "UPDATE application_executions SET started_at = ? WHERE job_id = ?",
+            ("2020-01-01T00:00:00+00:00", job.id),
+        )
+
+    report = run_doctor()
+    checks = {i.check for i in report.issues}
+    assert "application_queue_starvation" in checks
+
+
+def test_doctor_does_not_flag_a_freshly_queued_execution(profile_saved):
+    job = ingest_and_process(_mock_job("doc-fresh"))
+    queue_application(job.id, mode="ASSIST")
+
+    report = run_doctor()
+    checks = {i.check for i in report.issues}
+    assert "application_queue_starvation" not in checks
+
+
+def test_doctor_catches_submission_circuit_open_too_long(profile_saved):
+    with db_session() as conn:
+        conn.execute(
+            "INSERT INTO application_provider_circuit_state "
+            "(provider, state, consecutive_failures, opened_at, updated_at) "
+            "VALUES ('mock_ats', 'OPEN', 5, '2020-01-01T00:00:00+00:00', '2020-01-01T00:00:00+00:00')"
+        )
+
+    report = run_doctor()
+    checks = {i.check for i in report.issues}
+    assert "application_submission_circuit_open_too_long" in checks
+
+
+def test_doctor_does_not_flag_a_recently_opened_circuit(profile_saved):
+    from datetime import datetime, timezone
+
+    with db_session() as conn:
+        conn.execute(
+            "INSERT INTO application_provider_circuit_state "
+            "(provider, state, consecutive_failures, opened_at, updated_at) "
+            "VALUES ('mock_ats', 'OPEN', 5, ?, ?)",
+            (datetime.now(timezone.utc).isoformat(), datetime.now(timezone.utc).isoformat()),
+        )
+
+    report = run_doctor()
+    checks = {i.check for i in report.issues}
+    assert "application_submission_circuit_open_too_long" not in checks

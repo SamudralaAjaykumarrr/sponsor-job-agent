@@ -94,3 +94,85 @@ def test_fingerprint_fields_changes_when_a_field_is_added():
     base = [{"name": "email", "label": "Email", "type": "text", "required": True, "choices": []}]
     extra = base + [{"name": "phone", "label": "Phone", "type": "text", "required": False, "choices": []}]
     assert browser_runtime._fingerprint_fields(base) != browser_runtime._fingerprint_fields(extra)
+
+
+# --- autonomous-ux-reliability-v1 section D: orphan-Chromium-process fix ---
+# open_session()'s except-branch calls _discard() when _do_open() raises
+# AFTER browser.launch() already succeeded (e.g. a navigation timeout) --
+# _discard() must still tear down the already-launched browser/context/
+# playwright driver, never just drop the Python reference and leak the OS
+# process. These tests verify that via a real ThreadPoolExecutor (cheap) and
+# fake browser/context/playwright objects, without ever launching a real
+# Chromium.
+
+
+def _fake_live_session(session_id: str) -> "browser_runtime._LiveSession":
+    import unittest.mock as mock
+    from concurrent.futures import ThreadPoolExecutor
+
+    live = browser_runtime._LiveSession(session_id, "mock_ats", "https://x")
+    live.browser = mock.Mock(name="browser")
+    live.context = mock.Mock(name="context")
+    live._pw_cm = mock.MagicMock(name="pw_cm")
+    # Real executor (not mocked) -- the fix's correctness hinges on the
+    # close call actually running on this session's own dedicated thread.
+    live.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix=f"test-{session_id}")
+    return live
+
+
+def test_discard_closes_already_launched_browser_not_just_drops_it():
+    live = _fake_live_session("leak-check-1")
+    browser_runtime._REGISTRY["leak-check-1"] = live
+    try:
+        browser_runtime._discard("leak-check-1")
+        live.executor.shutdown(wait=True)  # ensure the submitted close finished before asserting
+    finally:
+        browser_runtime._REGISTRY.pop("leak-check-1", None)
+
+    live.context.close.assert_called_once()
+    live.browser.close.assert_called_once()
+    live._pw_cm.__exit__.assert_called_once()
+    assert "leak-check-1" not in browser_runtime._REGISTRY
+
+
+def test_open_session_failure_after_launch_still_closes_browser(monkeypatch):
+    """Simulates the real regression: _do_open() raises (e.g. goto() timed
+    out) after browser.launch() already succeeded inside it -- open_session()
+    must propagate the error but the already-launched browser must still be
+    torn down via _discard(), not orphaned."""
+    import unittest.mock as mock
+
+    monkeypatch.setattr(browser_runtime, "playwright_available", lambda: True)
+
+    created: dict = {}
+
+    def _fake_do_open(self, url):
+        # Mirrors the real _do_open: launches (creates) the browser/context
+        # THEN fails (e.g. goto() timeout) -- the browser object already
+        # exists and must be cleaned up despite the raise.
+        self.browser = mock.Mock(name="browser")
+        self.context = mock.Mock(name="context")
+        self._pw_cm = mock.MagicMock(name="pw_cm")
+        created["browser"] = self.browser
+        created["context"] = self.context
+        created["pw_cm"] = self._pw_cm
+        raise TimeoutError("simulated goto() timeout")
+
+    monkeypatch.setattr(browser_runtime._LiveSession, "_do_open", _fake_do_open)
+
+    with pytest.raises(Exception):
+        browser_runtime.open_session("leak-check-2", provider="mock_ats", url="https://x")
+
+    # Give the background thread a moment to run the submitted close (it was
+    # queued behind the failed _do_open call on the same thread).
+    import time as _time
+
+    for _ in range(50):
+        if created.get("browser") is not None and created["browser"].close.called:
+            break
+        _time.sleep(0.02)
+
+    assert "leak-check-2" not in browser_runtime._REGISTRY
+    created["browser"].close.assert_called_once()
+    created["context"].close.assert_called_once()
+    created["pw_cm"].__exit__.assert_called_once()
