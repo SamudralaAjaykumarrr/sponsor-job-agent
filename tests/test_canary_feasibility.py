@@ -307,3 +307,40 @@ def test_job_with_airbnb_327s_exact_failure_signature_is_excluded(tmp_env):
     assert result.verdict == FeasibilityVerdict.REJECT
     assert result.recent_failure_penalty.verdict == FeasibilityVerdict.REJECT
     assert "recently ended" in result.recent_failure_penalty.reason
+
+
+# --- Daily-use-v1: the gate is wired into the AUTOMATIC resume-generation
+#     candidate query (app.resume_optimizer.scheduler), not just callable
+#     manually via the CLI. -------------------------------------------------
+
+def test_feasibility_reject_excludes_job_from_auto_resume_generation(tmp_env, sample_profile):
+    from app.candidate.profile import save_profile
+    from app.resume_optimizer.scheduler import _find_jobs_needing_optimization
+
+    save_profile(sample_profile)
+    # A role-fit hard reject (iOS Engineer) that still clears the SQL-level
+    # sponsorship/state filter on its own -- proving the REJECT comes from
+    # the Python-level canary_feasibility pass, not the SQL WHERE clause.
+    good_job = _make_job(tmp_env)
+    rejected_job = _make_job(
+        tmp_env, title="iOS Engineer",
+        description="Build our iOS app in Swift and Objective-C. Full-time, sponsorship available.",
+    )
+    candidates = _find_jobs_needing_optimization(50)
+    assert good_job.id in candidates
+    assert rejected_job.id not in candidates
+
+
+def test_is_test_fixture_job_exempt_from_feasibility_gate(tmp_env, sample_profile):
+    """Demo/Test Mode fixtures (e.g. a deliberately-simulated expired
+    posting) must never be screened by a gate built for real postings."""
+    from app.candidate.profile import save_profile
+    from app.resume_optimizer.scheduler import _find_jobs_needing_optimization
+
+    save_profile(sample_profile)
+    fixture_job = _make_job(
+        tmp_env, provider="mock_ats", external_job_id="demo-fixture-review-gate",
+        is_test_fixture=True,
+    )
+    candidates = _find_jobs_needing_optimization(50)
+    assert fixture_job.id in candidates

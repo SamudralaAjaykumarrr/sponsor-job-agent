@@ -214,6 +214,25 @@ def test_demo_transient_recovery_resolves_via_retry_submit(tmp_env, sample_profi
     )
 
 
+def test_demo_legal_question_scenario_needs_you_then_resolves(tmp_env, sample_profile, monkeypatch):
+    """Daily-use-v1: closes the gap where app.applications.mock_ats's
+    already-implemented `legal_unknown` scenario (PolicyReason.
+    UNKNOWN_LEGAL_QUESTION) had no DemoScenario referencing it -- a defined-
+    but-dead demo capability. Proves the wiring end-to-end via the actual
+    demo.run_demo/resolve_demo entry points (not the lower-level executor
+    call the pre-existing mock_ats-level tests already cover)."""
+    save_profile(sample_profile)
+    monkeypatch.setattr(config, "APPLICATION_EXECUTOR_ENABLED", True)
+
+    status = demo_mod.run_demo("legal_question")
+    assert status["execution"]["status"] == ExecutionStatus.NEEDS_USER_ACTION.value
+    assert status["blocker"]["blocker_code"] == blockers.BlockerCode.NEEDS_LEGAL_CONFIRMATION.value
+
+    resolved = demo_mod.resolve_demo("legal_question")
+    assert resolved["execution"]["status"] == ExecutionStatus.SUBMISSION_READY.value
+    assert resolved["blocker"] is None
+
+
 def test_run_all_demos_isolates_failures_and_covers_every_scenario(tmp_env, sample_profile, monkeypatch):
     save_profile(sample_profile)
     monkeypatch.setattr(config, "APPLICATION_EXECUTOR_ENABLED", True)
