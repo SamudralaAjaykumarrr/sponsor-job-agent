@@ -312,6 +312,35 @@ def test_select_apply_control_no_candidates_returns_none():
     assert reason == ""
 
 
+def test_select_apply_control_rejects_text_irrelevant_external_redirect():
+    """Autonomous-UX-reliability follow-up (2026-08-28): live-caught against
+    a real Airbnb/Greenhouse posting -- a page's own sitewide home/logo link
+    (text "Airbnb", href to the untrusted bare marketing domain) classifies
+    EXTERNAL_REDIRECT purely because of its href (classify_apply_control_
+    detailed never inspects text once that short-circuit fires), but has
+    nothing to do with applying. select_apply_control must never mistake it
+    for "the" apply-entry control when it is the only candidate on the page."""
+    candidates = [{"text": "Airbnb", "href": "https://airbnb.com/", "classification": "EXTERNAL_REDIRECT"}]
+    best, reason = select_apply_control(candidates)
+    assert best is None
+    assert reason == ""
+
+
+def test_select_apply_control_still_accepts_apply_relevant_external_redirect():
+    """The EXTERNAL_REDIRECT fallback must still surface a GENUINE apply
+    control that merely points at an untrusted destination (e.g. "Apply via
+    <partner-site>") -- the text-relevance guard narrows the fallback, it
+    does not remove its original purpose."""
+    candidates = [
+        {"text": "Airbnb", "href": "https://airbnb.com/", "classification": "EXTERNAL_REDIRECT"},
+        {"text": "Apply via Partner Site", "href": "https://untrusted-partner.example.com/apply",
+         "classification": "EXTERNAL_REDIRECT"},
+    ]
+    best, reason = select_apply_control(candidates)
+    assert best is candidates[1]
+    assert reason == ""
+
+
 # --- is_valid_stage_transition --------------------------------------------------
 
 def test_stage_transition_same_stage_always_valid():

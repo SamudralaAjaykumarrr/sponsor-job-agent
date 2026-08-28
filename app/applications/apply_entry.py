@@ -207,7 +207,22 @@ def select_apply_control(candidates: list[dict]) -> tuple[Optional[dict], str]:
     NAVIGATION_SAFE candidates with genuinely DIFFERENT destinations (e.g. a
     "similar jobs" Apply button elsewhere on the page) must never be resolved
     by guessing which one is for the current job -- returns (None, reason)
-    so the caller surfaces NEEDS_USER_ACTION instead."""
+    so the caller surfaces NEEDS_USER_ACTION instead.
+
+    Autonomous-UX-reliability follow-up (2026-08-28, live-caught against a
+    real Airbnb/Greenhouse posting): a candidate is classified
+    EXTERNAL_REDIRECT purely because its HREF resolves to an untrusted host
+    -- classify_apply_control_detailed() never inspects TEXT once that href
+    check fires, so a page's own sitewide home/logo link (text "Airbnb",
+    nothing to do with applying) can come back EXTERNAL_REDIRECT with zero
+    connection to the apply flow. The fallback below only ever accepts an
+    EXTERNAL_REDIRECT candidate whose own text ALSO reads like a genuine
+    apply action (matches NAVIGATION_SAFE_PHRASES) -- e.g. a real "Apply via
+    <untrusted-partner-site>" control, which is what this branch exists to
+    surface for review. LOGIN_TRIGGER needs no equivalent guard: it is only
+    ever reached when the candidate's own text already matched
+    LOGIN_TRIGGER_PHRASES (see classify_apply_control_detailed's ordering),
+    so it is never text-blind the way EXTERNAL_REDIRECT is."""
     nav_safe = [c for c in candidates if c.get("classification") == ApplyControlClassification.NAVIGATION_SAFE.value]
     if nav_safe:
         destinations = {(c.get("href") or "").strip() for c in nav_safe}
@@ -216,10 +231,15 @@ def select_apply_control(candidates: list[dict]) -> tuple[Optional[dict], str]:
                            "cannot safely determine which corresponds to the current job")
         return nav_safe[0], ""
     for c in candidates:
-        if c.get("classification") in (
-            ApplyControlClassification.LOGIN_TRIGGER.value, ApplyControlClassification.EXTERNAL_REDIRECT.value,
-        ):
+        classification = c.get("classification")
+        if classification == ApplyControlClassification.LOGIN_TRIGGER.value:
             return c, ""
+        if classification == ApplyControlClassification.EXTERNAL_REDIRECT.value:
+            label = _norm(c.get("text", ""))
+            if any(p in label for p in NAVIGATION_SAFE_PHRASES):
+                return c, ""
+            # Text-irrelevant redirect (e.g. a sitewide logo/nav link) --
+            # never mistaken for an apply-entry control; keep scanning.
     return None, ""
 
 

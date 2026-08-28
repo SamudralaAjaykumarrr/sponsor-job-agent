@@ -254,6 +254,61 @@ def landing_page_with_header_search_and_apply_click(tmp_path: Path) -> tuple[str
     return landing_url, outer_form_url
 
 
+def landing_page_with_delayed_same_page_iframe_and_unrelated_external_link(
+    tmp_path: Path, *, iframe_delay_ms: int = 500,
+) -> tuple[str, str]:
+    """Autonomous-UX-reliability follow-up (2026-08-28): reproduces the real
+    Airbnb/Greenhouse defect live-caught against the real posting --
+    clicking "Apply Now" never navigates the TOP-LEVEL page at all (unlike
+    landing_page_with_header_search_and_apply_click's full-page-navigation
+    shape); instead it reveals an already-present, but still-loading,
+    SAME-PAGE iframe (the real job-boards.greenhouse.io embed pattern) whose
+    `src` is only set `iframe_delay_ms` after the click -- and the button
+    itself disappears immediately on click, exactly like Airbnb's real
+    "apply-btn"/"active" tab-switch control. The page's own persistent
+    header also carries an unrelated external link (standing in for
+    Airbnb's real home/logo link) whose href points at an untrusted
+    external host -- this must never be mistaken for the apply-entry
+    control, no matter how the timing lands. Before this phase's fix, a
+    stabilization wait that only ever looked at the TOP-level document could
+    declare the page "stable" the instant the button disappeared (nothing
+    further changes at the top level while the iframe loads its own,
+    separate document), and select_apply_control()'s old EXTERNAL_REDIRECT
+    fallback would then seize on the unrelated header link since the real
+    "Apply Now" text was, at that exact moment, gone. Returns (landing_url,
+    inner_form_url)."""
+    inner_form_url = _write(tmp_path, "delayed_iframe_inner_form.html", textwrap.dedent("""
+        <form>
+          <label for="fname">Full Name</label><input id="fname" name="full_name" type="text" required>
+          <label for="mail">Email</label><input id="mail" name="email" type="text" required>
+          <button type="submit">Submit Application</button>
+        </form>
+    """))
+    landing_url = _write(tmp_path, "delayed_iframe_landing.html", _jsonld_block() + textwrap.dedent(f"""
+        <header>
+          <a href="https://airbnb.com/">Airbnb</a>
+        </header>
+        <div>
+          <h1>Backend Software Engineer</h1>
+          <p>We are hiring. This is the job description landing page.</p>
+          <button id="apply-btn" class="apply-btn active" aria-label="Switch to application form">Apply Now</button>
+          <div id="app-frame-container" style="display:none;">
+            <iframe id="app-frame" style="width:600px;height:400px;"></iframe>
+          </div>
+        </div>
+        <script>
+          document.getElementById('apply-btn').addEventListener('click', function () {{
+            this.style.display = 'none';
+            document.getElementById('app-frame-container').style.display = 'block';
+            setTimeout(function () {{
+              document.getElementById('app-frame').src = "{inner_form_url}";
+            }}, {iframe_delay_ms});
+          }});
+        </script>
+    """))
+    return landing_url, inner_form_url
+
+
 def landing_page_with_final_submit_lookalike(tmp_path: Path) -> str:
     """A landing page whose ONLY control reads 'Submit Application' -- must
     classify FINAL_SUBMIT, never be auto-clicked as an apply-entry action

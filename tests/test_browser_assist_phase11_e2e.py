@@ -118,6 +118,47 @@ def test_landing_page_header_search_input_does_not_block_apply_click(tmp_path, _
         _close(session["session_id"])
 
 
+def test_delayed_same_page_iframe_never_mistakes_unrelated_link_for_apply_control(tmp_path, _prepared):
+    """Autonomous-UX-reliability follow-up (2026-08-28): reproduces the real
+    Airbnb/Greenhouse defect live-caught against the real posting -- Apply
+    Now never navigates the top-level page at all; it reveals a same-page
+    iframe whose `src` is only set after a delay, and the button itself
+    disappears the instant it is clicked. The page's persistent header also
+    carries an unrelated external link (its href points off-domain) that
+    must never be mistaken for the apply-entry control.
+
+    Before this phase's fix, `_wait_for_stable_state()` only ever looked at
+    the TOP-level document, so it declared the page "stable" the moment the
+    button vanished (nothing further changes at the top level while the
+    iframe loads its own separate document) -- well before the iframe's
+    `src` was even set. The very next apply-entry re-scan then found no
+    "Apply Now" text anywhere (the button was gone, the iframe still blank)
+    and `select_apply_control()`'s old EXTERNAL_REDIRECT fallback seized on
+    the unrelated header link instead, ending in PAUSED_PLATFORM_RESTRICTED
+    -- exactly the false pause observed live. This test would have failed
+    on old code with that status; asserted here for record."""
+    from tests.browser_fixtures import landing_page_with_delayed_same_page_iframe_and_unrelated_external_link
+    from app.applications import browser_assist
+
+    landing_url, _inner_form_url = landing_page_with_delayed_same_page_iframe_and_unrelated_external_link(
+        tmp_path, iframe_delay_ms=1200,
+    )
+    job, execution_id = _prepared(landing_url)
+    result = browser_assist.start_session(execution_id)
+    session = result["session"]
+    try:
+        assert session["status"] == "READY_FOR_FINAL_SUBMIT", (
+            f"expected the real iframe form to be waited for and discovered, got "
+            f"status={session['status']!r} reason={session.get('user_action_reason')!r}"
+        )
+        assert session["apply_entry_clicked"] == 1
+        assert session["stage"] == "APPLICATION_FORM"
+        assert session["mapped_field_count"] == 2
+        assert session["user_action_reason"] != "PLATFORM_POLICY_RESTRICTED"
+    finally:
+        _close(session["session_id"])
+
+
 def test_final_submit_lookalike_never_clicked_as_apply_entry(tmp_path, _prepared):
     """Acceptance B: a 'Submit Application'-labeled control on a landing
     page must never be mistaken for a safe apply-entry navigation click."""
