@@ -600,6 +600,173 @@ def iframe_form_page(tmp_path: Path) -> str:
     return outer_url
 
 
+def iframe_immediate_attach_delayed_content_page(tmp_path: Path, *, content_delay_ms: int = 800) -> tuple[str, str]:
+    """Embedded-form-discovery-hardening (2026-08-28, live-caught against a
+    real Airbnb/Greenhouse posting): a DIFFERENT shape from `iframe_form_
+    page()` above -- here the `<iframe>` tag's `src` attribute is present
+    from the very first paint (nothing about the top-level page's own
+    markup ever changes when Apply is clicked), but the cross-document
+    content BEHIND that src takes real, variable time to render its own
+    fields (a genuine network/hydration/reCAPTCHA-style delay on the
+    embedded document's own side, not a delayed `src` assignment on the
+    outer page). Before this phase's fix, `_wait_for_stable_state()`'s
+    "dom_stable" signature check only watched the TOP page's own markup --
+    since that markup never changes here, it could declare stability within
+    its normal ~3-poll settle window, long before the iframe's own content
+    ever rendered.
+
+    The delayed content is modeled as a same-frame REDIRECT (a "loading..."
+    document that navigates itself to a second, genuinely static form
+    document after `content_delay_ms`) rather than an `innerHTML` injection
+    -- a real frame NAVIGATION exercises the exact same discovery path a
+    genuine slow-loading cross-origin document would (a fresh document,
+    fields present in its OWN initial markup, no risk of a field-detection
+    edge case around dynamically-injected DOM nodes muddying what this test
+    is actually proving). Returns (landing_url, inner_form_url)."""
+    real_inner_url = _write(tmp_path, "delayed_content_inner_form_real.html", textwrap.dedent("""
+        <form>
+          <label for="fname">Full Name</label><input id="fname" name="full_name" type="text" required>
+          <label for="mail">Email</label><input id="mail" name="email" type="text" required>
+          <button type="submit">Submit Application</button>
+        </form>
+    """))
+    inner_url = _write(tmp_path, "delayed_content_inner_form.html", textwrap.dedent(f"""
+        <div>still loading...</div>
+        <script>
+          setTimeout(function () {{
+            window.location.href = "{real_inner_url}";
+          }}, {content_delay_ms});
+        </script>
+    """))
+    landing_url = _write(tmp_path, "delayed_content_landing.html", _jsonld_block() + textwrap.dedent(f"""
+        <header>
+          <a href="https://airbnb.com/">Airbnb</a>
+        </header>
+        <div>
+          <h1>Backend Software Engineer</h1>
+          <p>We are hiring. This is the job description landing page.</p>
+          <button id="apply-btn" class="apply-btn active" aria-label="Switch to application form">Apply Now</button>
+          <div id="app-frame-container" style="display:none;">
+            <iframe id="app-frame" src="{inner_url}" style="width:600px;height:400px;"></iframe>
+          </div>
+        </div>
+        <script>
+          document.getElementById('apply-btn').addEventListener('click', function () {{
+            this.style.display = 'none';
+            document.getElementById('app-frame-container').style.display = 'block';
+          }});
+        </script>
+    """))
+    return landing_url, real_inner_url
+
+
+def iframe_about_blank_then_navigates_page(tmp_path: Path, *, navigate_delay_ms: int = 800) -> tuple[str, str]:
+    """Embedded-form-discovery-hardening (2026-08-28): a third distinct
+    shape -- the `<iframe>` tag literally starts with `src="about:blank"`
+    (a common lazy-load placeholder pattern) and is only pointed at the real
+    application document `navigate_delay_ms` after the Apply click. Distinct
+    from `landing_page_with_delayed_same_page_iframe_and_unrelated_external_
+    link`'s src-LESS placeholder (no `src` attribute at all) -- this proves
+    the readiness wait treats an explicit `about:blank` placeholder the same
+    way as a missing one, never declaring stability while either is still
+    pending. Returns (landing_url, inner_form_url)."""
+    inner_url = _write(tmp_path, "about_blank_inner_form.html", textwrap.dedent("""
+        <form>
+          <label for="fname">Full Name</label><input id="fname" name="full_name" type="text" required>
+          <label for="mail">Email</label><input id="mail" name="email" type="text" required>
+          <button type="submit">Submit Application</button>
+        </form>
+    """))
+    landing_url = _write(tmp_path, "about_blank_landing.html", _jsonld_block() + textwrap.dedent(f"""
+        <header>
+          <a href="https://airbnb.com/">Airbnb</a>
+        </header>
+        <div>
+          <h1>Backend Software Engineer</h1>
+          <p>We are hiring. This is the job description landing page.</p>
+          <button id="apply-btn" class="apply-btn active" aria-label="Switch to application form">Apply Now</button>
+          <div id="app-frame-container" style="display:none;">
+            <iframe id="app-frame" src="about:blank" style="width:600px;height:400px;"></iframe>
+          </div>
+        </div>
+        <script>
+          document.getElementById('apply-btn').addEventListener('click', function () {{
+            this.style.display = 'none';
+            document.getElementById('app-frame-container').style.display = 'block';
+            setTimeout(function () {{
+              document.getElementById('app-frame').src = "{inner_url}";
+            }}, {navigate_delay_ms});
+          }});
+        </script>
+    """))
+    return landing_url, inner_url
+
+
+def iframe_never_ready_page(tmp_path: Path) -> str:
+    """Embedded-form-discovery-hardening (2026-08-28): the application
+    iframe is a real, trusted (same-origin file://) destination that
+    NEVER produces any fillable content (a genuinely broken/abandoned embed)
+    -- the bounded-timeout control case proving a pending trusted iframe can
+    never turn into an unbounded wait: `_wait_for_stable_state()` must still
+    return within `BROWSER_DOM_STABILIZATION_TIMEOUT_MS`, and the session
+    must reach a safe, honest paused state, never hang."""
+    inner_url = _write(tmp_path, "never_ready_inner.html", "<div>still loading...</div>")
+    landing_url = _write(tmp_path, "never_ready_landing.html", _jsonld_block() + textwrap.dedent(f"""
+        <div>
+          <h1>Backend Software Engineer</h1>
+          <p>We are hiring. This is the job description landing page.</p>
+          <button id="apply-btn" class="apply-btn active" aria-label="Switch to application form">Apply Now</button>
+          <div id="app-frame-container" style="display:none;">
+            <iframe id="app-frame" src="{inner_url}" style="width:600px;height:400px;"></iframe>
+          </div>
+        </div>
+        <script>
+          document.getElementById('apply-btn').addEventListener('click', function () {{
+            this.style.display = 'none';
+            document.getElementById('app-frame-container').style.display = 'block';
+          }});
+        </script>
+    """))
+    return landing_url
+
+
+def iframe_legit_plus_untrusted_no_field_page(tmp_path: Path) -> tuple[str, str]:
+    """Embedded-form-discovery-hardening (2026-08-28): two iframes appear
+    together after Apply -- one legitimate, same-origin embed (the real
+    form) and one unrelated iframe pointed at an untrusted, unreachable host
+    (standing in for an ad/analytics/tracking embed common on real career
+    pages). The untrusted one must never be waited for (it never resolves)
+    and must never itself block or pause the session -- only the legitimate
+    embed's readiness governs the outcome, matching `_scan_iframes`'s
+    existing "an ad/tracking iframe with no form content must never by
+    itself trigger a pause" rule. Returns (landing_url, inner_form_url)."""
+    inner_url = _write(tmp_path, "legit_plus_untrusted_inner.html", textwrap.dedent("""
+        <form>
+          <label for="fname">Full Name</label><input id="fname" name="full_name" type="text" required>
+          <label for="mail">Email</label><input id="mail" name="email" type="text" required>
+          <button type="submit">Submit Application</button>
+        </form>
+    """))
+    landing_url = _write(tmp_path, "legit_plus_untrusted_landing.html", _jsonld_block() + textwrap.dedent(f"""
+        <div>
+          <h1>Backend Software Engineer</h1>
+          <p>We are hiring. This is the job description landing page.</p>
+          <button id="apply-btn" class="apply-btn active" aria-label="Switch to application form">Apply Now</button>
+          <div id="app-frame-container" style="display:none;">
+            <iframe id="app-frame" src="{inner_url}" style="width:600px;height:400px;"></iframe>
+            <iframe id="tracking-frame" src="http://127.0.0.1:1/track" style="width:1px;height:1px;"></iframe>
+          </div>
+        </div>
+        <script>
+          document.getElementById('apply-btn').addEventListener('click', function () {{
+            this.style.display = 'none';
+            document.getElementById('app-frame-container').style.display = 'block';
+          }});
+        </script>
+    """))
+    return landing_url, inner_url
+
+
 def no_iframe_form_page(tmp_path: Path) -> str:
     """A plain top-level form (no iframe at all) -- the control case for
     iframe-scan tests, confirming the iframe scan never breaks ordinary
