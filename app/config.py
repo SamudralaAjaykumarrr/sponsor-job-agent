@@ -622,3 +622,33 @@ GREENHOUSE_SUBMIT_CLICK_TIMEOUT_MS = _env_int("GREENHOUSE_SUBMIT_CLICK_TIMEOUT_M
 # relevant/actionable jobs) -- the dashboard shows a "showing top N of M"
 # note when the true matching count exceeds this.
 DASHBOARD_MAX_TABLE_ROWS = _env_int("DASHBOARD_MAX_TABLE_ROWS", 500)
+
+# Canary Feasibility Gate V1 (app.applications.canary_feasibility): how many
+# unmatched/gap skills relative to the JD's own extracted REQUIRED-priority
+# requirement count is treated as "too many unaddressed requirements to
+# truthfully fill a one-page resume" -- deliberately reuses the SAME
+# `technical_match_score`/`gap_skills`/`matched_skills` fields already
+# computed at discovery/scoring time (never a second, expensive scoring
+# pass), so this check costs nothing beyond what discovery already did.
+CANARY_ONE_PAGE_MAX_GAP_SKILLS = _env_int("CANARY_ONE_PAGE_MAX_GAP_SKILLS", 6)
+# How many REQUIRED-priority JD requirements (from
+# app.resume_optimizer.jd_analysis.analyze_jd(), the same cheap deterministic
+# extractor the optimizer itself uses -- never the expensive full resume-
+# generation pipeline) before a job is treated as too demanding to
+# truthfully compress onto one page for this candidate's evidence base.
+CANARY_ONE_PAGE_MAX_REQUIRED_ITEMS = _env_int("CANARY_ONE_PAGE_MAX_REQUIRED_ITEMS", 18)
+# A Greenhouse (or any provider whose discover_form() genuinely returns a
+# structured schema) posting with this many or more mandatory free-text
+# (textarea, no offered choices) questions is flagged as high essay-question
+# risk for a canary attempt -- never a guess for a provider whose real form
+# is only reachable through a browser (that case is honestly REVIEW, not
+# assessed as if it were zero).
+CANARY_MAX_MANDATORY_ESSAY_FIELDS = _env_int("CANARY_MAX_MANDATORY_ESSAY_FIELDS", 2)
+# Bounded cooldown: a job (or another job at the same employer/provider)
+# whose own browser_assist_sessions history shows a recent, non-progressing
+# failure status within this window is excluded from canary selection --
+# reuses the EXISTING browser_assist_sessions table (app.applications.
+# browser_session), never a new/parallel tracking mechanism. This is the
+# concrete, general form of "don't retry a job/employer that just failed
+# live" (see: job 327).
+CANARY_RECENT_FAILURE_COOLDOWN_HOURS = _env_int("CANARY_RECENT_FAILURE_COOLDOWN_HOURS", 24)

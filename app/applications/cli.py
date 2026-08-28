@@ -168,6 +168,59 @@ def _cmd_presubmit_manifest(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_canary_feasibility(args: argparse.Namespace) -> int:
+    """Prints the Canary Feasibility Gate V1 verdict/reasons for one job --
+    read-only, never mutates the job, never launches a browser."""
+    from app.applications.canary_feasibility import evaluate_canary_feasibility, render_text
+    from app.jobs_repo import get_job
+
+    job = get_job(args.job_id)
+    if job is None:
+        print(f"job {args.job_id} not found")
+        return 1
+    result = evaluate_canary_feasibility(job)
+    print(render_text(result))
+    return 0 if result.verdict.value != "REJECT" else 1
+
+
+def _cmd_canary_candidates(args: argparse.Namespace) -> int:
+    """Screens the highest-priority not-yet-terminal jobs through the Canary
+    Feasibility Gate and prints a sorted PASS/REVIEW/REJECT summary -- the
+    same read-only, no-browser evaluation `canary-feasibility` runs for one
+    job, applied here to a batch for candidate SELECTION (CLAUDE.md
+    Part 8's 'screen enough candidates to find one genuinely strong
+    candidate')."""
+    from app.applications.canary_feasibility import evaluate_canary_feasibility
+    from app.db import db_session
+    from app.jobs_repo import get_job
+    from app.models import ApplicationState
+
+    states = (ApplicationState.ANALYZED.value, ApplicationState.REVIEW_REQUIRED.value,
+              ApplicationState.READY_TO_APPLY.value)
+    with db_session() as conn:
+        placeholders = ",".join("?" for _ in states)
+        rows = conn.execute(
+            f"SELECT id FROM jobs WHERE application_state IN ({placeholders}) AND is_test_fixture = 0 "
+            f"ORDER BY priority_score DESC, first_seen_at DESC LIMIT ?",
+            (*states, args.limit),
+        ).fetchall()
+
+    printed = 0
+    for row in rows:
+        job = get_job(row["id"])
+        if job is None:
+            continue
+        result = evaluate_canary_feasibility(job)
+        print(f"  [{result.verdict.value:7s}] job#{job.id:<6d} {job.company} -- {job.title}")
+        if args.verbose or result.verdict.value != "PASS":
+            for reason in (result.reject_reasons if result.verdict.value == "REJECT" else result.review_reasons):
+                print(f"             - {reason}")
+        printed += 1
+    if printed == 0:
+        print("no candidate jobs found in ANALYZED/REVIEW_REQUIRED/READY_TO_APPLY state")
+    return 0
+
+
 def _cmd_document_bindings(args: argparse.Namespace) -> int:
     from app.applications.document_binding import list_bindings_for_job
 
@@ -432,6 +485,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_manifest.add_argument("--no-form-discovery", action="store_true",
                              help="skip the provider form lookup (avoids a real network read)")
     p_manifest.set_defaults(func=_cmd_presubmit_manifest)
+
+    p_canary_feasibility = sub.add_parser(
+        "canary-feasibility", help="print the Canary Feasibility Gate V1 verdict/reasons for one job")
+    p_canary_feasibility.add_argument("job_id", type=int)
+    p_canary_feasibility.set_defaults(func=_cmd_canary_feasibility)
+
+    p_canary_candidates = sub.add_parser(
+        "canary-candidates", help="screen the top candidate jobs through the Canary Feasibility Gate V1")
+    p_canary_candidates.add_argument("--limit", type=int, default=25)
+    p_canary_candidates.add_argument("--verbose", action="store_true",
+                                      help="print reasons for PASS candidates too, not just REVIEW/REJECT")
+    p_canary_candidates.set_defaults(func=_cmd_canary_candidates)
 
     p_bindings = sub.add_parser("document-bindings",
                                  help="list durable resume/cover-letter upload bindings for one job")
