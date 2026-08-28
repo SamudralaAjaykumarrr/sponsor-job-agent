@@ -277,7 +277,7 @@ class MockATSProvider(ApplicationProvider):
             detail.append("Email verification is required to submit this application.")
 
         for name in draft.unresolved_field_ids:
-            if name == _UNKNOWN_CUSTOM_FIELD.name and demo_answered:
+            if name in (_UNKNOWN_CUSTOM_FIELD.name, _LEGAL_UNKNOWN_FIELD.name) and demo_answered:
                 continue
             mf = next((m for m in draft.mapping.mapped if m.form_field.name == name), None)
             if mf is None:

@@ -33,6 +33,7 @@
   <a href="#detail-form">Application / Form</a>
   <a href="#detail-timeline">Timeline</a>
   <a href="#detail-issues">Issues / Needs You</a>
+  <a href="#detail-final-review">Final Review</a>
   <a href="#detail-receipt">Receipt</a>
 </nav>
 
@@ -191,6 +192,45 @@
     </li>
     {% endfor %}
   </ul>
+  {% endif %}
+</section>
+
+<section id="detail-final-review" style="margin-top:1.5rem;">
+  <h2>Final Review</h2>
+  <p class="faint">A snapshot of everything that would be checked before a real submission could ever happen. This
+    page never submits anything by itself.</p>
+  {% if not final_review %}
+  <p class="faint">Not available for this job.</p>
+  {% else %}
+  <div class="table-wrap">
+    <table>
+      <tr><th>Employer / role</th><td>{{ final_review.company }} — {{ final_review.title }} ({{ final_review.location }})</td></tr>
+      <tr><th>Posting</th><td>{% if final_review.canonical_url %}<a href="{{ final_review.canonical_url }}">{{ final_review.canonical_url }}</a>{% else %}—{% endif %}</td></tr>
+      <tr><th>Documents</th>
+        <td>
+          {% for doc in final_review.documents %}
+            {{ doc.kind }}: {{ doc.filename or '(none)' }}
+            {% if doc.exists %}<span class="tag tag-good">on file</span>{% else %}<span class="tag tag-bad">missing</span>{% endif %}
+            {% if doc.sha256 %}<span class="faint">sha256 {{ doc.sha256[:12] }}…</span>{% endif %}<br>
+          {% endfor %}
+        </td>
+      </tr>
+      <tr><th>Required fields still needing your answer</th>
+        <td>{% if final_review.unanswered_required %}{{ final_review.unanswered_required | join(', ') }}{% else %}<span class="tag tag-good">none</span>{% endif %}</td></tr>
+      <tr><th>Questions needing your decision</th>
+        <td>{% if final_review.high_risk_pending %}{{ final_review.high_risk_pending | join(', ') }}{% else %}<span class="tag tag-good">none</span>{% endif %}</td></tr>
+      <tr><th>Approval</th>
+        <td>{% if final_review.has_approval and final_review.approval_valid %}<span class="tag tag-good">Approved</span>{% elif final_review.has_approval %}<span class="tag tag-bad">Approval no longer current</span>{% else %}<span class="tag">Not yet approved</span>{% endif %}</td></tr>
+    </table>
+  </div>
+  <p style="margin-top:0.75rem;">
+    {% if final_review.ready_for_approval %}
+    <span class="tag tag-good">Ready for your approval</span>
+    {% else %}
+    <span class="tag tag-bad">Not ready yet</span> —
+    {% for reason in final_review.blocking_reasons %}{{ reason }}{% if not loop.last %}; {% endif %}{% endfor %}
+    {% endif %}
+  </p>
   {% endif %}
 </section>
 

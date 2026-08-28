@@ -46,7 +46,26 @@ def _find_jobs_needing_optimization(batch_size: int) -> list[int]:
     function) generates anything -- an empty candidate list, never a
     behavior change to the manual Generate/Regenerate Resume dashboard
     action or CLI, which call app.resume_optimizer.optimizer.optimize_resume
-    directly and never go through this candidate query."""
+    directly and never go through this candidate query.
+
+    Daily-use-v1: before this AUTOMATIC candidate list reaches the (real)
+    resume-generation pipeline, each candidate is additionally passed
+    through `app.applications.canary_feasibility.evaluate_canary_feasibility`
+    -- a job whose feasibility verdict is REJECT is skipped here (never
+    silently retried forever: the job's own application_state/sponsorship
+    fields are unchanged, so a later state change that resolves the
+    rejection reason naturally makes it eligible again next pass). REVIEW
+    verdicts are NOT filtered here -- they still get a resume generated,
+    matching this project's standing 'UNKNOWN is not itself a hard-skip'
+    pattern; only a REJECT (a genuine hard-safety dimension: no sponsorship,
+    sponsorship UNKNOWN, wrong role, non-US location, posting inactive,
+    infeasible one-page fit, or no browser-assist capability at all) skips
+    the expensive generation step. `is_test_fixture` jobs (Demo/Test Mode)
+    are exempt -- they are deliberately deterministic, controlled scenarios
+    (including ones that intentionally simulate an expired/inactive
+    posting) and must never be screened by a gate built for real postings,
+    matching this project's existing is_test_fixture exclusions elsewhere
+    (e.g. app.applications.rate_limit's demo-isolation)."""
     from app import apply_settings
 
     if apply_settings.get_settings().resume_optimization_mode == apply_settings.ResumeOptimizationMode.OFF.value:
@@ -62,9 +81,31 @@ def _find_jobs_needing_optimization(batch_size: int) -> list[int]:
                   AND (rv.variant_id IS NULL OR rv.status IN ('STALE', 'GENERATING'))
                 ORDER BY j.priority_score DESC
                 LIMIT ?""",
-            [*_ELIGIBLE_STATES, *eligible_sponsorship, batch_size],
+            [*_ELIGIBLE_STATES, *eligible_sponsorship, batch_size * 3],
         ).fetchall()
-        return [r["id"] for r in rows]
+        candidate_ids = [r["id"] for r in rows]
+
+    from app.applications.canary_feasibility import FeasibilityVerdict, evaluate_canary_feasibility
+    from app.jobs_repo import get_job
+
+    accepted: list[int] = []
+    for job_id in candidate_ids:
+        if len(accepted) >= batch_size:
+            break
+        job = get_job(job_id)
+        if job is None:
+            continue
+        if job.is_test_fixture:
+            accepted.append(job_id)
+            continue
+        try:
+            result = evaluate_canary_feasibility(job)
+        except Exception:  # noqa: BLE001 -- a feasibility-check failure must never block/crash the pass
+            accepted.append(job_id)
+            continue
+        if result.verdict != FeasibilityVerdict.REJECT:
+            accepted.append(job_id)
+    return accepted
 
 
 def _run_optimization_pass() -> None:

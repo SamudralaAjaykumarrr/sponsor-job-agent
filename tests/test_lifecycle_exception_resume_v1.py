@@ -284,6 +284,10 @@ def test_application_detail_and_board_show_plain_language(tmp_env, sample_profil
     assert "NEEDS_USER_ACTION" not in resp.text  # no raw enum leaked to the user
     assert "Timeline" in resp.text
     assert "Receipt" in resp.text
+    # Daily-use-v1: the Final Review tab renders the presubmit manifest
+    # without raising and without leaking a raw ExecutionStatus value.
+    assert "Final Review" in resp.text
+    assert "Ready for your approval" in resp.text or "Not ready yet" in resp.text
 
     board_resp = client.get("/applications/board")
     assert board_resp.status_code == 200

@@ -42,6 +42,7 @@ from app.applications.worker_capabilities import WorkerCapability, has_capabilit
 from app.applications import blockers as applications_blockers
 from app.applications import board as applications_board
 from app.applications import demo as applications_demo
+from app.applications import presubmit_manifest
 from app.candidate.profile import load_profile, missing_fields
 from app.config import BASE_DIR
 from app.db import init_db
@@ -1318,6 +1319,14 @@ def application_detail_page(request: Request, execution_id: str):
     active_blocker = applications_blockers.get_active_blocker_for_execution(execution_id)
     stage_info = compute_stage(execution)
 
+    # Final Review tab (daily-use-v1): the SAME read-only, no-new-gate
+    # presubmit manifest already exposed via `python -m app.applications.cli
+    # presubmit-manifest` -- this route only renders it, never a second
+    # readiness computation. discover_form=False avoids a real network read
+    # on every ordinary page load; the CLI remains the way to force a fresh
+    # provider-form check when actually needed.
+    final_review = presubmit_manifest.build_manifest(job.id, discover_form=False)
+
     return templates.TemplateResponse(
         request, "application_detail.html",
         {
@@ -1327,6 +1336,7 @@ def application_detail_page(request: Request, execution_id: str):
             "cta": cta.as_dict(), "eligibility": eligibility, "submission_supported": submission_supported,
             "current_variant": current_variant, "quality_report": quality_row["report"] if quality_row else None,
             "jd_analysis": jd_analysis_row,
+            "final_review": final_review.as_dict() if final_review else None,
             "auto_submit_enabled": config.AUTO_SUBMIT_ENABLED,
             # Advanced/debug section (section C): technical identifiers only
             # -- never a raw lifecycle-state enum (execution.status/

@@ -60,6 +60,16 @@ SCENARIOS: list[DemoScenario] = [
                  "captcha", "retry"),
     DemoScenario("unknown_question", "Demo Unknown Question",
                  "The employer asks a custom question we can't answer for you.", "unknown_question", "retry"),
+    # Daily-use-v1: `legal_unknown` has been fully implemented in
+    # app.applications.mock_ats since an earlier phase (its own fields +
+    # PolicyReason.UNKNOWN_LEGAL_QUESTION handling) but was never referenced
+    # by a DemoScenario -- a real, defined-but-dead capability. This closes
+    # that gap and gives "legal acknowledgment -> Needs You" its own
+    # specific, labeled demonstration distinct from the generic
+    # unknown_question scenario above.
+    DemoScenario("legal_question", "Demo Legal Question",
+                 "The employer's application includes a legal/attestation question that requires your own "
+                 "explicit decision.", "legal_unknown", "retry"),
     DemoScenario("submission_unknown", "Demo Submission Unknown",
                  "A submission attempt times out -- we never resubmit blindly, only check status.",
                  "timeout_after_submit", "reconcile"),
@@ -225,11 +235,13 @@ def resolve_demo(key: str) -> dict:
     if scenario.resolve_kind == "retry":
         from app.jobs_repo import update_job
 
-        if key == "unknown_question":
+        if key in ("unknown_question", "legal_question"):
             # Answering the question must never change the form's own shape
             # (that would be a genuine, separately-detected form-schema-
             # change condition, not "the user answered") -- see
-            # MockATSProvider.validate()'s `demo_answered` flag.
+            # MockATSProvider.validate()'s `demo_answered` flag, which covers
+            # both the generic unknown-question field and the legal/
+            # attestation field by name.
             update_job(job.id, provider_metadata=json.dumps(
                 {"mock_scenario": scenario.mock_scenario, "demo_answered": True}))
         else:
