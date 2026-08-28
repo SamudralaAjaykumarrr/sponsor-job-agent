@@ -202,3 +202,56 @@ def test_scheduler_handles_many_registry_tenants_in_one_cycle(tmp_env, sample_pr
     assert summary["jobs_new"] == 25
     assert len(list_jobs()) == 25
     assert len(list_discovery_log(limit=100)) == 25
+
+
+def test_registry_phase_is_never_starved_by_the_legacy_static_phase(tmp_env, sample_profile, monkeypatch):
+    """Daily-use-v1 (final live readiness test, 2026-08-28): a real,
+    reproduced bug -- the legacy static-provider phase runs FIRST in every
+    cycle and previously shared ONE counter (MAX_JOBS_PER_CYCLE) with the
+    registry phase. A legacy provider alone reaching that cap left ZERO
+    budget for every company_registry tenant, no matter how many were due.
+    This proves the fix: the registry phase now has its own independent
+    budget (DISCOVERY_REGISTRY_MAX_JOBS_PER_CYCLE) and processes a due
+    tenant even when the legacy phase has already exhausted the (small,
+    separate) legacy cap."""
+    from app.providers.base import JobProvider, RawJobPosting
+
+    save_profile(sample_profile)
+    monkeypatch.setattr(cycle_mod.config, "MAX_JOBS_PER_CYCLE", 1)
+
+    class _LegacyFakeProvider(JobProvider):
+        name = "fake-legacy"
+
+        def fetch_jobs(self, max_jobs: int) -> list[RawJobPosting]:
+            return [RawJobPosting(
+                provider="fake-legacy", external_job_id="legacy-1", title="Backend Software Engineer",
+                company="Legacy Co", location="Remote (US)",
+                description=(
+                    "Build REST APIs in Python with FastAPI and PostgreSQL. Fully remote. "
+                    "Visa sponsorship available."
+                ),
+                url="https://example.com/jobs/legacy-1",
+            )][:max_jobs]
+
+    monkeypatch.setattr(cycle_mod, "get_enabled_providers", lambda: [_LegacyFakeProvider()])
+    insert_entry(CompanyRegistryEntry(company_name="GoodCo", provider="greenhouse", tenant_identifier="goodco"))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return _confirmed_greenhouse_response()
+
+    def fake_build_provider(provider_name, tenant_identifier):
+        from app.providers.greenhouse import GreenhouseProvider
+        return GreenhouseProvider([tenant_identifier], client=_client_returning(handler))
+
+    monkeypatch.setattr(cycle_mod, "build_provider_for_tenant", fake_build_provider)
+
+    summary = cycle_mod.run_discovery_cycle()
+    # The legacy phase alone already hit MAX_JOBS_PER_CYCLE=1 -- the registry
+    # tenant must still have been polled and its job ingested.
+    assert summary["jobs_new"] == 2
+    companies = {j.company for j in list_jobs()}
+    assert "Legacy Co" in companies
+    assert "Goodco" in companies
+    logs = {log["provider"]: log for log in list_discovery_log(limit=100)}
+    assert "greenhouse" in logs
+    assert logs["greenhouse"]["error_type"] == ""
