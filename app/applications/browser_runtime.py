@@ -218,7 +218,7 @@ def _require_available() -> None:
         )
 
 
-def _wait_for_stable_state(page, *, provider: str = "") -> dict:
+def _wait_for_stable_state(page, *, provider: str = "", original_url: str = "") -> dict:
     """CLAUDE.md Phase 12 sections 10-13: bounded, deterministic wait used
     instead of trusting `wait_for_load_state("networkidle")` alone -- a
     genuinely SPA-rendered page may keep issuing background XHR/websocket
@@ -236,40 +236,60 @@ def _wait_for_stable_state(page, *, provider: str = "") -> dict:
     Autonomous-UX-reliability follow-up (2026-08-28, live-caught against a
     real Airbnb/Greenhouse posting): when `provider` is supplied, this ALSO
     treats a genuinely mounted, allowed-host iframe (per
-    app.applications.domain_allowlist.is_allowed_domain -- the SAME suffix
-    table the post-navigation PLATFORM_POLICY_RESTRICTED check already
-    trusts, never a new or broader one) with recognizable form content as
-    'content_ready', exactly like a top-level field. Some real ATS embeds
-    (Greenhouse's job-boards.greenhouse.io pattern) mount their entire
-    application form inside a same-page iframe that is often still loading
-    right after an Apply click -- the TOP-level document's own DOM can
-    genuinely finish settling (nothing further changes there) well before
-    that cross-document iframe has rendered anything, so the checks below
-    (which, without this addition, only ever look at `page` itself) can --
-    and did, live -- declare stability while the real form was still on its
-    way in.
+    app.applications.domain_allowlist -- the SAME evidence the post-
+    navigation PLATFORM_POLICY_RESTRICTED check already trusts, never a new
+    or broader one) with recognizable form content as 'content_ready',
+    exactly like a top-level field. Some real ATS embeds (Greenhouse's
+    job-boards.greenhouse.io pattern) mount their entire application form
+    inside a same-page iframe that is often still loading right after an
+    Apply click -- the TOP-level document's own DOM can genuinely finish
+    settling (nothing further changes there) well before that cross-document
+    iframe has rendered anything, so the checks below (which, without this
+    addition, only ever look at `page` itself) can -- and did, live --
+    declare stability while the real form was still on its way in.
 
-    A second, complementary gap: the outerHTML-length "signature" used for
-    (b) only detects the iframe TAG's own markup changing (e.g. its `src`
-    attribute being set) -- it does nothing to stop (b) from firing on its
-    OWN 3-consecutive-unchanged-poll schedule (~750ms at the default
-    250ms/3-poll config) well before a delayed same-page mount (e.g. a
-    `setTimeout`-driven `src` assignment well after that window) ever
-    happens, since by construction nothing else on the top-level page
-    changes while such an iframe is still pending. So: while `provider` is
-    supplied and an iframe element exists in the DOM with NO `src` attribute
-    set at all (an explicit placeholder awaiting a later same-page mount --
-    distinct from one deliberately already pointed at a real, even blank,
-    URL, e.g. a decorative/ad/captcha-widget iframe with `src="about:blank"`
-    literally set, which is never held open by this and keeps its prior,
-    fast-settling behavior unchanged), (b) never declares stability -- this
-    function instead keeps polling, still bounded by the same overall
-    `BROWSER_DOM_STABILIZATION_TIMEOUT_MS`, until either that iframe
-    resolves to allowed-host content (satisfying (a) above) or the timeout
-    is reached. Omitting `provider`, or finding no allowed-host iframe / no
-    src-less iframe placeholder, leaves this function's behavior
-    byte-for-byte unchanged."""
-    from app.applications.domain_allowlist import is_allowed_domain
+    Embedded-form-discovery-hardening follow-up (2026-08-28): the
+    outerHTML-length "signature" used for (b) only detects the iframe TAG's
+    own MARKUP changing -- it says nothing about whether that iframe's own
+    (separate) document has actually rendered anything yet, and a real,
+    live-observed Greenhouse embed can have its `src` attribute present from
+    the very first paint (no markup ever changes) while the cross-origin
+    document behind it still takes real, variable, sometimes multi-second
+    wall-clock time to load (network + a reCAPTCHA Enterprise widget it
+    embeds) -- an earlier version of this fix only caught the DIFFERENT
+    "src assigned by a later setTimeout" shape and still declared
+    "dom_stable" via the unchanged-signature path in this shape, well before
+    that real content ever arrived. The general condition this function
+    needs is therefore: "does any <iframe> tag on the page currently point
+    (whether via an as-yet-unset/`about:blank` placeholder src, a same-page-
+    relative src, or an absolute src) at a destination this session already
+    trusts, without a matching live frame yet showing fillable content?" --
+    computed via the exact same `app.applications.domain_allowlist.
+    is_allowed_host_for_session` evidence table the post-navigation gate
+    uses (same-origin OR a known ATS vendor suffix), never a new or broader
+    one, and using the browser's OWN `URL(src, document.baseURI)` resolution
+    so a relative src is judged by its genuine resolved destination rather
+    than compared as a bare string. While that condition holds, (b) never
+    declares stability -- this function instead keeps polling, still bounded
+    by the same overall `BROWSER_DOM_STABILIZATION_TIMEOUT_MS`, until either
+    that iframe resolves to trusted, fillable content (satisfying (a) above)
+    or the timeout is reached -- a genuinely untrusted iframe (an ad/
+    tracking embed pointed at an unrelated host) never holds the wait open,
+    so this can never turn into an unbounded wait for irrelevant content.
+
+    A HIDDEN iframe (a "switch to application form" tab-panel not yet
+    revealed, `display:none` or zero-sized) is deliberately excluded from
+    BOTH sides of this: not from (a) -- a real, live-caught case showed
+    Chromium can eagerly load a hidden iframe's content, and treating that
+    as "ready" would skip the apply-entry click that actually reveals it and
+    then fail every fill attempt (`Locator.fill()` requires visibility) --
+    and not from the "pending" condition either, since no amount of extra
+    waiting makes a click-gated iframe visible; this function instead lets
+    (b) resolve quickly so the caller's own apply-entry-click logic gets a
+    chance to reveal it, at which point the next poll re-evaluates
+    naturally. Omitting `provider`, or finding no such pending/ready iframe,
+    leaves this function's behavior byte-for-byte unchanged."""
+    from app.applications.domain_allowlist import is_allowed_host_for_session
 
     timeout_s = config.BROWSER_DOM_STABILIZATION_TIMEOUT_MS / 1000.0
     poll_s = max(0.05, config.BROWSER_DOM_STABILIZATION_POLL_MS / 1000.0)
@@ -286,18 +306,41 @@ def _wait_for_stable_state(page, *, provider: str = "") -> dict:
                 "textarea, select"
             ).count() > 0
             signature = page.evaluate("() => document.documentElement.outerHTML.length")
-            has_pending_iframe = bool(provider) and page.evaluate(
-                "() => Array.from(document.querySelectorAll('iframe')).some((f) => !f.getAttribute('src'))"
-            )
+            iframe_infos = page.evaluate(
+                """
+                () => Array.from(document.querySelectorAll('iframe')).map((f) => {
+                  const raw = f.getAttribute('src') || '';
+                  const src = (!raw || raw === 'about:blank') ? '' : (() => {
+                    try { return new URL(raw, document.baseURI).href; } catch (e) { return raw; }
+                  })();
+                  return {src: src, visible: !!(f.offsetWidth || f.offsetHeight || f.getClientRects().length)};
+                })
+                """
+            ) if provider else []
         except Exception:  # noqa: BLE001 -- a page mid-navigation may throw transiently; keep polling
-            has_password, has_fields, signature, has_pending_iframe = False, False, None, False
+            has_password, has_fields, signature, iframe_infos = False, False, None, []
+        has_pending_iframe = False
         if not (has_password or has_fields) and provider:
             for frame in page.frames:
                 if frame == page.main_frame:
                     continue
                 try:
                     frame_url = frame.url
-                    if not frame_url or frame_url == "about:blank" or not is_allowed_domain(provider, frame_url):
+                    if not frame_url or frame_url == "about:blank" \
+                            or not is_allowed_host_for_session(provider, original_url, frame_url):
+                        continue
+                    # CLAUDE.md embedded-form-discovery-hardening: a frame
+                    # can be fully loaded with real fields while its OWNING
+                    # <iframe> element is still hidden (e.g. a "switch to
+                    # application form" tab-panel not yet revealed) -- a
+                    # real, live-caught case, since Chromium may eagerly
+                    # fetch a hidden iframe's content. `Locator.fill()`
+                    # requires visibility/actionability, so treating hidden
+                    # content as "ready" here would skip the click that
+                    # reveals it and then fail to fill anything. Only a
+                    # frame whose element is genuinely visible counts.
+                    frame_element = frame.frame_element()
+                    if not frame_element.is_visible():
                         continue
                     frame_has_content = (
                         frame.locator("input[type=password]").count() > 0
@@ -311,13 +354,26 @@ def _wait_for_stable_state(page, *, provider: str = "") -> dict:
                 if frame_has_content:
                     has_fields = True
                     break
+            if not has_fields:
+                for info in iframe_infos:
+                    # A HIDDEN iframe is never treated as "pending" -- no
+                    # amount of waiting reveals it; that is the apply-entry
+                    # click's job, which this only needs to get out of the
+                    # way for quickly (see the frame_element.is_visible()
+                    # check above).
+                    if not info.get("visible"):
+                        continue
+                    src = info.get("src") or ""
+                    if not src or is_allowed_host_for_session(provider, original_url, src):
+                        has_pending_iframe = True
+                        break
         if has_password or has_fields:
             return {"reason": "content_ready", "elapsed_ms": int((time.monotonic() - start) * 1000)}
         if has_pending_iframe:
-            # A src-less iframe placeholder is still awaiting its same-page
-            # mount -- never declare "dom_stable" out from under it; keep
-            # polling (still bounded by `deadline` below) until it resolves
-            # or the overall timeout is reached.
+            # A trusted (or not-yet-assigned) iframe destination has not yet
+            # produced fillable content -- never declare "dom_stable" out
+            # from under it; keep polling (still bounded by `deadline`
+            # below) until it resolves or the overall timeout is reached.
             stable_polls = 0
         elif signature is not None and signature == last_signature:
             stable_polls += 1
@@ -339,7 +395,19 @@ def _scan_iframes(page, provider: str, original_url: str) -> dict:
     scan; an UNEXPECTED-host frame only pauses the session when it actually
     contains form-shaped content -- an ad/analytics/tracking iframe (common
     on real career pages, unrelated to the application flow) must never by
-    itself trigger a pause."""
+    itself trigger a pause.
+
+    Embedded-form-discovery-hardening (2026-08-28): a frame whose OWNING
+    `<iframe>` element is currently hidden (e.g. a "switch to application
+    form" tab-panel not yet revealed by an apply-entry click) is skipped
+    entirely, even when it already contains real fields -- a real, live-
+    caught case showed a browser can eagerly load a hidden iframe's content,
+    and reporting those fields as discovered here would report
+    FORM_ALREADY_VISIBLE and skip the very apply-entry click that reveals
+    the form, after which every fill attempt fails outright (`Locator.
+    fill()` requires visibility/actionability). Waiting for the apply-entry
+    click to reveal it, then re-scanning, is the correct, already-existing
+    path -- this only needs to not jump the gun."""
     extra_fields: list[dict] = []
     used = False
     unexpected_host = ""
@@ -353,6 +421,8 @@ def _scan_iframes(page, provider: str, original_url: str) -> dict:
         if not frame_url or frame_url == "about:blank":
             continue
         try:
+            if not frame.frame_element().is_visible():
+                continue
             frame_fields = _detect_fields(frame)
         except Exception:  # noqa: BLE001 -- a detached/navigating frame is just skipped
             frame_fields = []
@@ -500,7 +570,7 @@ class _LiveSession:
         # HTML is often close to empty) -- wait for either recognizable
         # content or a settled DOM before the first discovery pass, rather
         # than trusting the raw post-navigation snapshot.
-        result = _wait_for_stable_state(self.page, provider=self.provider)
+        result = _wait_for_stable_state(self.page, provider=self.provider, original_url=self.application_url)
         if result["reason"] == "timeout":
             spa_events.record(spa_events.EVENT_DYNAMIC_FORM_TIMEOUT, session_id=self.session_id,
                                provider=self.provider, duration_ms=result["elapsed_ms"])
@@ -513,7 +583,7 @@ class _LiveSession:
         (URL changed with no full page navigation -- pushState/hashchange/
         History API) by comparing the URL before and after a bounded
         stabilization wait, used after any click that might trigger one."""
-        outcome = _wait_for_stable_state(self.page, provider=self.provider)
+        outcome = _wait_for_stable_state(self.page, provider=self.provider, original_url=self.application_url)
         route_changed = self.page.url != current_url_before
         if route_changed:
             spa_events.record(spa_events.EVENT_SPA_ROUTE_DETECTED, session_id=self.session_id,

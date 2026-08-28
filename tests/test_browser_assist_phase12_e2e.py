@@ -218,6 +218,113 @@ def test_no_iframe_regression_still_works(tmp_path, _prepared):
         _close(session["session_id"])
 
 
+def test_iframe_immediate_attach_delayed_content_is_waited_for(tmp_path, _prepared):
+    """Embedded-form-discovery-hardening (2026-08-28), live-caught against a
+    real Airbnb/Greenhouse posting: the iframe's `src` is present from the
+    very first paint (the top-level page's own markup never changes on
+    Apply), but the cross-document content behind it hydrates later. Before
+    this phase's fix, the DOM-stabilization wait only watched the TOP page's
+    markup and would declare "dom_stable" -- and therefore run a premature,
+    one-shot iframe scan that found nothing -- well before the iframe's own
+    content ever rendered."""
+    from tests.browser_fixtures import iframe_immediate_attach_delayed_content_page
+    from app.applications import browser_assist
+
+    landing_url, _inner_form_url = iframe_immediate_attach_delayed_content_page(tmp_path, content_delay_ms=800)
+    job, execution_id = _prepared(landing_url)
+    result = browser_assist.start_session(execution_id)
+    session = result["session"]
+    try:
+        assert session["status"] == "READY_FOR_FINAL_SUBMIT", (
+            f"expected the delayed iframe content to be waited for, got "
+            f"status={session['status']!r} reason={session.get('user_action_reason')!r}"
+        )
+        # The delayed redirect can resolve during either the initial open or
+        # a post-click rediscovery, depending on exact scheduling -- both
+        # are safe, correct outcomes; what this test actually verifies is
+        # that the wait doesn't give up before the content arrives either
+        # way, so `apply_entry_clicked` is not asserted either direction.
+        assert session["iframe_used"] == 1
+        assert session["mapped_field_count"] == 2
+    finally:
+        _close(session["session_id"])
+
+
+def test_iframe_about_blank_then_navigates_is_waited_for(tmp_path, _prepared):
+    """Embedded-form-discovery-hardening (2026-08-28): an `<iframe
+    src="about:blank">` placeholder that only navigates to the real
+    application document after the Apply click must be treated exactly like
+    a src-less placeholder -- never mistaken for "nothing pending here"."""
+    from tests.browser_fixtures import iframe_about_blank_then_navigates_page
+    from app.applications import browser_assist
+
+    landing_url, _inner_form_url = iframe_about_blank_then_navigates_page(tmp_path, navigate_delay_ms=800)
+    job, execution_id = _prepared(landing_url)
+    result = browser_assist.start_session(execution_id)
+    session = result["session"]
+    try:
+        assert session["status"] == "READY_FOR_FINAL_SUBMIT", (
+            f"expected the about:blank->real navigation to be waited for, got "
+            f"status={session['status']!r} reason={session.get('user_action_reason')!r}"
+        )
+        assert session["apply_entry_clicked"] == 1
+        assert session["iframe_used"] == 1
+        assert session["mapped_field_count"] == 2
+    finally:
+        _close(session["session_id"])
+
+
+def test_iframe_that_never_becomes_ready_times_out_safely(tmp_path, _prepared):
+    """Embedded-form-discovery-hardening (2026-08-28): a trusted iframe that
+    NEVER produces fillable content must still resolve within the bounded
+    `BROWSER_DOM_STABILIZATION_TIMEOUT_MS` -- never an unbounded/hung wait
+    -- and leave the session in a safe, honest paused state."""
+    import time
+
+    from tests.browser_fixtures import iframe_never_ready_page
+    from app.applications import browser_assist
+
+    landing_url = iframe_never_ready_page(tmp_path)
+    job, execution_id = _prepared(landing_url)
+    start = time.monotonic()
+    result = browser_assist.start_session(execution_id)
+    elapsed = time.monotonic() - start
+    session = result["session"]
+    try:
+        # Two stabilization waits happen on this path (initial open + the
+        # post-apply-click advance), each bounded by the same 3000ms test
+        # config -- bounded by a generous multiple, never unbounded.
+        assert elapsed < 15.0, f"stabilization wait was not bounded: took {elapsed:.1f}s"
+        assert session["status"] in ("PAUSED_UNSUPPORTED_SUBMISSION", "PAUSED_APPLY_ENTRY_UNRECOGNIZED")
+        assert session["iframe_used"] == 0
+    finally:
+        _close(session["session_id"])
+
+
+def test_untrusted_iframe_never_blocks_or_is_waited_for(tmp_path, _prepared):
+    """Embedded-form-discovery-hardening (2026-08-28): an unrelated iframe
+    pointed at an untrusted, unreachable host (standing in for an ad/
+    tracking embed) must never be waited for and must never itself block or
+    pause the session -- only the legitimate, same-origin embed's readiness
+    governs the outcome."""
+    from tests.browser_fixtures import iframe_legit_plus_untrusted_no_field_page
+    from app.applications import browser_assist
+
+    landing_url, _inner_form_url = iframe_legit_plus_untrusted_no_field_page(tmp_path)
+    job, execution_id = _prepared(landing_url)
+    result = browser_assist.start_session(execution_id)
+    session = result["session"]
+    try:
+        assert session["status"] == "READY_FOR_FINAL_SUBMIT", (
+            f"expected the legitimate embed to be discovered despite the untrusted sibling iframe, got "
+            f"status={session['status']!r} reason={session.get('user_action_reason')!r}"
+        )
+        assert session["iframe_used"] == 1
+        assert session["mapped_field_count"] == 2
+    finally:
+        _close(session["session_id"])
+
+
 def test_shadow_dom_open_form_discovered(tmp_path, _prepared):
     """CLAUDE.md Phase 12 sections 15, 62: a form mounted inside an OPEN
     shadow root is discovered via the deep-query piercing scan."""

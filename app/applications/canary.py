@@ -115,7 +115,7 @@ def run_canary(url: str, *, provider: str = "") -> CanaryResult:
         page = context.new_page()
         try:
             page.goto(url, timeout=config.BROWSER_ASSIST_TIMEOUT_SECONDS * 1000)
-            _wait_for_stable_state(page, provider=detected_provider)
+            _wait_for_stable_state(page, provider=detected_provider, original_url=url)
             _observe(page, result, classify_apply_control_detailed,
                       _detect_button, _detect_fields, _SUBMIT_BUTTON_PHRASES, _NEXT_BUTTON_PHRASES)
 
@@ -129,7 +129,7 @@ def run_canary(url: str, *, provider: str = "") -> CanaryResult:
                 if control is not None and control.get("classification") == "NAVIGATION_SAFE" and control.get("href"):
                     try:
                         page.goto(control["href"], timeout=config.BROWSER_ASSIST_TIMEOUT_SECONDS * 1000)
-                        _wait_for_stable_state(page, provider=detected_provider)
+                        _wait_for_stable_state(page, provider=detected_provider, original_url=control["href"])
                         result.apply_entry_followed = True
                         _observe(page, result, classify_apply_control_detailed,
                                   _detect_button, _detect_fields, _SUBMIT_BUTTON_PHRASES, _NEXT_BUTTON_PHRASES)
