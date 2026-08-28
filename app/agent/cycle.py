@@ -193,12 +193,21 @@ def _discover_from_registry(cycle_id: int, stats: dict) -> list[str]:
     """Phase 3 path: per-tenant discovery driven by the company_registry
     table, with adaptive polling and per-tenant health/observability. A
     failing tenant is marked degraded/failing and skipped on future cycles
-    until it backs off far enough; other tenants keep processing normally."""
+    until it backs off far enough; other tenants keep processing normally.
+
+    Daily-use-v1: bounded by its OWN `DISCOVERY_REGISTRY_MAX_JOBS_PER_CYCLE`
+    budget, never the legacy static-provider phase's `MAX_JOBS_PER_CYCLE` --
+    the two phases previously shared one counter, so a legacy provider
+    fetching its own full `MAX_JOBS_PER_CYCLE` FIRST in the same cycle could
+    silently leave zero budget for every company_registry tenant, no matter
+    how many were genuinely due (a real, reproduced starvation bug: with the
+    default config, this phase never processed a single due tenant)."""
     due = list_due_for_poll(limit=200)
     tenant_provider_names: list[str] = []
+    registry_jobs_fetched = 0
 
     for entry in due:
-        if stats["jobs_fetched"] >= config.MAX_JOBS_PER_CYCLE:
+        if registry_jobs_fetched >= config.DISCOVERY_REGISTRY_MAX_JOBS_PER_CYCLE:
             break
 
         started = datetime.now(timezone.utc)
@@ -229,8 +238,9 @@ def _discover_from_registry(cycle_id: int, stats: dict) -> list[str]:
         new_count = duplicate_count = filtered_count = 0
 
         for raw in raw_jobs:
-            if stats["jobs_fetched"] >= config.MAX_JOBS_PER_CYCLE:
+            if registry_jobs_fetched >= config.DISCOVERY_REGISTRY_MAX_JOBS_PER_CYCLE:
                 break
+            registry_jobs_fetched += 1
             stats["jobs_fetched"] += 1
             try:
                 status = _process_raw_job(raw, stats, cycle_id=cycle_id, registry_id=entry.id)

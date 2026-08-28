@@ -77,6 +77,19 @@ def _env_float(name: str, default: float) -> float:
 AGENT_ENABLED = _env_bool("AGENT_ENABLED", False)
 DISCOVERY_INTERVAL_MINUTES = _env_int("DISCOVERY_INTERVAL_MINUTES", 15)
 MAX_JOBS_PER_CYCLE = _env_int("MAX_JOBS_PER_CYCLE", 25)
+# Daily-use-v1 (final live readiness test, 2026-08-28): a real, reproducible
+# starvation bug -- app.agent.cycle._discover_from_registry() checked its own
+# due-tenant loop against this SAME `MAX_JOBS_PER_CYCLE` counter that the
+# legacy static-provider phase (app.agent.cycle._discover_from_static_config)
+# already runs and increments FIRST in the same cycle. Since each legacy
+# provider's own `fetch_jobs(max_jobs=MAX_JOBS_PER_CYCLE)` call can alone
+# reach the cap, the registry phase -- and every company_registry tenant in
+# it -- could be silently skipped every single cycle regardless of how many
+# tenants were genuinely due, with no error and no logged reason. This gives
+# the registry-driven discovery phase its OWN independent budget so a
+# populated registry (this project's own more-scalable discovery path) can
+# never be starved by the separate, smaller legacy static-provider config.
+DISCOVERY_REGISTRY_MAX_JOBS_PER_CYCLE = _env_int("DISCOVERY_REGISTRY_MAX_JOBS_PER_CYCLE", 100)
 MIN_MATCH_SCORE = _env_int("MIN_MATCH_SCORE", 25)
 FRESHNESS_MAX_DAYS = _env_int("FRESHNESS_MAX_DAYS", 3)
 MIN_SALARY_USD = _env_int("MIN_SALARY_USD", 80000)
