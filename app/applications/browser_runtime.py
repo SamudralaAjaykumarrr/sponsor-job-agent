@@ -109,6 +109,26 @@ class BrowserRuntimeBusy(Exception):
     interactive, so this is a hard cap, not a queue-and-wait."""
 
 
+# Autonomous-UX-reliability follow-up (2026-08-28): a real employer career
+# page commonly carries page CHROME -- a sitewide header search box, a nav
+# landmark -- that has nothing to do with the application itself. Before this
+# fix, `_detect_fields()` scanned the ENTIRE document indiscriminately, so a
+# single unrelated `<input type="search">` sitting in a `<header>` was enough
+# to make `has_form_fields` True, which made `detect_entry_result()` report
+# FORM_ALREADY_VISIBLE instead of ENTRY_READY -- browser_assist.start_session
+# only clicks the apply-entry control on ENTRY_READY (see
+# app.applications.browser_assist around its `advance_apply_entry` call), so
+# the real "Apply Now" control was never clicked at all. This selector
+# excludes the two general, provider-agnostic signals for "this is page
+# chrome, not application content": the semantic `<header>`/`<nav>`/
+# `role="search|banner|navigation"` landmarks, and the `search` input type
+# itself. It is intentionally NOT Airbnb-specific -- it applies to every
+# provider's field scan. Only ever used to decide which elements COUNT as
+# application form fields; it never affects apply-entry-control (button/link)
+# detection, which legitimately can appear inside a sticky/nav-wrapped
+# "Apply" button (see `select_apply_control`'s own docstring).
+_CHROME_LANDMARK_SELECTOR = 'header, nav, [role="search"], [role="banner"], [role="navigation"]'
+
 _NEXT_BUTTON_PHRASES = ("next", "continue", "save and continue", "next step")
 # CLAUDE.md Phase 11 sections 4-6: "apply now" was a Phase 10 bug -- it was
 # previously listed as a FINAL-submit phrase, which meant a landing-page
@@ -1035,19 +1055,25 @@ def _detect_fields(page) -> list[dict]:
     simply aren't found, the correct honest outcome rather than a bypass
     attempt. Never touches password/hidden/submit/button inputs -- those are
     always left for the human (password) or handled separately (submit).
+    Also never counts a `<header>`/`<nav>`/`role="search|banner|navigation"`
+    landmark's fields, or any `type="search"` input, as application content
+    -- see `_CHROME_LANDMARK_SELECTOR`'s docstring for the real defect this
+    closes (a page's own unrelated header search box being mistaken for the
+    application form itself).
     `page` may also be a Playwright Frame -- both expose `.evaluate()`
     identically, so this same function scans an allowed-host iframe's
     document too (CLAUDE.md Phase 12 section 14)."""
     return page.evaluate(
         """
-        () => {"""
+        (chromeSelector) => {"""
         + _DEEP_QUERY_JS +
         """
           const results = [];
           const seenGroups = new Set();
           __deepQueryAll(document, 'input, textarea, select').forEach((el, idx) => {
             const type = (el.getAttribute('type') || el.tagName).toLowerCase();
-            if (['hidden', 'password', 'submit', 'button', 'image'].includes(type)) return;
+            if (['hidden', 'password', 'submit', 'button', 'image', 'search'].includes(type)) return;
+            if (el.closest(chromeSelector)) return;
 
             let label = '';
             if (el.labels && el.labels.length) label = el.labels[0].innerText;
@@ -1099,7 +1125,8 @@ def _detect_fields(page) -> list[dict]:
           });
           return results;
         }
-        """
+        """,
+        _CHROME_LANDMARK_SELECTOR,
     )
 
 

@@ -90,6 +90,34 @@ def test_landing_page_apply_click_reaches_form(tmp_path, _prepared):
         _close(session["session_id"])
 
 
+def test_landing_page_header_search_input_does_not_block_apply_click(tmp_path, _prepared):
+    """Autonomous-UX-reliability follow-up (2026-08-28): reproduces the real
+    Airbnb defect -- an unrelated `<header>` search `<input>` on the landing
+    page must never be mistaken for the real application form being already
+    visible. Before the `browser_runtime._CHROME_LANDMARK_SELECTOR` fix, that
+    stray field made `detect_entry_result()` report FORM_ALREADY_VISIBLE, so
+    `browser_assist.start_session()` never clicked the real "Apply Now"
+    control at all -- this test would have observed `apply_entry_clicked ==
+    0` and `stage == APPLICATION_ENTRY`/`LANDING_PAGE` (never reaching the
+    real form) prior to the fix. The real form lives behind Apply Now, inside
+    a same-origin iframe -- the allowlisted-iframe pattern standing in for a
+    real embedded ATS application widget."""
+    from tests.browser_fixtures import landing_page_with_header_search_and_apply_click
+    from app.applications import browser_assist
+
+    landing_url, _outer_form_url = landing_page_with_header_search_and_apply_click(tmp_path)
+    job, execution_id = _prepared(landing_url)
+    result = browser_assist.start_session(execution_id)
+    session = result["session"]
+    try:
+        assert session["status"] == "READY_FOR_FINAL_SUBMIT"
+        assert session["apply_entry_clicked"] == 1
+        assert session["stage"] == "APPLICATION_FORM"
+        assert session["mapped_field_count"] == 2
+    finally:
+        _close(session["session_id"])
+
+
 def test_final_submit_lookalike_never_clicked_as_apply_entry(tmp_path, _prepared):
     """Acceptance B: a 'Submit Application'-labeled control on a landing
     page must never be mistaken for a safe apply-entry navigation click."""

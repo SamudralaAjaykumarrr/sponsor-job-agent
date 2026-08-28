@@ -210,6 +210,50 @@ def landing_page_with_apply_click(tmp_path: Path) -> tuple[str, str]:
     return landing_url, form_url
 
 
+def landing_page_with_header_search_and_apply_click(tmp_path: Path) -> tuple[str, str]:
+    """Autonomous-UX-reliability follow-up (2026-08-28): reproduces the real
+    Airbnb careers-page defect -- a sitewide `<header>` search box (unrelated
+    to the application) sits on the SAME landing page as the real "Apply Now"
+    control. Before the browser_runtime._CHROME_LANDMARK_SELECTOR fix, that
+    header search `<input>` alone made `_detect_fields()` return a non-empty
+    list, so `detect_entry_result()` reported FORM_ALREADY_VISIBLE instead of
+    ENTRY_READY and the real "Apply Now" control was never clicked. The real
+    application form (reached only by clicking Apply Now) is embedded in a
+    same-origin iframe -- the same allowlisted-iframe pattern `iframe_form_
+    page()` already exercises, standing in for a real embedded Greenhouse
+    application widget, since this project never makes a real network call
+    to any real ATS host in an automated test. Returns (landing_url,
+    outer_form_url) -- outer_form_url is the page Apply Now navigates to,
+    which itself embeds the real form fields inside an iframe."""
+    inner_form_url = _write(tmp_path, "hdr_search_inner_form.html", textwrap.dedent("""
+        <form>
+          <label for="fname">Full Name</label><input id="fname" name="full_name" type="text" required>
+          <label for="mail">Email</label><input id="mail" name="email" type="text" required>
+          <button type="submit">Submit Application</button>
+        </form>
+    """))
+    outer_form_url = _write(tmp_path, "hdr_search_outer_form.html", _jsonld_block() + textwrap.dedent(f"""
+        <div>
+          <h1>Backend Software Engineer</h1>
+          <iframe id="app-frame" src="{inner_form_url}" style="width:600px;height:400px;"></iframe>
+        </div>
+    """))
+    landing_url = _write(tmp_path, "hdr_search_landing.html", textwrap.dedent(f"""
+        <header>
+          <nav>
+            <a href="/careers">Careers</a>
+          </nav>
+          <input type="search" name="site_search" placeholder="Search jobs" aria-label="Search jobs">
+        </header>
+        <div>
+          <h1>Backend Software Engineer</h1>
+          <p>We are hiring. This is the job description landing page.</p>
+          <a href="{outer_form_url}" id="apply-btn">Apply Now</a>
+        </div>
+    """))
+    return landing_url, outer_form_url
+
+
 def landing_page_with_final_submit_lookalike(tmp_path: Path) -> str:
     """A landing page whose ONLY control reads 'Submit Application' -- must
     classify FINAL_SUBMIT, never be auto-clicked as an apply-entry action
