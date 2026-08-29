@@ -295,4 +295,51 @@
   <p class="faint">No receipt yet — this application hasn't been confirmed submitted.</p>
   {% endif %}
 </section>
+
+<section id="detail-post-application" style="margin-top:1.5rem;">
+  <h2>Recruiter &amp; Application Updates</h2>
+  {% if mailbox_status and not mailbox_status.connected %}
+  <p class="faint">{{ mailbox_status.detail }}</p>
+  {% endif %}
+  {% if recruiter_updates %}
+  <div class="table-wrap">
+    <table>
+      <tr><th>When</th><th>Type</th><th>Subject</th><th>Source</th></tr>
+      {% for u in recruiter_updates %}
+      <tr>
+        <td>{{ u.created_at }}</td>
+        <td>{{ u.update_type.replace('_', ' ').title() }}</td>
+        <td>{{ u.subject or u.detail or '—' }}</td>
+        <td>{{ u.source }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+  </div>
+  {% else %}
+  <p class="faint">No recruiter or application updates recorded yet.</p>
+  {% endif %}
+  <form method="post" action="/jobs/{{ job.id }}/recruiter-updates" style="margin-top:0.75rem;">
+    <div class="field-row">
+      <div class="field">
+        <label for="update-type">Record an update you received</label>
+        <select id="update-type" name="update_type">
+          <option value="CONFIRMATION">Application confirmed received</option>
+          <option value="INTERVIEW_REQUEST">Interview request</option>
+          <option value="REJECTION">Rejection</option>
+          <option value="STATUS_CHECK_IN">Status check-in</option>
+          <option value="OTHER">Other</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="update-subject">Subject / summary</label>
+        <input type="text" id="update-subject" name="subject">
+      </div>
+    </div>
+    <div class="field">
+      <label for="update-detail">Details (optional)</label>
+      <input type="text" id="update-detail" name="detail">
+    </div>
+    <button class="btn" type="submit">Record Update</button>
+  </form>
+</section>
 {% endblock %}

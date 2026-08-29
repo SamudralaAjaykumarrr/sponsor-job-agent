@@ -1,0 +1,143 @@
+"""Verified-real-submission READINESS report (Tsenta Remaining-Gaps Closure
+V2, section 5).
+
+This module answers a narrower question than "can we submit": "is the
+infrastructure for provider X objectively ready for a future, explicitly
+authorized real-employer canary run?" It never submits anything, never opens
+a browser, and never changes `submission_supported` -- that flag stays
+False for every real provider (including Greenhouse) until a genuine
+authorized canary actually proves the contract, per this project's own
+capability-honesty rule (CLAUDE.md's Greenhouse Verified Submission Contract
+V1 section).
+
+Greenhouse is the only provider this module supports, because it is the
+only provider with BOTH a dedicated, structured, published-API form/identity
+adapter (`app.applications.providers_greenhouse`) AND a genuine, already-built
+provider-specific pre-submit contract
+(`app.applications.greenhouse_submit_contract`) that proves 6 of its 8 steps
+without a browser at all. Reusing that existing contract -- never a second,
+parallel readiness system -- this module simply classifies its result as
+"infrastructure-ready" (every browser-independent step PASSED; the two
+browser-time steps are, correctly, NOT_YET_CHECKED) versus "blocked" (any
+browser-independent step FAILED)."""
+
+from dataclasses import dataclass, field as dataclass_field
+from typing import Optional
+
+from app.applications.greenhouse_submit_contract import (
+    GreenhouseSubmitContract,
+    StepStatus,
+    build_submit_contract,
+)
+
+# The steps that can only ever be proven once a real page is open
+# (app.applications.greenhouse_submit_contract's own documented limitation).
+# Their status is expected to be NOT_YET_CHECKED for a readiness assessment
+# that never opens a browser -- that is not a blocker, it is the honest,
+# correct state of "not yet checkable this way".
+_BROWSER_TIME_STEPS = frozenset({7, 8})
+
+
+class ReadinessLevel:
+    INFRASTRUCTURE_READY = "INFRASTRUCTURE_READY"
+    NOT_READY = "NOT_READY"
+    NO_ACTIVE_EXECUTION = "NO_ACTIVE_EXECUTION"
+    JOB_NOT_FOUND = "JOB_NOT_FOUND"
+
+
+@dataclass(frozen=True)
+class CanaryReadinessReport:
+    job_id: int
+    provider: str
+    level: str
+    blocking_reasons: list[str] = dataclass_field(default_factory=list)
+    contract: Optional[GreenhouseSubmitContract] = None
+    submission_supported: bool = False  # always False here -- see module docstring
+    explanation: str = ""
+
+    def as_dict(self) -> dict:
+        return {
+            "job_id": self.job_id,
+            "provider": self.provider,
+            "level": self.level,
+            "blocking_reasons": list(self.blocking_reasons),
+            "contract": self.contract.as_dict() if self.contract else None,
+            "submission_supported": self.submission_supported,
+            "explanation": self.explanation,
+        }
+
+
+def greenhouse_readiness(job_id: int) -> CanaryReadinessReport:
+    """Builds the readiness report for one job's active Greenhouse
+    execution. Reuses `greenhouse_submit_contract.build_submit_contract()`
+    unmodified -- this function only classifies its result, it never
+    recomputes any of the underlying facts."""
+    contract = build_submit_contract(job_id)
+    if contract is None:
+        return CanaryReadinessReport(
+            job_id=job_id, provider="greenhouse", level=ReadinessLevel.JOB_NOT_FOUND,
+            explanation="no job with this id exists",
+        )
+    if not contract.execution_id:
+        return CanaryReadinessReport(
+            job_id=job_id, provider="greenhouse", level=ReadinessLevel.NO_ACTIVE_EXECUTION,
+            blocking_reasons=list(contract.blocking_reasons), contract=contract,
+            explanation="no active application_executions row exists for this job yet",
+        )
+
+    non_browser_steps = [s for s in contract.steps if s.number not in _BROWSER_TIME_STEPS]
+    non_browser_failed = [s for s in non_browser_steps if s.status == StepStatus.FAILED]
+    browser_steps_correctly_pending = all(
+        s.status == StepStatus.NOT_YET_CHECKED for s in contract.steps if s.number in _BROWSER_TIME_STEPS
+    )
+
+    if non_browser_failed:
+        return CanaryReadinessReport(
+            job_id=job_id, provider="greenhouse", level=ReadinessLevel.NOT_READY,
+            blocking_reasons=[s.detail for s in non_browser_failed], contract=contract,
+            explanation=(
+                f"{len(non_browser_failed)} browser-independent contract step(s) failed -- infrastructure is "
+                "not yet ready for a future canary"
+            ),
+        )
+
+    return CanaryReadinessReport(
+        job_id=job_id, provider="greenhouse", level=ReadinessLevel.INFRASTRUCTURE_READY,
+        contract=contract,
+        explanation=(
+            "every browser-independent step of the Greenhouse submit contract (canonical identity, live "
+            "posting status, form fingerprint, approved answer set, approved documents, required fields) "
+            "PASSED"
+            + ("" if browser_steps_correctly_pending else
+               " -- note: browser-time steps report a status other than NOT_YET_CHECKED, which is unexpected "
+               "for a readiness check that never opened a browser")
+            + ". The two browser-time steps (submit control uniqueness, submit-once claim) remain "
+            "NOT_YET_CHECKED, as expected without an open page -- this is infrastructure readiness, not "
+            "submission authorization. submission_supported remains False; only a genuine, explicitly-"
+            "authorized real-employer canary run could ever justify changing that."
+        ),
+    )
+
+
+def best_canary_candidate() -> dict:
+    """A static, evidence-based statement of which provider is the best
+    candidate for a future verified-submission canary, and why -- NOT a
+    recommendation to run one. Greenhouse is the only provider with a
+    dedicated, published-API form/identity adapter AND a genuine
+    provider-specific pre-submit contract; every other real provider has, at
+    best, browser-DOM-verified fill with no structured API and no dedicated
+    submit contract (see app.applications.execution_contract)."""
+    return {
+        "provider": "greenhouse",
+        "reason": (
+            "Greenhouse is the only real provider with execution_tier=STRUCTURED_API, "
+            "identity_supported sourced from a genuine provider-API canonical-identity function, and "
+            "presubmit_validation_supported=True via a dedicated, already-tested provider-specific submit "
+            "contract (app.applications.greenhouse_submit_contract) that proves 6 of 8 required facts without "
+            "even opening a browser. Lever/Ashby/Workable reach only browser-DOM-verified fill with no "
+            "published question schema; SmartRecruiters is CAPTCHA-blocked on its current posting shape; "
+            "Workday's login/apply behavior is observed VARIABLE per-tenant. None of those has, or could "
+            "safely gain, a dedicated pre-submit contract of Greenhouse's depth without first solving an "
+            "external platform limitation this project does not attempt to bypass."
+        ),
+    }

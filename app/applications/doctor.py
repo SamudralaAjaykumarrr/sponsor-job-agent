@@ -1125,6 +1125,30 @@ def _check_execution_contract_consistency(report: DoctorReport) -> None:
                 f"disagrees with ApplicationCapabilities.submission_supported ({expected_submission})",
             ))
 
+        # Tsenta Remaining-Gaps Closure V2: identity/presubmit_validation are
+        # narrow, hand-named per-provider facts (today: greenhouse only for
+        # both, via a genuine dedicated module each), so re-derive from the
+        # SAME narrow rule build_contract() itself uses rather than the
+        # broader source registries above -- this still catches the failure
+        # mode that matters (a provider silently claiming one of these
+        # without the dedicated module actually existing).
+        expected_identity = provider == "greenhouse" or expected_assist
+        if contract.identity_supported != expected_identity:
+            report.issues.append(Issue(
+                "serious", "execution_contract_drift",
+                f"provider '{provider}': contract.identity_supported={contract.identity_supported} disagrees "
+                f"with expected ({expected_identity}) -- identity must come from a dedicated provider-API "
+                f"identity function or generic browser-reachable job_identity verification, never a guess",
+            ))
+        expected_presubmit = provider == "greenhouse"
+        if contract.presubmit_validation_supported != expected_presubmit:
+            report.issues.append(Issue(
+                "serious", "execution_contract_drift",
+                f"provider '{provider}': contract.presubmit_validation_supported="
+                f"{contract.presubmit_validation_supported} disagrees with expected ({expected_presubmit}) -- "
+                f"only a provider with a genuine dedicated pre-submit contract module may report this True",
+            ))
+
 
 def _check_execution_contract_submission_never_inferred(report: DoctorReport) -> None:
     """The brief's single most important line: "Browser fill capability is

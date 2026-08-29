@@ -15,6 +15,11 @@
     .callout { background: #fff8e1; border-left: 4px solid #f0ad4e; padding: 0.75rem 1rem; margin: 1rem 0;
                font-size: 0.88rem; }
     .submit-col { background: #fdf3f4; }
+    .tier { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 0.72rem; font-weight: 600; }
+    .tier-DISCOVERY_ONLY { background: #eee; color: #555; }
+    .tier-ASSIST_CAPABLE { background: #e2f0d9; color: #375623; }
+    .tier-STRUCTURED_API { background: #d9e8f5; color: #1b4a72; }
+    .tier-VERIFIED_SUBMIT { background: #d4edda; color: #155724; }
   </style>
 </head>
 <body>
@@ -39,9 +44,10 @@
   <table>
     <thead>
       <tr>
-        <th>Provider</th><th>Discovery</th><th>Form discovery</th><th>Fill</th><th>Upload</th>
-        <th>Browser assist</th><th class="submit-col">Automated submission</th><th>Confirmation detection</th>
-        <th>Policy</th><th>Why submission is / isn&rsquo;t supported</th>
+        <th>Provider</th><th>Discovery</th><th>Identity</th><th>Form discovery</th><th>Fill</th><th>Upload</th>
+        <th>Browser assist</th><th>Pre-submit validation</th>
+        <th class="submit-col">Automated submission</th><th>Confirmation detection</th>
+        <th>Execution tier</th><th>Policy</th><th>Why submission is / isn&rsquo;t supported</th>
       </tr>
     </thead>
     <tbody>
@@ -49,6 +55,8 @@
       <tr>
         <td><strong>{{ r.provider }}</strong></td>
         <td class="{{ 'yes' if r.discovery_supported else 'no' }}">{{ r.discovery_supported }}</td>
+        <td class="{{ 'yes' if r.identity_supported else 'no' }}">{{ r.identity_supported }}
+          <span class="src">{{ r.identity_source }}</span></td>
         <td class="{{ 'yes' if r.form_discovery_supported else 'no' }}">{{ r.form_discovery_supported }}
           <span class="src">{{ r.form_discovery_source }}</span></td>
         <td class="{{ 'yes' if r.fill_supported else 'no' }}">{{ r.fill_supported }}
@@ -57,10 +65,12 @@
           <span class="src">{{ r.upload_source }}</span></td>
         <td class="{{ 'yes' if r.assist_supported else 'no' }}">{{ r.assist_supported }}
           <span class="src">{{ r.assist_source }}</span></td>
+        <td class="{{ 'yes' if r.presubmit_validation_supported else 'no' }}">{{ r.presubmit_validation_supported }}</td>
         <td class="submit-col {{ 'yes' if r.submission_supported else 'no' }}">{{ r.submission_supported }}
           <span class="src">{{ r.submission_source }}</span></td>
         <td class="{{ 'yes' if r.confirmation_supported else 'no' }}">{{ r.confirmation_supported }}
           <span class="src">{{ r.confirmation_source }}</span></td>
+        <td><span class="tier tier-{{ r.execution_tier }}">{{ r.execution_tier.replace('_', ' ') }}</span></td>
         <td>{{ r.automation_policy }}
           {% if not r.has_application_adapter %}<span class="src">generic fallback</span>{% endif %}</td>
         <td class="notes">{{ r.submission_evidence }}</td>
