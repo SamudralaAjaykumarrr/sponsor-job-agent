@@ -1666,6 +1666,42 @@ def _m059_notifications_table(conn, backend: str) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_notifications_unread ON notifications (read_at)")
 
 
+def _m060_recruiter_updates_table(conn, backend: str) -> None:
+    """Tsenta Remaining-Gaps Closure V2, section 6: durable post-application
+    "recruiter/contact update" concepts (confirmation observed, interview
+    update received, rejection update received, or a bare status check-in),
+    each tied to a job/execution and carrying a `source` of either 'manual'
+    (the candidate telling the product what they heard) or 'mailbox' (a
+    future connected-mailbox adapter -- app.applications.recruiter_
+    communication.MailboxAdapter -- ships only a truthful NullMailboxAdapter
+    today; this table's schema does not change when a real one is ever
+    added, only `source`/`raw_reference` start getting populated by it).
+    This is a durable HISTORY record, never itself a trigger for
+    ExecutionStatus/receipts -- app.applications.handoff.record_manual_outcome
+    remains the only path that can mark an execution APPLIED/terminal;
+    recording a recruiter update here never does that on its own."""
+    id_column = "id BIGSERIAL PRIMARY KEY" if backend == "postgres" else "id INTEGER PRIMARY KEY AUTOINCREMENT"
+    conn.execute(
+        f"""CREATE TABLE IF NOT EXISTS recruiter_updates (
+            {id_column},
+            job_id INTEGER NOT NULL,
+            execution_id TEXT NOT NULL DEFAULT '',
+            update_type TEXT NOT NULL,
+            source TEXT NOT NULL DEFAULT 'manual',
+            subject TEXT NOT NULL DEFAULT '',
+            detail TEXT NOT NULL DEFAULT '',
+            raw_reference TEXT NOT NULL DEFAULT '',
+            needs_you INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL
+        )"""
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_recruiter_updates_job ON recruiter_updates (job_id)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_recruiter_updates_execution ON recruiter_updates (execution_id)"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_recruiter_updates_created ON recruiter_updates (created_at)")
+
+
 MIGRATIONS: list[tuple[int, str, Callable]] = [
     (2, "phase6_worker_identity_columns", _m002_worker_identity_columns),
     (3, "phase6_schema_drift_table", _m003_schema_drift_table),
@@ -1725,6 +1761,7 @@ MIGRATIONS: list[tuple[int, str, Callable]] = [
     (57, "application_document_bindings_table", _m057_application_document_bindings_table),
     (58, "greenhouse_submit_claims_table", _m058_greenhouse_submit_claims_table),
     (59, "notifications_table", _m059_notifications_table),
+    (60, "recruiter_updates_table", _m060_recruiter_updates_table),
 ]
 
 # Version 1 is the implicit Phase 1-5 baseline schema, applied by

@@ -395,6 +395,20 @@ def _cmd_greenhouse_contract(args: argparse.Namespace) -> int:
     return 0 if contract.ready else 1
 
 
+def _cmd_greenhouse_canary_readiness(args: argparse.Namespace) -> int:
+    """Tsenta Remaining-Gaps Closure V2, section 5: reports whether the
+    infrastructure for a future, explicitly-authorized real canary is ready
+    -- never opens a browser, never submits, never touches
+    submission_supported."""
+    import json as _json
+
+    from app.applications.canary_readiness import greenhouse_readiness
+
+    report = greenhouse_readiness(args.job_id)
+    print(_json.dumps(report.as_dict(), indent=2, default=str))
+    return 0 if report.level == "INFRASTRUCTURE_READY" else 1
+
+
 def _cmd_greenhouse_canary(args: argparse.Namespace) -> int:
     """Requires --confirm on top of GREENHOUSE_SUBMIT_CANARY_ENABLED -- see
     app.applications.greenhouse_canary's module docstring. Never runs in a
@@ -573,6 +587,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_gh_contract.add_argument("job_id", type=int)
     p_gh_contract.set_defaults(func=_cmd_greenhouse_contract)
+
+    p_gh_readiness = sub.add_parser(
+        "greenhouse-canary-readiness",
+        help="report whether infrastructure for a future authorized real-employer canary is ready for one job "
+             "-- never opens a browser, never submits, never changes submission_supported",
+    )
+    p_gh_readiness.add_argument("job_id", type=int)
+    p_gh_readiness.set_defaults(func=_cmd_greenhouse_canary_readiness)
 
     p_gh_canary = sub.add_parser(
         "greenhouse-canary",

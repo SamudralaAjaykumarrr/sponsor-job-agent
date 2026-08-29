@@ -44,6 +44,7 @@ from app.applications import board as applications_board
 from app.applications import demo as applications_demo
 from app.applications import presubmit_manifest
 from app.applications import handoff as applications_handoff
+from app.applications import recruiter_communication as applications_recruiter
 from app.candidate.profile import load_profile, missing_fields
 from app.config import BASE_DIR
 from app.db import init_db
@@ -1344,6 +1345,8 @@ def application_detail_page(request: Request, execution_id: str):
     # provider-form check when actually needed.
     final_review = presubmit_manifest.build_manifest(job.id, discover_form=False)
     ready_for_final_review = applications_handoff.is_ready_for_final_review(execution)
+    recruiter_updates = applications_recruiter.list_updates(job_id=job.id)
+    mailbox_status = applications_recruiter.mailbox_status()
 
     return templates.TemplateResponse(
         request, "application_detail.html",
@@ -1356,6 +1359,8 @@ def application_detail_page(request: Request, execution_id: str):
             "jd_analysis": jd_analysis_row,
             "final_review": final_review.as_dict() if final_review else None,
             "ready_for_final_review": ready_for_final_review,
+            "recruiter_updates": recruiter_updates,
+            "mailbox_status": mailbox_status,
             "auto_submit_enabled": config.AUTO_SUBMIT_ENABLED,
             # Advanced/debug section (section C): technical identifiers only
             # -- never a raw lifecycle-state enum (execution.status/
@@ -1597,6 +1602,32 @@ def execution_handoff_outcome(
     if not result.ok:
         raise HTTPException(400, result.detail)
     return RedirectResponse(url=f"/applications/{execution_id}/detail#detail-final-review", status_code=303)
+
+
+@app.post("/jobs/{job_id}/recruiter-updates")
+def record_recruiter_update(
+    job_id: int, update_type: str = Form(...), subject: str = Form(""), detail: str = Form(""),
+    raise_needs_you: bool = Form(False),
+):
+    """Tsenta Remaining-Gaps Closure V2, section 6: manual recording of a
+    recruiter/ATS communication update (no mailbox is connected -- see
+    app.applications.recruiter_communication.NullMailboxAdapter). Never
+    marks anything APPLIED on its own."""
+    job = get_job(job_id)
+    if job is None:
+        raise HTTPException(404, "job not found")
+    execution = applications_repo.get_active_execution_for_job(job_id)
+    result = applications_recruiter.record_update(
+        job_id, update_type, execution_id=(execution["execution_id"] if execution else ""),
+        subject=subject, detail=detail, raise_needs_you=raise_needs_you,
+    )
+    if not result.ok:
+        raise HTTPException(400, result.detail)
+    if execution:
+        return RedirectResponse(
+            url=f"/applications/{execution['execution_id']}/detail#detail-post-application", status_code=303,
+        )
+    return RedirectResponse(url=f"/jobs/{job_id}", status_code=303)
 
 
 @app.get("/applications/browser-sessions", response_class=HTMLResponse)

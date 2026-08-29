@@ -1,4 +1,7 @@
-"""Provider EXECUTION contract (Real Provider Execution V1).
+"""Provider EXECUTION contract (Real Provider Execution V1; extended by
+Tsenta Remaining-Gaps Closure V2 with two more independently-sourced axes:
+`identity_supported` and `presubmit_validation_supported` -- see their own
+docstrings below for exactly what evidence each one reads).
 
 The brief's PROVIDER CONTRACT requirement, verbatim:
 
@@ -76,6 +79,42 @@ class CapabilitySource(str, Enum):
     NONE = "NONE"                                # capability not available by any path
 
 
+class ExecutionTier(str, Enum):
+    """A derived, honest summary of how far this provider's execution
+    support genuinely reaches -- computed purely from the seven+two flags
+    below, never a separately hand-maintained claim (Tsenta Remaining-Gaps
+    Closure V2, section 4: "either promote a discovery-only provider using
+    objective deterministic support, or explicitly preserve it as
+    DISCOVERY_ONLY -- never fake execution support"). Ordered so a UI can
+    treat the enum as a ladder."""
+    DISCOVERY_ONLY = "DISCOVERY_ONLY"          # jobs can be found; no form/fill/assist path exists yet
+    ASSIST_CAPABLE = "ASSIST_CAPABLE"          # a real form can be discovered and safely filled (never submitted)
+    STRUCTURED_API = "STRUCTURED_API"          # a dedicated, published-API application adapter exists
+    VERIFIED_SUBMIT = "VERIFIED_SUBMIT"        # submission_supported is True (mock_ats only, by design)
+
+
+def _execution_tier(
+    form_discovery_supported: bool, form_discovery_source: "CapabilitySource", fill_supported: bool,
+    assist_supported: bool, submission_supported: bool,
+) -> ExecutionTier:
+    if submission_supported:
+        return ExecutionTier.VERIFIED_SUBMIT
+    # STRUCTURED_API requires the form itself to come from the provider's own
+    # published interface (or the mock fixture) -- NOT merely "some dedicated
+    # adapter class exists while the actual schema was still read from a
+    # rendered DOM". A DOM-sourced form, however well browser-verified,
+    # belongs in ASSIST_CAPABLE: it is real, working execution support, but
+    # it is not what "structured API" means, and conflating the two would be
+    # exactly the kind of inflated claim this module exists to prevent.
+    if form_discovery_supported and form_discovery_source in (
+        CapabilitySource.PROVIDER_API, CapabilitySource.MOCK_FIXTURE,
+    ):
+        return ExecutionTier.STRUCTURED_API
+    if form_discovery_supported or fill_supported or assist_supported:
+        return ExecutionTier.ASSIST_CAPABLE
+    return ExecutionTier.DISCOVERY_ONLY
+
+
 def _browser_source(verification: str) -> CapabilitySource:
     if verification == BrowserVerification.LIVE_FORM_VERIFIED.value:
         return CapabilitySource.BROWSER_LIVE_VERIFIED
@@ -106,6 +145,36 @@ class ProviderExecutionContract:
     confirmation_source: CapabilitySource = CapabilitySource.NONE
     submission_source: CapabilitySource = CapabilitySource.NONE
 
+    # --- Tsenta Remaining-Gaps Closure V2 additions -------------------------
+    # `identity_supported`: can a genuine canonical/requisition-based job
+    # identity check run for this provider? Sourced from EXACTLY one of: (a)
+    # a dedicated provider-API canonical-identity function (today: only
+    # `app.applications.providers_greenhouse.canonical_identity`), or (b) the
+    # SAME generic, provider-neutral `app.applications.job_identity
+    # .verify_job_identity[_full]` that `browser_runtime` already calls on
+    # every real navigation for ANY provider it can open a page for -- i.e.
+    # identity checking is a property of "can we reach a real page" (assist),
+    # not a per-provider capability that had to be separately built.
+    identity_supported: bool = False
+    identity_source: CapabilitySource = CapabilitySource.NONE
+    identity_evidence: str = ""
+
+    # `presubmit_validation_supported`: does a DEDICATED, provider-specific
+    # pre-submit contract exist that cross-checks canonical identity + live
+    # posting status + current form fingerprint + approved answers + exact
+    # document hashes + required-fields-complete together, as one auditable
+    # report, before any submit action is even considered? This is
+    # deliberately narrower than `app.applications.presubmit_manifest`
+    # (which is already fully generic and reports something honest for
+    # every provider) -- it names only a provider with a genuine, dedicated
+    # contract module of this depth. Today that is exclusively
+    # `app.applications.greenhouse_submit_contract`, built for the
+    # Greenhouse Verified Submission Contract V1 phase.
+    presubmit_validation_supported: bool = False
+    presubmit_validation_evidence: str = ""
+
+    execution_tier: ExecutionTier = ExecutionTier.DISCOVERY_ONLY
+
     automation_policy: str = "UNSUPPORTED"
     support_level: str = "UNSUPPORTED"
     has_application_adapter: bool = False
@@ -117,21 +186,27 @@ class ProviderExecutionContract:
         return {
             "provider": self.provider,
             "discovery_supported": self.discovery_supported,
+            "identity_supported": self.identity_supported,
             "form_discovery_supported": self.form_discovery_supported,
             "fill_supported": self.fill_supported,
             "upload_supported": self.upload_supported,
             "assist_supported": self.assist_supported,
+            "presubmit_validation_supported": self.presubmit_validation_supported,
             "submission_supported": self.submission_supported,
             "confirmation_supported": self.confirmation_supported,
+            "identity_source": self.identity_source.value,
             "form_discovery_source": self.form_discovery_source.value,
             "fill_source": self.fill_source.value,
             "upload_source": self.upload_source.value,
             "assist_source": self.assist_source.value,
             "confirmation_source": self.confirmation_source.value,
             "submission_source": self.submission_source.value,
+            "execution_tier": self.execution_tier.value,
             "automation_policy": self.automation_policy,
             "support_level": self.support_level,
             "has_application_adapter": self.has_application_adapter,
+            "identity_evidence": self.identity_evidence,
+            "presubmit_validation_evidence": self.presubmit_validation_evidence,
             "submission_evidence": self.submission_evidence,
             "confirmation_evidence": self.confirmation_evidence,
             "notes": self.notes,
@@ -261,6 +336,50 @@ def build_contract(provider: str) -> ProviderExecutionContract:
         confirmation_source = CapabilitySource.NONE
         confirmation_evidence = "no confirmation capture has been genuinely observed for this provider"
 
+    # --- identity (Tsenta V2) -----------------------------------------------
+    has_provider_api_identity = provider == "greenhouse"  # providers_greenhouse.canonical_identity()
+    if has_provider_api_identity:
+        identity_supported = True
+        identity_source = CapabilitySource.PROVIDER_API
+        identity_evidence = (
+            "app.applications.providers_greenhouse.canonical_identity() derives a (board_token, posting_id) "
+            "pair from the provider's own published API/URL shape"
+        )
+    elif assist_supported:
+        identity_supported = True
+        identity_source = browser_src
+        identity_evidence = (
+            "app.applications.job_identity.verify_job_identity[_full]() runs generically on every real "
+            "navigation browser_runtime reaches for this provider -- a URL-shape-based requisition/posting "
+            "token comparison, not a per-provider integration"
+        )
+    else:
+        identity_supported = False
+        identity_source = CapabilitySource.NONE
+        identity_evidence = "no browser-reachable form and no dedicated provider-API identity function exist yet"
+
+    # --- pre-submit validation contract (Tsenta V2) --------------------------
+    has_dedicated_submit_contract = provider == "greenhouse"  # app.applications.greenhouse_submit_contract
+    presubmit_validation_supported = has_dedicated_submit_contract
+    if has_dedicated_submit_contract:
+        presubmit_validation_evidence = (
+            "app.applications.greenhouse_submit_contract.build_submit_contract() cross-checks canonical "
+            "identity, live posting status, current form fingerprint, approval currency, exact document "
+            "hashes, and required-fields-complete as one auditable report"
+        )
+    else:
+        presubmit_validation_evidence = (
+            "no dedicated provider-specific pre-submit contract exists for this provider yet -- "
+            "app.applications.presubmit_manifest still reports a generic, honest pre-submit view for every "
+            "provider, but this flag names only a contract with Greenhouse's deeper, provider-specific depth"
+        )
+
+    tier = _execution_tier(
+        form_discovery_supported=api_form or dom_form, form_discovery_source=form_source,
+        fill_supported=api_fill or dom_fill, assist_supported=assist_supported,
+        submission_supported=submission_supported,
+    )
+
     return ProviderExecutionContract(
         provider=provider,
         discovery_supported=discovery_supported,
@@ -273,6 +392,10 @@ def build_contract(provider: str) -> ProviderExecutionContract:
         form_discovery_source=form_source, fill_source=fill_source, upload_source=upload_source,
         assist_source=assist_source, confirmation_source=confirmation_source,
         submission_source=submission_source,
+        identity_supported=identity_supported, identity_source=identity_source, identity_evidence=identity_evidence,
+        presubmit_validation_supported=presubmit_validation_supported,
+        presubmit_validation_evidence=presubmit_validation_evidence,
+        execution_tier=tier,
         automation_policy=(app_caps or _generic_row()).get("automation_policy", "UNSUPPORTED"),
         support_level=(app_caps or _generic_row()).get("support_level", "UNSUPPORTED"),
         has_application_adapter=app_caps is not None,
@@ -301,8 +424,8 @@ def audit_contracts() -> list[ProviderExecutionContract]:
 
 
 _FLAGS = (
-    "discovery_supported", "form_discovery_supported", "fill_supported", "upload_supported",
-    "assist_supported", "submission_supported", "confirmation_supported",
+    "discovery_supported", "identity_supported", "form_discovery_supported", "fill_supported", "upload_supported",
+    "assist_supported", "presubmit_validation_supported", "submission_supported", "confirmation_supported",
 )
 
 
@@ -317,6 +440,7 @@ def render_audit(contracts: Optional[list[ProviderExecutionContract]] = None) ->
         lines.append(f"\nProvider: {c.provider}")
         for flag in _FLAGS:
             source_key = {
+                "identity_supported": "identity_source",
                 "form_discovery_supported": "form_discovery_source", "fill_supported": "fill_source",
                 "upload_supported": "upload_source", "assist_supported": "assist_source",
                 "submission_supported": "submission_source", "confirmation_supported": "confirmation_source",
@@ -344,12 +468,15 @@ def build_matrix() -> dict:
     columns = [
         ("provider", "Provider"),
         ("discovery_supported", "Discovery"),
+        ("identity_supported", "Identity"),
         ("form_discovery_supported", "Form discovery"),
         ("fill_supported", "Fill"),
         ("upload_supported", "Upload"),
         ("assist_supported", "Browser assist"),
+        ("presubmit_validation_supported", "Pre-submit validation"),
         ("submission_supported", "Automated submission"),
         ("confirmation_supported", "Confirmation detection"),
+        ("execution_tier", "Execution tier"),
         ("automation_policy", "Automation policy"),
         ("support_level", "Support level"),
         ("submission_evidence", "Why submission is/isn't supported"),

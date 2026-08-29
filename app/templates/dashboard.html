@@ -343,7 +343,8 @@ window.submitBulkApprove = function (evt) {
         <td><span class="tag {{ 'tag-ready' if row.resume_status == 'READY' else ('tag-stale' if row.resume_status == 'STALE' else ('tag-failed' if 'FAILED' in row.resume_status else 'tag-notgen')) }}">{{ row.resume_status }}</span>
           {% if row.page_count == 1 %}<span class="badge-1page">1 PAGE ✓</span>{% elif row.resume_status == 'REVIEW_REQUIRED' %}<span class="badge-overflow">REVIEW_REQUIRED</span>{% endif %}</td>
         <td>{% if row.quality_report %}{{ row.quality_report.ats_parseability.overall }}{% endif %} {{ job.provider }}</td>
-        <td>{{ row.execution.status if row.execution else job.application_state.value }}</td>
+        <td>{% if row.cta %}{{ row.cta.label }}{% else %}{{ row.execution.status if row.execution else job.application_state.value }}{% endif %}
+          <br><span class="faint">raw: {{ row.execution.status if row.execution else job.application_state.value }}</span></td>
         <td>{% if row.execution and row.execution.requires_user_action %}<strong style="color:var(--bad);">{{ row.execution.user_action_reason or 'action needed' }}</strong>{% else %}—{% endif %}</td>
         <td>{{ job.priority_tier.value }} ({{ job.priority_score }})</td>
         <td class="cta-cell">
