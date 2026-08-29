@@ -1724,6 +1724,48 @@ def _m061_jobs_employment_type_page_evidence_columns(conn, backend: str) -> None
     ])
 
 
+def _m062_provider_submit_claims_table(conn, backend: str) -> None:
+    """Canary Candidate Pool Expansion + Multi-Provider Readiness V1: the
+    provider-parameterized generalization of migration 58's
+    `greenhouse_submit_claims` -- the same submit-once physical guarantee
+    (one row per execution, `submit_attempted` flipped 0->1 by exactly one
+    atomic `UPDATE ... WHERE submit_attempted = 0`), now keyed by
+    `(provider, execution_id)` so a future Lever/Ashby/Workable submit
+    engine can reuse the identical claim idiom without a new table per
+    provider. `greenhouse_submit_claims` itself is UNCHANGED and remains the
+    claim ledger for `app.applications.greenhouse_submit_engine` -- this
+    table is for `app.applications.provider_submit_claim`, consulted only by
+    `app.applications.provider_submit_contract` (read-only) and any future
+    non-Greenhouse submit engine (write, once one is genuinely built and
+    tested). No submit engine exists yet for any provider this table
+    covers; this migration adds the ledger ahead of that work so the
+    readiness contract can honestly report claim state today."""
+    id_column = "id BIGSERIAL PRIMARY KEY" if backend == "postgres" else "id INTEGER PRIMARY KEY AUTOINCREMENT"
+    conn.execute(
+        f"""CREATE TABLE IF NOT EXISTS provider_submit_claims (
+            {id_column},
+            provider TEXT NOT NULL,
+            execution_id TEXT NOT NULL,
+            job_id INTEGER NOT NULL,
+            claimed_at TEXT NOT NULL DEFAULT '',
+            claimed_by TEXT NOT NULL DEFAULT '',
+            submit_attempted INTEGER NOT NULL DEFAULT 0,
+            submit_attempted_at TEXT NOT NULL DEFAULT '',
+            outcome TEXT NOT NULL DEFAULT '',
+            outcome_detail TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_provider_submit_claims_provider_execution "
+        "ON provider_submit_claims (provider, execution_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_provider_submit_claims_job ON provider_submit_claims (job_id)"
+    )
+
+
 MIGRATIONS: list[tuple[int, str, Callable]] = [
     (2, "phase6_worker_identity_columns", _m002_worker_identity_columns),
     (3, "phase6_schema_drift_table", _m003_schema_drift_table),
@@ -1785,6 +1827,7 @@ MIGRATIONS: list[tuple[int, str, Callable]] = [
     (59, "notifications_table", _m059_notifications_table),
     (60, "recruiter_updates_table", _m060_recruiter_updates_table),
     (61, "jobs_employment_type_page_evidence_columns", _m061_jobs_employment_type_page_evidence_columns),
+    (62, "provider_submit_claims_table", _m062_provider_submit_claims_table),
 ]
 
 # Version 1 is the implicit Phase 1-5 baseline schema, applied by

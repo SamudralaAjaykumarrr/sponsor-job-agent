@@ -1,0 +1,17 @@
+company_name,company_domain,provider,tenant_identifier,careers_url,country,source,source_url
+Airtable,airtable.com,greenhouse,airtable,https://boards.greenhouse.io/airtable,US,live_verification_2026-08-29_canary_expansion_v1,https://boards-api.greenhouse.io/v1/boards/airtable/jobs
+Samsara,samsara.com,greenhouse,samsara,https://boards.greenhouse.io/samsara,US,live_verification_2026-08-29_canary_expansion_v1,https://boards-api.greenhouse.io/v1/boards/samsara/jobs
+Amplitude,amplitude.com,greenhouse,amplitude,https://boards.greenhouse.io/amplitude,US,live_verification_2026-08-29_canary_expansion_v1,https://boards-api.greenhouse.io/v1/boards/amplitude/jobs
+MongoDB,mongodb.com,greenhouse,mongodb,https://boards.greenhouse.io/mongodb,US,live_verification_2026-08-29_canary_expansion_v1,https://boards-api.greenhouse.io/v1/boards/mongodb/jobs
+Elastic,elastic.co,greenhouse,elastic,https://boards.greenhouse.io/elastic,US,live_verification_2026-08-29_canary_expansion_v1,https://boards-api.greenhouse.io/v1/boards/elastic/jobs
+Squarespace,squarespace.com,greenhouse,squarespace,https://boards.greenhouse.io/squarespace,US,live_verification_2026-08-29_canary_expansion_v1,https://boards-api.greenhouse.io/v1/boards/squarespace/jobs
+Okta,okta.com,greenhouse,okta,https://boards.greenhouse.io/okta,US,live_verification_2026-08-29_canary_expansion_v1,https://boards-api.greenhouse.io/v1/boards/okta/jobs
+PagerDuty,pagerduty.com,greenhouse,pagerduty,https://boards.greenhouse.io/pagerduty,US,live_verification_2026-08-29_canary_expansion_v1,https://boards-api.greenhouse.io/v1/boards/pagerduty/jobs
+Datadog,datadoghq.com,greenhouse,datadog,https://boards.greenhouse.io/datadog,US,live_verification_2026-08-29_canary_expansion_v1,https://boards-api.greenhouse.io/v1/boards/datadog/jobs
+Faire,faire.com,greenhouse,faire,https://boards.greenhouse.io/faire,US,live_verification_2026-08-29_canary_expansion_v1,https://boards-api.greenhouse.io/v1/boards/faire/jobs
+Chime,chime.com,greenhouse,chime,https://boards.greenhouse.io/chime,US,live_verification_2026-08-29_canary_expansion_v1,https://boards-api.greenhouse.io/v1/boards/chime/jobs
+Flexport,flexport.com,greenhouse,flexport,https://boards.greenhouse.io/flexport,US,live_verification_2026-08-29_canary_expansion_v1,https://boards-api.greenhouse.io/v1/boards/flexport/jobs
+Gusto,gusto.com,greenhouse,gusto,https://boards.greenhouse.io/gusto,US,live_verification_2026-08-29_canary_expansion_v1,https://boards-api.greenhouse.io/v1/boards/gusto/jobs
+Carta,carta.com,greenhouse,carta,https://boards.greenhouse.io/carta,US,live_verification_2026-08-29_canary_expansion_v1,https://boards-api.greenhouse.io/v1/boards/carta/jobs
+Mixpanel,mixpanel.com,greenhouse,mixpanel,https://boards.greenhouse.io/mixpanel,US,live_verification_2026-08-29_canary_expansion_v1,https://boards-api.greenhouse.io/v1/boards/mixpanel/jobs
+Ro,ro.co,lever,ro,https://jobs.lever.co/ro,US,live_verification_2026-08-29_canary_expansion_v1,https://api.lever.co/v0/postings/ro?mode=json
