@@ -1702,6 +1702,28 @@ def _m060_recruiter_updates_table(conn, backend: str) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_recruiter_updates_created ON recruiter_updates (created_at)")
 
 
+def _m061_jobs_employment_type_page_evidence_columns(conn, backend: str) -> None:
+    """Employment Type Evidence Hardening V1: persists the RAW third-party
+    evidence a posting's real public page's schema.org JobPosting JSON-LD
+    `employmentType` field carried, the last time it was checked -- never a
+    cached FINAL decision. app.matching.employment_type.
+    resolve_employment_type_evidence() still recomputes the actual
+    FULL_TIME/CONTRACT/.../UNKNOWN decision live from this raw fact plus the
+    job's existing `employment_type` (provider-structured) and title/
+    description (JD text) columns every time it's called -- matching this
+    project's existing 'persist raw evidence, never cache a live decision'
+    convention (see employer_sponsorship_evidence). `_checked_at` distinguishes
+    'never checked' (empty) from 'checked, found nothing' (set but raw
+    column empty) so a doctor/report can tell the difference; a page-fetch
+    failure or a page with no JSON-LD is honestly recorded as 'checked, no
+    signal', never silently retried forever nor treated as a negative
+    signal."""
+    add_columns_if_missing(conn, backend, "jobs", [
+        ("employment_type_page_evidence_raw", "TEXT DEFAULT ''"),
+        ("employment_type_page_evidence_checked_at", "TEXT DEFAULT ''"),
+    ])
+
+
 MIGRATIONS: list[tuple[int, str, Callable]] = [
     (2, "phase6_worker_identity_columns", _m002_worker_identity_columns),
     (3, "phase6_schema_drift_table", _m003_schema_drift_table),
@@ -1762,6 +1784,7 @@ MIGRATIONS: list[tuple[int, str, Callable]] = [
     (58, "greenhouse_submit_claims_table", _m058_greenhouse_submit_claims_table),
     (59, "notifications_table", _m059_notifications_table),
     (60, "recruiter_updates_table", _m060_recruiter_updates_table),
+    (61, "jobs_employment_type_page_evidence_columns", _m061_jobs_employment_type_page_evidence_columns),
 ]
 
 # Version 1 is the implicit Phase 1-5 baseline schema, applied by

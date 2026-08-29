@@ -7,7 +7,9 @@ from app.models import Job, utcnow
 
 _COLUMNS = [
     "title", "company", "location", "description", "url", "source",
-    "provider", "external_job_id", "employment_type", "salary_min", "salary_max",
+    "provider", "external_job_id", "employment_type",
+    "employment_type_page_evidence_raw", "employment_type_page_evidence_checked_at",
+    "salary_min", "salary_max",
     "dedup_fingerprint",
     "company_identifier", "city", "state", "country", "remote_status",
     "department", "team", "office", "source_url", "canonical_url",

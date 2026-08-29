@@ -18,6 +18,7 @@ from app.applications import doctor as applications_doctor
 from app.applications import metrics as applications_metrics
 from app.applications import repo as applications_repo
 from app.applications.eligibility import evaluate_executor_eligibility
+from app.matching.employment_type import resolve_employment_type_evidence
 from app.applications.product_state import compute_stage
 from app.applications.executor import (
     AutoSubmitDisabledError,
@@ -355,6 +356,9 @@ def job_detail(request: Request, job_id: int):
     # fall back to the most recent execution row for that purpose only.
     latest_execution = executions[-1] if executions else None
     eligibility = evaluate_executor_eligibility(job)
+    employment_type_decision = resolve_employment_type_evidence(
+        job.employment_type, job.title, job.description, job.employment_type_page_evidence_raw,
+    )
     active_browser_session = browser_session.get_active_session_for_job(job_id)
 
     # --- Phase 14: JD analysis / resume optimization diagnostics ------------
@@ -389,6 +393,7 @@ def job_detail(request: Request, job_id: int):
             "latest_decision": latest_decision, "decision_history": decision_history,
             "executions": executions, "active_execution": active_execution,
             "latest_execution": latest_execution, "eligibility": eligibility,
+            "employment_type_decision": employment_type_decision,
             "job_cta": job_cta,
             "executor_enabled": config.APPLICATION_EXECUTOR_ENABLED,
             "auto_submit_enabled": config.AUTO_SUBMIT_ENABLED,

@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from app import config
 from app.config import NEEDS_USER_INPUT
 from app.matching.compensation import evaluate_compensation
-from app.matching.employment_type import classify_employment_type
+from app.matching.employment_type import resolve_employment_type_evidence
 from app.matching.geography import is_us_location
 from app.matching.roles import is_target_role
 from app.matching.seniority import evaluate_seniority
@@ -76,7 +76,19 @@ def evaluate_executor_eligibility(job: Job) -> EligibilityResult:
     reasons: list[str] = []
 
     # --- CLAUDE.md Phase 8 section 1: FULL_TIME hard gate, unconditional. ---
-    employment_type = classify_employment_type(job.employment_type, job.title, job.description)
+    # Employment Type Evidence Hardening V1: reads whatever JobPosting
+    # JSON-LD page evidence is already PERSISTED on the job row (populated
+    # by a prior canary-feasibility screen or backfill) -- never a fresh
+    # live fetch here, keeping this safety-critical hot path fast and
+    # network-independent exactly as before. This can only ever make the
+    # decision MORE conservative or identical to the old classify_
+    # employment_type() -- never less (see app.matching.employment_type
+    # module docstring for the one real gap it fixes: an explicit JD
+    # "contract" no longer gets silently outvoted by a positive provider
+    # field, the opposite of a weakening).
+    employment_type = resolve_employment_type_evidence(
+        job.employment_type, job.title, job.description, job.employment_type_page_evidence_raw,
+    ).value
     if employment_type not in (EmploymentType.FULL_TIME, EmploymentType.UNKNOWN):
         return EligibilityResult(
             enters_queue=False, auto_submit_eligible=False, employment_type=employment_type,

@@ -41,7 +41,7 @@ from app.applications.models import ExecutionStatus
 from app.applications.provider_registry import get_application_provider
 from app.db import db_session
 from app.jobs_repo import get_job
-from app.matching.employment_type import classify_employment_type
+from app.matching.employment_type import resolve_employment_type_evidence
 from app.models import Job
 
 
@@ -93,7 +93,9 @@ class ApprovalResult:
 
 def _record_approval_row(job: Job, execution: dict, *, provider_submission_supported: bool) -> str:
     approval_id = new_approval_id()
-    employment_type = classify_employment_type(job.employment_type, job.title, job.description)
+    employment_type = resolve_employment_type_evidence(
+        job.employment_type, job.title, job.description, job.employment_type_page_evidence_raw,
+    ).value
     with db_session() as conn:
         conn.execute(
             """INSERT INTO application_approvals
@@ -177,7 +179,9 @@ def is_current_valid(job: Job, execution: dict, approval: dict) -> tuple[bool, l
         reasons.append("application form changed since approval (form_fingerprint)")
     if job.sponsorship_status.value != (approval.get("sponsorship_status_at_approval") or ""):
         reasons.append("sponsorship status changed since approval")
-    employment_type = classify_employment_type(job.employment_type, job.title, job.description)
+    employment_type = resolve_employment_type_evidence(
+        job.employment_type, job.title, job.description, job.employment_type_page_evidence_raw,
+    ).value
     if employment_type.value != (approval.get("employment_type_at_approval") or ""):
         reasons.append("employment classification changed since approval")
     # Application-lifecycle-exception-resume-v1: "provider capability" is
