@@ -35,6 +35,14 @@ STYLE_SUCCESS = "success"      # terminal positive ("APPLIED (check)")
 STYLE_SECONDARY = "secondary"  # a real, non-primary action (Continue, Check status, Answer)
 STYLE_NONE = "none"            # no CTA at all -- reason text only (skipped/failed)
 
+# Tsenta-parity-closure-v1: the one shared label for "the agent has done
+# everything it safely can for this provider -- it's on you now", used both
+# when an execution reached APPROVED with no browser session at all, and
+# when a browser-assist session paused specifically because the provider
+# has no verified autonomous-submit capability (see _FINAL_REVIEW_REASON /
+# _FINAL_REVIEW_SESSION_STATUSES below).
+LABEL_READY_FOR_FINAL_REVIEW = "READY FOR FINAL REVIEW"
+
 _PAUSED_VALUES = frozenset(s.value for s in PAUSED_STATUSES)
 
 
@@ -108,8 +116,26 @@ _NEEDS_ACTION_STAGE_LABELS: dict[ProductStage, str] = {
     ProductStage.NEEDS_CAPTCHA: "COMPLETE CAPTCHA",
     ProductStage.NEEDS_LEGAL_CONFIRMATION: "REVIEW & CONFIRM",
     ProductStage.IDENTITY_REVIEW_REQUIRED: "ANSWER & CONTINUE",
-    ProductStage.UNSUPPORTED_SUBMISSION: "CONTINUE APPLICATION",
+    ProductStage.UNSUPPORTED_SUBMISSION: LABEL_READY_FOR_FINAL_REVIEW,
 }
+
+# Tsenta-parity-closure-v1: the plain-language label + reason shown at the
+# maximum safe automated point for a provider with no verified autonomous-
+# submit capability -- the agent has done everything it safely can, and it
+# is genuinely on the human now. Deliberately distinct from a genuine
+# blocker's "ANSWER & CONTINUE" (there is no question to answer here, only
+# a capability the provider hasn't earned) -- a real gap the Tsenta parity
+# audit found: BrowserSessionStatus.PAUSED_UNSUPPORTED_SUBMISSION/
+# PAUSED_PLATFORM_RESTRICTED used to fall into the generic paused-session
+# branch below and show the misleading "ANSWER & CONTINUE" label.
+_FINAL_REVIEW_REASON = (
+    "Approved. Automated final submission is not verified for this provider -- "
+    "review everything we prepared, finish it yourself, then tell us what happened."
+)
+_FINAL_REVIEW_SESSION_STATUSES = frozenset({
+    BrowserSessionStatus.PAUSED_UNSUPPORTED_SUBMISSION.value,
+    BrowserSessionStatus.PAUSED_PLATFORM_RESTRICTED.value,
+})
 
 
 def _browser_session_cta(session: dict) -> Optional[JobCTA]:
@@ -128,6 +154,8 @@ def _browser_session_cta(session: dict) -> Optional[JobCTA]:
         return JobCTA("CHECK APPLICATION STATUS", STYLE_SECONDARY, _link(href))
     if status in _BROWSER_PAUSE_LABELS:
         return JobCTA(_BROWSER_PAUSE_LABELS[status], STYLE_SECONDARY, _link(href))
+    if status in _FINAL_REVIEW_SESSION_STATUSES:
+        return JobCTA(LABEL_READY_FOR_FINAL_REVIEW, STYLE_SECONDARY, _link(href), reason=_FINAL_REVIEW_REASON)
     if status in _PAUSED_VALUES:
         return JobCTA("ANSWER & CONTINUE", STYLE_SECONDARY, _link(href))
     if status in (BrowserSessionStatus.STARTING.value, BrowserSessionStatus.DISCOVERING.value, BrowserSessionStatus.ACTIVE.value):
@@ -182,8 +210,8 @@ def compute_apply_cta(
             if bcta is not None:
                 return bcta
         return JobCTA(
-            "CONTINUE APPLICATION", STYLE_SECONDARY, _link(f"/jobs/{job_id}#application-execution"),
-            reason="Approved. Automated final submission is not verified for this provider.",
+            LABEL_READY_FOR_FINAL_REVIEW, STYLE_SECONDARY, _link(f"/jobs/{job_id}#application-execution"),
+            reason=_FINAL_REVIEW_REASON,
         )
 
     if stage in _NEEDS_ACTION_STAGE_LABELS:
@@ -201,6 +229,15 @@ def compute_apply_cta(
 
     if stage == ProductStage.CONFIRMED:
         return JobCTA("APPLIED ✓", STYLE_SUCCESS, _link(f"/jobs/{job_id}#application-execution"))
+
+    if stage == ProductStage.COMPLETED_BY_USER:
+        # Deliberately a DIFFERENT label from "APPLIED (check)" -- this is
+        # an honest, self-reported, unverified completion, never a genuine
+        # confirmation (see ExecutionStatus.USER_COMPLETED_EXTERNALLY).
+        return JobCTA(
+            "COMPLETED BY YOU", STYLE_SUCCESS, _link(f"/jobs/{job_id}#application-execution"),
+            reason="You told us you completed this application yourself -- we could not independently verify it.",
+        )
 
     if stage == ProductStage.TRACKING:
         raw_status = execution.get("status")

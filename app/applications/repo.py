@@ -57,6 +57,7 @@ _JOB_STATE_MIRROR: dict[ExecutionStatus, ApplicationState] = {
     ExecutionStatus.WITHDRAWN: ApplicationState.WITHDRAWN,
     ExecutionStatus.SUBMISSION_STATUS_UNKNOWN: ApplicationState.SUBMISSION_STATUS_UNKNOWN,
     ExecutionStatus.JOB_NO_LONGER_ACTIVE: ApplicationState.JOB_NO_LONGER_ACTIVE,
+    ExecutionStatus.USER_COMPLETED_EXTERNALLY: ApplicationState.COMPLETED_BY_USER,
 }
 
 
@@ -236,6 +237,10 @@ DASHBOARD_BUCKETS: dict[str, tuple[str, ...]] = {
                       ExecutionStatus.SUBMISSION_STATUS_UNKNOWN.value),
     "submitting": (ExecutionStatus.SUBMITTING.value, ExecutionStatus.SUBMITTED.value),
     "applied": (ExecutionStatus.SUBMISSION_CONFIRMED.value, ExecutionStatus.APPLIED.value),
+    # Tsenta-parity-closure-v1: deliberately its OWN bucket, never folded
+    # into "applied" -- a self-reported, unverified completion must never
+    # look like a genuinely confirmed one anywhere in the product.
+    "completed_by_user": (ExecutionStatus.USER_COMPLETED_EXTERNALLY.value,),
     "failed": (ExecutionStatus.SUBMISSION_FAILED.value, ExecutionStatus.RETRYABLE_SUBMISSION_FAILURE.value,
                ExecutionStatus.PERMANENT_SUBMISSION_FAILURE.value, ExecutionStatus.DUPLICATE_APPLICATION_BLOCKED.value,
                ExecutionStatus.JOB_NO_LONGER_ACTIVE.value),

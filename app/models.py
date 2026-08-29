@@ -84,6 +84,15 @@ class ApplicationState(str, Enum):
     # attempted at all).
     JOB_NO_LONGER_ACTIVE = "JOB_NO_LONGER_ACTIVE"
 
+    # Tsenta-parity-closure-v1: mirrors
+    # app.applications.models.ExecutionStatus.USER_COMPLETED_EXTERNALLY --
+    # the candidate told us, after a READY FOR FINAL REVIEW hand-off, that
+    # they finished this application themselves. Distinct from APPLIED
+    # (which always implies genuine confirmation evidence): this is an
+    # honest, self-reported, unverified completion. Never set without an
+    # explicit app.applications.handoff.record_manual_outcome() call.
+    COMPLETED_BY_USER = "COMPLETED_BY_USER"
+
 
 class ApplicationMode(str, Enum):
     ANALYZE = "ANALYZE"

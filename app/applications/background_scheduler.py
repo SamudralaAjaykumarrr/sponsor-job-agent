@@ -9,11 +9,27 @@ stale browser-assist session reaper on its own independent cadence.
 Mirrors app.agent.scheduler.AgentScheduler's structure exactly: a
 lightweight asyncio loop owned by the FastAPI app's lifespan, with the
 actual (synchronous, DB-querying) work run via asyncio.to_thread so it never
-blocks the event loop or any concurrent dashboard request. Both sub-tasks
-are independently gated by their own existing flags/intervals and a failure
-in one must never stop the other or crash the loop -- same "one thing
+blocks the event loop or any concurrent dashboard request. A failure in one
+sub-task must never stop the other or crash the loop -- same "one thing
 failing must never take down the rest" principle as every other background
-loop in this project."""
+loop in this project.
+
+Tsenta-parity-closure-v1: the reconciliation pass stays gated by
+RECONCILE_WORKER_ENABLED (it is genuinely optional, distinct automation),
+but the stale-session reap is UNCONDITIONAL -- it always runs on its own
+cadence, regardless of the CURRENT value of BROWSER_ASSIST_ENABLED.
+Session CREATION (browser_assist.start_session()) and session CLEANUP
+(this reap) are two independently-gated concerns: a session opened while
+the flag was on must still be reaped after the flag reverts to its default
+(False), or later gets flipped off by an operator -- a real bug caught live
+during the Tsenta parity audit (job 327's Airbnb session sat stale,
+active=1, because the reap branch below used to be gated on the same flag
+that gates session creation). `_run_stale_session_reap` itself is always
+safe to call even with Playwright never installed and BROWSER_ASSIST_ENABLED
+False -- it only touches the `browser_assist_sessions` table and, for any
+row still tracked in this process's in-memory Playwright registry, closes
+it; a fresh process (or one where no live session exists for that row) never
+touches Playwright at all."""
 
 import asyncio
 import logging
@@ -87,7 +103,7 @@ class ApplicationBackgroundScheduler:
                 interval = max(60, config.RECONCILE_WORKER_INTERVAL_SECONDS)
                 self._next_reconcile_at = datetime.now(timezone.utc) + timedelta(seconds=interval)
 
-            if config.BROWSER_ASSIST_ENABLED and (self._next_reap_at is None or now >= self._next_reap_at):
+            if self._next_reap_at is None or now >= self._next_reap_at:
                 try:
                     await asyncio.to_thread(_run_stale_session_reap)
                 except Exception:  # noqa: BLE001

@@ -25,7 +25,7 @@
 </div>
 
 <div class="stat-grid">
-  {% for key in ["applications_ready", "applications_queued", "applications_prepared", "applications_needs_user_action", "applications_submitted", "applications_confirmed", "applications_failed", "applications_duplicate_blocked", "submission_unknown"] %}
+  {% for key in ["applications_ready", "applications_queued", "applications_prepared", "applications_needs_user_action", "applications_submitted", "applications_confirmed", "applications_completed_by_user", "applications_failed", "applications_duplicate_blocked", "submission_unknown"] %}
   <div class="stat-card"><div class="num">{{ metrics[key] }}</div><div class="label">{{ key.replace('applications_', '').replace('_', ' ') }}</div></div>
   {% endfor %}
 </div>

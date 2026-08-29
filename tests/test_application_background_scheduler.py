@@ -68,7 +68,7 @@ def test_stale_session_reap_runs_when_browser_assist_enabled(tmp_env, monkeypatc
     assert calls == ["reap"]
 
 
-def test_neither_task_runs_when_both_disabled(tmp_env, monkeypatch):
+def test_reconcile_does_not_run_when_disabled(tmp_env, monkeypatch):
     monkeypatch.setattr(config, "RECONCILE_WORKER_ENABLED", False)
     monkeypatch.setattr(config, "BROWSER_ASSIST_ENABLED", False)
     reconcile_calls, reap_calls = [], []
@@ -85,7 +85,32 @@ def test_neither_task_runs_when_both_disabled(tmp_env, monkeypatch):
 
     _run(go)
     assert reconcile_calls == []
-    assert reap_calls == []
+    assert reap_calls == [1]  # tsenta-parity-closure-v1: reap is unconditional, unlike reconcile
+
+
+def test_stale_session_reap_runs_even_when_browser_assist_disabled(tmp_env, monkeypatch):
+    """Tsenta-parity-closure-v1 regression test (scenario A): cleanup of an
+    already-open session must never depend on whether NEW sessions are
+    currently allowed to be created. Real bug caught during the audit --
+    the reap branch used to be gated on the same BROWSER_ASSIST_ENABLED flag
+    that gates session creation, leaving a stale session (job 327) stuck
+    active=1 forever once the flag reverted to its default (False)."""
+    monkeypatch.setattr(config, "RECONCILE_WORKER_ENABLED", False)
+    monkeypatch.setattr(config, "BROWSER_ASSIST_ENABLED", False)
+    monkeypatch.setattr(config, "BROWSER_SESSION_TIMEOUT_MINUTES", 30)
+    reap_calls = []
+    monkeypatch.setattr(bg_mod, "_run_stale_session_reap", lambda: reap_calls.append(1))
+    monkeypatch.setattr(bg_mod, "_IDLE_POLL_SECONDS", 0.01)
+
+    sched = ApplicationBackgroundScheduler()
+
+    async def go():
+        sched.start()
+        await asyncio.sleep(0.1)
+        await sched.stop()
+
+    _run(go)
+    assert reap_calls == [1]
 
 
 def test_one_failing_task_never_stops_the_loop(tmp_env, monkeypatch):

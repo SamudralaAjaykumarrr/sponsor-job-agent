@@ -29,7 +29,7 @@
       <dt>Work arrangement</dt><dd>{{ job.work_arrangement.value }}</dd>
       <dt>Sponsorship status</dt><dd>{{ job.sponsorship_status.value }}</dd>
       <dt>Sponsorship evidence</dt><dd>{{ job.sponsorship_evidence }}</dd>
-      <dt>Freshness</dt><dd>{{ job.freshness_tier.value }}
+      <dt>Freshness</dt><dd>{{ job.freshness_tier | freshness_label }}
         {% if job.freshness_minutes is not none %}(~{{ "%.0f"|format(job.freshness_minutes) }} min old){% endif %}
         — first seen {{ job.first_seen_at }}, last seen {{ job.last_seen_at }}</dd>
       <dt>Compensation</dt><dd>

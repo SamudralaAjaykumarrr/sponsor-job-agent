@@ -15,6 +15,10 @@ _SUBMITTED_STATES = ("SUBMITTED", "SUBMISSION_CONFIRMED", "APPLIED")
 _CONFIRMED_STATES = ("SUBMISSION_CONFIRMED", "APPLIED")
 _FAILED_STATES = ("SUBMISSION_FAILED", "RETRYABLE_SUBMISSION_FAILURE", "PERMANENT_SUBMISSION_FAILURE",
                    "JOB_NO_LONGER_ACTIVE")
+# Tsenta-parity-closure-v1: deliberately its OWN metric, never folded into
+# _CONFIRMED_STATES -- a self-reported, unverified completion (READY FOR
+# FINAL REVIEW hand-off) must never look like a genuinely confirmed one.
+_COMPLETED_BY_USER_STATES = ("USER_COMPLETED_EXTERNALLY",)
 
 
 def _count(conn, statuses: tuple[str, ...]) -> int:
@@ -36,6 +40,7 @@ def collect() -> dict:
             "applications_needs_user_action": _count(conn, _NEEDS_ACTION_STATES),
             "applications_submitted": _count(conn, _SUBMITTED_STATES),
             "applications_confirmed": _count(conn, _CONFIRMED_STATES),
+            "applications_completed_by_user": _count(conn, _COMPLETED_BY_USER_STATES),
             "applications_failed": _count(conn, _FAILED_STATES),
             "applications_duplicate_blocked": _count(conn, ("DUPLICATE_APPLICATION_BLOCKED",)),
             "application_form_drift": conn.execute(
