@@ -218,8 +218,16 @@
     <h2>Employment type</h2>
     <p>Classified: <strong>{{ eligibility.employment_type.value }}</strong>
        {% if eligibility.employment_type == 'UNKNOWN' %}<span style="color:var(--warn);">(no explicit positive/negative signal found -- never auto-progressed as full-time)</span>{% endif %}</p>
+    {% if employment_type_decision %}
+    <p class="help-text">
+      Source: <strong>{{ employment_type_decision.source.value }}</strong>
+      {% if employment_type_decision.source.value == 'CONFLICT' %}<span style="color:var(--warn);">-- conflicting evidence, treated as UNKNOWN</span>{% endif %}
+      <br>{{ employment_type_decision.reason }}
+    </p>
+    {% endif %}
     <p class="help-text">Raw provider field: <code>{{ job.employment_type or '(none reported by provider)' }}</code>
-       · Title/description are also scanned for explicit language (never inferred from silence).</p>
+       · Posting-page JobPosting JSON-LD: <code>{{ job.employment_type_page_evidence_raw or '(none found / not yet checked)' }}</code>
+       · Title/description are also scanned for explicit language (never inferred from silence, never from salary/benefits/location alone).</p>
   </section>
 
   <section class="surface surface-pad" id="application-execution">

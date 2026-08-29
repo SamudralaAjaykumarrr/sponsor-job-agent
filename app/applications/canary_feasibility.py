@@ -18,9 +18,11 @@ wrapper over an EXISTING function/table:
                              (the same optional, genuine-evidence-only hook
                              CLAUDE.md's Real Provider Execution V1 rules
                              already define) + `job.application_state`.
-  - `employment_type`     -> app.matching.employment_type.classify_employment_type
-                             -- the SAME function app.applications.eligibility's
-                             executor gate calls; this can never silently
+  - `employment_type`     -> app.matching.employment_type.resolve_employment_type_evidence
+                             (Employment Type Evidence Hardening V1) -- reads the SAME
+                             underlying token scan app.applications.eligibility's executor
+                             gate's classify_employment_type() uses, plus a third,
+                             evidence-based JobPosting JSON-LD source; this can never silently
                              diverge from that gate's own classification.
   - `sponsorship`         -> reads the job's OWN already-decided
                              `sponsorship_status` (app.sponsorship.decision's
@@ -74,7 +76,8 @@ from app.applications.execution_contract import build_contract
 from app.applications.provider_registry import get_application_provider
 from app.applications import provider_health
 from app.db import db_session
-from app.matching.employment_type import classify_employment_type
+from app.applications.employment_type_evidence import refresh_page_evidence
+from app.matching.employment_type import resolve_employment_type_evidence
 from app.matching.geography import is_us_location
 from app.matching.roles import is_target_role
 from app.matching.seniority import evaluate_seniority
@@ -206,12 +209,31 @@ def _posting_health(job: Job) -> DimensionResult:
 
 
 def _employment_type(job: Job) -> DimensionResult:
-    classified = classify_employment_type(job.employment_type, job.title, job.description)
-    if classified == EmploymentType.FULL_TIME:
-        return DimensionResult(FeasibilityVerdict.PASS, "classified FULL_TIME")
-    if classified == EmploymentType.UNKNOWN:
-        return DimensionResult(FeasibilityVerdict.REVIEW, "employment type not positively confirmed FULL_TIME")
-    return DimensionResult(FeasibilityVerdict.REJECT, f"classified {classified.value}, not FULL_TIME")
+    """Employment Type Evidence Hardening V1: consults the SAME token scan
+    the executor gate's classify_employment_type() uses, PLUS a bounded,
+    read-only, best-effort fetch of the job's real posting page for genuine
+    schema.org JobPosting JSON-LD `employmentType` evidence -- never a
+    guess, never inferred from salary/benefits/location/title alone. A page
+    fetch failure degrades to whatever page evidence was already persisted
+    (or none) rather than blocking this dimension."""
+    if job.provider == "mock_ats":
+        # Never a real network touchpoint for the deterministic test-fixture
+        # provider -- matches every other module's mock_ats exclusion
+        # (execution_contract.py, presubmit_manifest.py, canary.py, ...).
+        page_raw = job.employment_type_page_evidence_raw
+    else:
+        try:
+            page_raw = refresh_page_evidence(job)
+        except Exception:  # noqa: BLE001 -- a feasibility check must never raise
+            page_raw = job.employment_type_page_evidence_raw
+    decision = resolve_employment_type_evidence(job.employment_type, job.title, job.description, page_raw)
+    provenance = f"{decision.reason} (source: {decision.source.value})"
+    if decision.value == EmploymentType.FULL_TIME:
+        return DimensionResult(FeasibilityVerdict.PASS, f"classified FULL_TIME -- {provenance}")
+    if decision.value == EmploymentType.UNKNOWN:
+        return DimensionResult(FeasibilityVerdict.REVIEW,
+                                f"employment type not positively confirmed FULL_TIME -- {provenance}")
+    return DimensionResult(FeasibilityVerdict.REJECT, f"classified {decision.value.value}, not FULL_TIME -- {provenance}")
 
 
 def _sponsorship(job: Job) -> DimensionResult:

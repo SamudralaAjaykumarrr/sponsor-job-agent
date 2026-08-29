@@ -151,6 +151,17 @@ class Job(BaseModel):
     provider: str = "manual"
     external_job_id: str = ""
     employment_type: str = ""
+
+    # Employment Type Evidence Hardening V1: the RAW schema.org JobPosting
+    # JSON-LD `employmentType` value found on this job's real public posting
+    # page, the last time it was checked (see
+    # app.applications.employment_type_evidence) -- never a cached decision.
+    # app.matching.employment_type.resolve_employment_type_evidence()
+    # recomputes the actual FULL_TIME/.../UNKNOWN decision live from this
+    # plus `employment_type`/`title`/`description` every time it's called.
+    employment_type_page_evidence_raw: str = ""
+    employment_type_page_evidence_checked_at: str = ""
+
     salary_min: Optional[float] = None
     salary_max: Optional[float] = None
     dedup_fingerprint: str = ""
