@@ -118,6 +118,64 @@ python -m app.sponsorship.cli doctor
 python -m app.sponsorship.cli review-queue
 ```
 
+## Public-web LCA-aggregator snapshots (third source, Sponsorship Intelligence Coverage V1)
+
+`app/sponsorship/public_source_importer.py` + `python -m app.sponsorship.cli
+import-public-source`. A THIRD supported source, added because USCIS's
+Employer Data Hub has no job-title/occupation field (see above) -- without
+per-record occupation data, `app.sponsorship.profile` can never set
+`recent_technical=True`, which caps every employer at `historical_strength=
+SOME` and blocks the UNKNOWN -> LIKELY_SPONSOR upgrade path entirely. DOL's
+own OFLC LCA disclosure files carry the needed detail but were not reachable
+over the network available while building this feature (dol.gov and
+foreignlaborcert.doleta.gov returned 403/503 to every fetch attempted).
+
+[h1bdata.info](https://h1bdata.info) is a long-running, public,
+unauthenticated, robots.txt-open mirror of the same DOL LCA disclosure
+records (real per-record job title, worksite, submit/start date, and the
+real DOL case number), searchable by exact employer name. Every row imported
+from it is recorded at `SourceType.OTHER_REPUTABLE_PUBLIC_SOURCE` /
+`SourceQuality.SECONDARY_REPUTABLE` (weight 0.3) -- **never**
+`PRIMARY_GOVERNMENT` -- because it is a third-party re-publication, not a
+government file downloaded directly. `app.sponsorship.doctor` statically
+enforces this (`third_party_source_quality_inflated`).
+
+Same operator-driven, never-live-fetch contract as the two CSV importers: an
+operator saves a company's h1bdata.info employer-search results page to a
+local `.html` file (e.g. `curl -A "Mozilla/5.0" -L
+"https://h1bdata.info/index.php?em=<EXACT+LEGAL+NAME>&job=&city=&year=All+Years"
+-o company.html`) and this importer parses that already-downloaded snapshot.
+
+**Anti-contamination guard**: a search on h1bdata.info can return an
+unrelated company whose name happens to share a word or substring --
+verified live while building this feature: searching `GITLAB` returns real
+LCA rows for **GITLAB FOUNDATION**, a distinct nonprofit, not the GitLab
+Inc. software company. `--employer` (the exact legal-entity name searched
+for) is therefore REQUIRED, and every row is compared against it via
+`normalize_company_name` -- any row whose employer text doesn't match is
+rejected and counted separately, never silently imported under the wrong
+company.
+
+```
+python -m app.sponsorship.cli import-public-source company.html --employer "STRIPE INC" [--dataset-version V]
+```
+
+## Employer identity/alias seeds
+
+`data/sponsorship/employer_alias_seed.json` and
+`data/sponsorship/employer_identity_seed.json` are small, human-curated (not
+guessed/fuzzy-matched) lists verified against real government/public LCA
+records during the Sponsorship Intelligence Coverage V1 build -- e.g. "Ramp
+Business Corporation" (the real legal entity, per USCIS/h1bdata) -> the
+`ramp` registry company (the product brand name). Load with:
+
+```
+python -m app.sponsorship.cli seed-identities   # registry_companies rows for a discovered employer with none yet
+python -m app.sponsorship.cli seed-aliases      # verified legal-name/DBA aliases
+python -m app.sponsorship.cli coverage          # before/after coverage metrics
+python -m app.sponsorship.cli refresh-jobs      # recompute sponsorship_status from current evidence (never touches application_state)
+```
+
 ## Large-data safety
 
 `scripts/sponsorship_benchmark.py` measures streaming import, profile

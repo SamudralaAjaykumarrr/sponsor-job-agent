@@ -16,6 +16,31 @@ def test_clean_database_has_no_serious_issues(tmp_env):
     assert report.serious_count == 0
 
 
+def test_third_party_source_inflated_to_primary_government_detected(tmp_env):
+    with db_session() as conn:
+        conn.execute(
+            "INSERT INTO employer_sponsorship_evidence "
+            "(company_name_raw, source, source_type, source_quality, observed_at, imported_at) "
+            "VALUES ('MirrorCo', 'H1BDATA_INFO_LCA_MIRROR', 'OTHER_REPUTABLE_PUBLIC_SOURCE', "
+            "'PRIMARY_GOVERNMENT', '2024-01-01', '2024-01-01')"
+        )
+    report = run_doctor()
+    assert any(i.check == "third_party_source_quality_inflated" for i in report.issues)
+    assert report.serious_count >= 1
+
+
+def test_correctly_labeled_third_party_source_is_clean(tmp_env):
+    with db_session() as conn:
+        conn.execute(
+            "INSERT INTO employer_sponsorship_evidence "
+            "(company_name_raw, source, source_type, source_quality, observed_at, imported_at) "
+            "VALUES ('MirrorCo2', 'H1BDATA_INFO_LCA_MIRROR', 'OTHER_REPUTABLE_PUBLIC_SOURCE', "
+            "'SECONDARY_REPUTABLE', '2024-01-01', '2024-01-01')"
+        )
+    report = run_doctor()
+    assert not any(i.check == "third_party_source_quality_inflated" for i in report.issues)
+
+
 def test_orphan_evidence_detected(tmp_env):
     with db_session() as conn:
         conn.execute(

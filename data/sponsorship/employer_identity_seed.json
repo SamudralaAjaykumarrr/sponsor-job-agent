@@ -1,0 +1,7 @@
+{
+  "_comment": "Company IDENTITY rows (registry_companies -- normalized_name/display_name/domain only, no sponsorship claim of any kind) for employers already present in the jobs table that had no registry_companies row at all, so app.sponsorship.identity.resolve_company has something to match evidence against. This is identity/registry data, not sponsorship data -- adding a row here makes zero statement about whether the employer sponsors. Domains are the employer's own real, publicly known primary domain. Loaded by app.sponsorship.registry_backfill.seed_missing_employer_identities().",
+  "companies": [
+    {"normalized_name": "anthropic", "display_name": "Anthropic", "primary_domain": "anthropic.com", "careers_home_url": "https://www.anthropic.com/careers", "country": "US"},
+    {"normalized_name": "pump", "display_name": "Pump.co", "primary_domain": "pump.co", "careers_home_url": "https://www.pump.co/careers", "country": "US"}
+  ]
+}
