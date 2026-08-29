@@ -8,6 +8,8 @@ CANDIDATE_DIR = BASE_DIR / "candidate_data"
 
 DB_PATH = DATA_DIR / "app.db"
 KNOWN_SPONSORS_PATH = DATA_DIR / "known_h1b_sponsors.json"
+EMPLOYER_ALIAS_SEED_PATH = DATA_DIR / "sponsorship" / "employer_alias_seed.json"
+EMPLOYER_IDENTITY_SEED_PATH = DATA_DIR / "sponsorship" / "employer_identity_seed.json"
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)

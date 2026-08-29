@@ -49,6 +49,7 @@ def run_doctor() -> DoctorReport:
         _check_confirmed_decision_missing_current_evidence(conn, report)
         _check_no_sponsorship_contradicted_by_state(conn, report)
         _check_pending_identity_review_backlog(conn, report)
+        _check_third_party_source_quality_not_inflated(conn, report)
     return report
 
 
@@ -119,3 +120,19 @@ def _check_pending_identity_review_backlog(conn, report: DoctorReport) -> None:
     if row["c"] > 0:
         report.issues.append(Issue("warning", "pending_identity_review_backlog",
                                     f"{row['c']} employer identity review item(s) awaiting resolution"))
+
+
+def _check_third_party_source_quality_not_inflated(conn, report: DoctorReport) -> None:
+    """A third-party public-web mirror (e.g. h1bdata.info, source_type
+    OTHER_REPUTABLE_PUBLIC_SOURCE) must never be recorded at PRIMARY_GOVERNMENT
+    quality -- only a row genuinely imported straight from a government file
+    (USCIS_EMPLOYER_DATA/DOL_LCA_DATA) may carry that weight (Sponsorship
+    Intelligence Coverage V1)."""
+    rows = conn.execute(
+        "SELECT id, source_quality FROM employer_sponsorship_evidence "
+        "WHERE source_type = 'OTHER_REPUTABLE_PUBLIC_SOURCE' AND source_quality = 'PRIMARY_GOVERNMENT'"
+    ).fetchall()
+    for r in rows:
+        report.issues.append(Issue("serious", "third_party_source_quality_inflated",
+                                    f"evidence id={r['id']} is OTHER_REPUTABLE_PUBLIC_SOURCE but recorded at "
+                                    "PRIMARY_GOVERNMENT quality"))

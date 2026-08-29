@@ -56,6 +56,101 @@ def _print_import_result(result) -> None:
         print(f"  ... and {len(d['errors']) - 50} more errors")
 
 
+def _cmd_import_public_source(args: argparse.Namespace) -> int:
+    from app.sponsorship.public_source_importer import import_h1bdata_snapshot
+    from app.sponsorship.importers import recompute_profiles_for_dataset
+
+    result = import_h1bdata_snapshot(
+        args.path, args.employer, dataset_version=args.dataset_version,
+    )
+    d = result.as_dict()
+    print(f"dataset: {d['dataset_name']} (id={d['dataset_id']}) employer_query='{d['employer_query']}'")
+    print(f"  rows_total:                        {d['rows_total']}")
+    print(f"  rows_created:                      {d['rows_created']}")
+    print(f"  rows_skipped_duplicate:            {d['rows_skipped_duplicate']}")
+    print(f"  rows_rejected_employer_mismatch:   {d['rows_rejected_employer_mismatch']}")
+    if d["rejected_employer_names"]:
+        print(f"    rejected names: {', '.join(d['rejected_employer_names'][:10])}")
+    print(f"  company_id:                        {d['company_id']} (matched_via={d['company_match_via'] or '-'})")
+    if result.company_id is not None:
+        recompute_profiles_for_dataset(result.dataset_id)
+    return 0
+
+
+def _cmd_seed_aliases(_: argparse.Namespace) -> int:
+    from app.sponsorship.aliases import seed_known_aliases
+
+    result = seed_known_aliases()
+    print(f"aliases applied: {result.applied}")
+    if result.skipped_no_company:
+        print(f"  skipped (no registry company): {result.skipped_no_company}")
+    if result.skipped_ambiguous_company:
+        print(f"  skipped (ambiguous registry company): {result.skipped_ambiguous_company}")
+    return 0
+
+
+def _cmd_seed_identities(_: argparse.Namespace) -> int:
+    from app.sponsorship.registry_backfill import seed_missing_employer_identities
+
+    result = seed_missing_employer_identities()
+    print(f"companies created: {result.created}")
+    if result.already_present:
+        print(f"  already present: {result.already_present}")
+    return 0
+
+
+def _cmd_coverage(_: argparse.Namespace) -> int:
+    from app.sponsorship.coverage import coverage_snapshot
+
+    snap = coverage_snapshot()
+    print("Sponsorship evidence coverage (real discovered employers only):")
+    print(f"  employers_total:                {snap['employers_total']}")
+    print(f"  employers_matched_to_evidence:  {snap['employers_matched_to_evidence']}")
+    print(f"  employers_unmatched:            {snap['employers_unmatched']}")
+    print(f"  employers_ambiguous:            {snap['employers_ambiguous']}")
+    print(f"  identity_reviews_pending:       {snap['identity_reviews_pending']}")
+    print(f"  jobs_total:                     {snap['jobs_total']}")
+    print(f"  jobs_confirmed_sponsor:         {snap['jobs_confirmed_sponsor']}")
+    print(f"  jobs_likely_sponsor:            {snap['jobs_likely_sponsor']}")
+    print(f"  jobs_unknown:                   {snap['jobs_unknown']}")
+    print(f"  jobs_no_sponsorship:            {snap['jobs_no_sponsorship']}")
+    if snap["unmatched_employer_names"]:
+        print(f"  unmatched: {snap['unmatched_employer_names']}")
+    if snap["ambiguous_employer_names"]:
+        print(f"  ambiguous: {snap['ambiguous_employer_names']}")
+    return 0
+
+
+def _real_job_ids(args: argparse.Namespace) -> list[int]:
+    """--job-ids if given, else every real (non-fixture, non-Acme-Corp) job id."""
+    if args.job_ids:
+        return list(args.job_ids)
+    from app.db import db_session
+
+    with db_session() as conn:
+        rows = conn.execute(
+            "SELECT id FROM jobs WHERE is_test_fixture = 0 AND company != 'Acme Corp' ORDER BY id"
+        ).fetchall()
+    return [r["id"] for r in rows]
+
+
+def _cmd_refresh_jobs(args: argparse.Namespace) -> int:
+    from app.sponsorship.refresh import refresh_job_sponsorship
+
+    changed = 0
+    for job_id in _real_job_ids(args):
+        if job_id in args.exclude:
+            print(f"  job={job_id}: excluded, skipped")
+            continue
+        outcome = refresh_job_sponsorship(job_id)
+        marker = "CHANGED" if outcome.changed else "unchanged"
+        print(f"  job={job_id}: {outcome.previous_status.value} -> {outcome.new_status.value} ({marker})")
+        if outcome.changed:
+            changed += 1
+    print(f"{changed} job(s) changed status")
+    return 0
+
+
 def _cmd_datasets(_: argparse.Namespace) -> int:
     from app.sponsorship.datasets import list_datasets
 
@@ -142,6 +237,33 @@ def build_parser() -> argparse.ArgumentParser:
     p_lca.add_argument("--resume", action="store_true")
     p_lca.add_argument("--allow-invalid", action="store_true")
     p_lca.set_defaults(func=_cmd_import_dol_lca)
+
+    p_public = sub.add_parser(
+        "import-public-source",
+        help="import an already-downloaded h1bdata.info employer-search HTML snapshot",
+    )
+    p_public.add_argument("path")
+    p_public.add_argument("--employer", required=True, help="exact legal-entity name the snapshot was searched for")
+    p_public.add_argument("--dataset-version", default="")
+    p_public.set_defaults(func=_cmd_import_public_source)
+
+    p_seed_aliases = sub.add_parser("seed-aliases", help="load the verified employer alias seed file")
+    p_seed_aliases.set_defaults(func=_cmd_seed_aliases)
+
+    p_seed_identities = sub.add_parser(
+        "seed-identities", help="load the verified employer registry-identity seed file",
+    )
+    p_seed_identities.set_defaults(func=_cmd_seed_identities)
+
+    p_coverage = sub.add_parser("coverage", help="print sponsorship-evidence coverage metrics")
+    p_coverage.set_defaults(func=_cmd_coverage)
+
+    p_refresh = sub.add_parser(
+        "refresh-jobs", help="recompute sponsorship_status for jobs using current evidence (never touches application_state)",
+    )
+    p_refresh.add_argument("--job-ids", type=int, nargs="*", default=[], help="specific job ids (default: every real job)")
+    p_refresh.add_argument("--exclude", type=int, nargs="*", default=[], help="job ids to skip entirely")
+    p_refresh.set_defaults(func=_cmd_refresh_jobs)
 
     p_datasets = sub.add_parser("datasets", help="list imported datasets")
     p_datasets.set_defaults(func=_cmd_datasets)

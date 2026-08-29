@@ -1,0 +1,12 @@
+{
+  "_comment": "Verified legal-name aliases for currently-discovered employers whose real government/public LCA filing records use a legal entity name that app.registry.normalize's suffix-stripping does not reduce to the registry's brand-name normalized_name (e.g. 'Ramp Business Corporation' vs registry brand 'Ramp'). Every entry here was confirmed against real USCIS H-1B Employer Data Hub (FY2021-2024) and/or h1bdata.info LCA records during the sponsorship-intelligence-coverage-v1 build -- this is NOT a guess/fuzzy-match list. Loaded by app.sponsorship.aliases.seed_known_aliases(). Extend only with a similarly verified real legal-name mapping; never add an entry to force a company toward a particular sponsorship outcome.",
+  "aliases": [
+    {"registry_normalized_name": "robinhood", "alias": "Robinhood Markets Inc", "alias_type": "LEGAL_NAME", "source": "USCIS H-1B Employer Data Hub / h1bdata.info", "confidence": 95},
+    {"registry_normalized_name": "instacart", "alias": "Maplebear Inc", "alias_type": "LEGAL_NAME", "source": "USCIS H-1B Employer Data Hub / h1bdata.info", "confidence": 95},
+    {"registry_normalized_name": "instacart", "alias": "Maplebear Inc D/B/A Instacart", "alias_type": "DBA", "source": "USCIS H-1B Employer Data Hub", "confidence": 95},
+    {"registry_normalized_name": "ramp", "alias": "Ramp Business Corporation", "alias_type": "LEGAL_NAME", "source": "USCIS H-1B Employer Data Hub / h1bdata.info", "confidence": 95},
+    {"registry_normalized_name": "notion", "alias": "Notion Labs Inc", "alias_type": "LEGAL_NAME", "source": "USCIS H-1B Employer Data Hub / h1bdata.info", "confidence": 95},
+    {"registry_normalized_name": "anthropic", "alias": "Anthropic PBC", "alias_type": "LEGAL_NAME", "source": "USCIS H-1B Employer Data Hub / h1bdata.info", "confidence": 95},
+    {"registry_normalized_name": "anthropic", "alias": "Anthropic PBC D/B/A Anthropic Inc", "alias_type": "DBA", "source": "USCIS H-1B Employer Data Hub", "confidence": 95}
+  ]
+}
