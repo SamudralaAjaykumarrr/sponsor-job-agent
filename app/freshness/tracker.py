@@ -46,3 +46,23 @@ def compute_freshness(published_at: str | None, first_seen_at: str, now: datetim
     if age_minutes <= 1440:
         return FreshnessTier.MODERATE
     return FreshnessTier.LOWER
+
+
+# Tsenta-parity-closure-v1, P1: the plain-language label for each tier --
+# app.main registers freshness_label() as a Jinja filter so
+# dashboard.html's job table never renders the raw FreshnessTier enum name
+# (e.g. "HIGHEST") directly, matching app.applications.cta's existing
+# "never leak a raw internal enum" rule extended to this one remaining
+# template that didn't yet follow it.
+FRESHNESS_TIER_LABELS: dict[FreshnessTier, str] = {
+    FreshnessTier.MAXIMUM: "Just posted",
+    FreshnessTier.VERY_HIGH: "Very fresh",
+    FreshnessTier.HIGH: "Fresh",
+    FreshnessTier.MODERATE: "A day old",
+    FreshnessTier.LOWER: "Older",
+}
+
+
+def freshness_label(tier: FreshnessTier | str) -> str:
+    tier_enum = tier if isinstance(tier, FreshnessTier) else FreshnessTier(tier)
+    return FRESHNESS_TIER_LABELS.get(tier_enum, "Unknown")

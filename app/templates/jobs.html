@@ -59,6 +59,8 @@
   </div>
   <div class="chip-row">
     <a class="chip {{ 'is-active' if filters.high_priority else '' }}" href="?high_priority=true">High priority</a>
+    <a class="chip {{ 'is-active' if filters.fresh_under_1hr else '' }}" href="?fresh_under_1hr=true">Fresh &lt; 1hr</a>
+    <a class="chip {{ 'is-active' if filters.fresh_under_6hr else '' }}" href="?fresh_under_6hr=true">Fresh &lt; 6hr</a>
     <a class="chip {{ 'is-active' if not filters.full_time_only else '' }}" href="?full_time_only=false">Include non-full-time (audit)</a>
     <a class="chip" href="/jobs">Clear filters</a>
   </div>

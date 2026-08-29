@@ -54,17 +54,28 @@ class ExecutionStatus(str, Enum):
     # to non-eligible, between preparation and the submit attempt. Distinct
     # from PERMANENT_SUBMISSION_FAILURE: no submission request was ever sent.
     JOB_NO_LONGER_ACTIVE = "JOB_NO_LONGER_ACTIVE"
+    # Tsenta-parity-closure-v1, P0#2: the human explicitly says they
+    # finished this application themselves, outside the agent entirely,
+    # after a "READY FOR FINAL REVIEW" hand-off (a provider with no
+    # verified autonomous-submit capability). Deliberately NOT the same
+    # evidentiary tier as APPLIED/SUBMISSION_CONFIRMED -- no receipt is
+    # ever created for it, and it is never treated as a confirmed
+    # submission anywhere (app.applications.product_state.confirmed()
+    # excludes it on purpose). See app.applications.handoff for the one
+    # place this is ever written.
+    USER_COMPLETED_EXTERNALLY = "USER_COMPLETED_EXTERNALLY"
 
 
 # Once an execution reaches one of these, `application_executions.active` is
 # flipped to 0 -- it stops blocking a fresh execution attempt (the partial
 # unique index only guards active=1 rows) and stops being claimable by the
 # queue. WITHDRAWN/APPLIED/DUPLICATE_APPLICATION_BLOCKED/
-# PERMANENT_SUBMISSION_FAILURE are final. RETRYABLE_SUBMISSION_FAILURE and
-# SUBMISSION_STATUS_UNKNOWN are ALSO terminal for a given execution row (a
-# fresh execution attempt gets its own row -- CLAUDE.md section 33/37 "do
-# NOT blindly retry" means retry is always a new, explicit, reconciled
-# attempt, never resuming the same row in place).
+# PERMANENT_SUBMISSION_FAILURE/USER_COMPLETED_EXTERNALLY are final.
+# RETRYABLE_SUBMISSION_FAILURE and SUBMISSION_STATUS_UNKNOWN are ALSO
+# terminal for a given execution row (a fresh execution attempt gets its
+# own row -- CLAUDE.md section 33/37 "do NOT blindly retry" means retry is
+# always a new, explicit, reconciled attempt, never resuming the same row
+# in place).
 TERMINAL_STATUSES = frozenset({
     ExecutionStatus.APPLIED,
     ExecutionStatus.SUBMISSION_FAILED,
@@ -72,6 +83,7 @@ TERMINAL_STATUSES = frozenset({
     ExecutionStatus.DUPLICATE_APPLICATION_BLOCKED,
     ExecutionStatus.WITHDRAWN,
     ExecutionStatus.JOB_NO_LONGER_ACTIVE,
+    ExecutionStatus.USER_COMPLETED_EXTERNALLY,
 })
 
 # NEEDS_USER_ACTION/VALIDATION_REQUIRED/SUBMISSION_STATUS_UNKNOWN are

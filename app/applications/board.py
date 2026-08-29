@@ -31,7 +31,7 @@ BUCKET_LABELS: dict[str, str] = {
     BUCKET_ISSUES: "Issues",
 }
 
-_SUBMITTED_STAGES = frozenset({ProductStage.SUBMITTED, ProductStage.CONFIRMED})
+_SUBMITTED_STAGES = frozenset({ProductStage.SUBMITTED, ProductStage.CONFIRMED, ProductStage.COMPLETED_BY_USER})
 _IN_PROGRESS_STAGES = frozenset({
     ProductStage.DISCOVERED, ProductStage.ELIGIBILITY_CHECKED, ProductStage.JD_ANALYZED,
     ProductStage.RESUME_GENERATING, ProductStage.RESUME_READY, ProductStage.APPLICATION_PREPARING,

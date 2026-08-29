@@ -43,6 +43,7 @@ from app.applications import blockers as applications_blockers
 from app.applications import board as applications_board
 from app.applications import demo as applications_demo
 from app.applications import presubmit_manifest
+from app.applications import handoff as applications_handoff
 from app.candidate.profile import load_profile, missing_fields
 from app.config import BASE_DIR
 from app.db import init_db
@@ -161,6 +162,8 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title="Sponsor Job Agent", lifespan=lifespan)
 templates = Jinja2Templates(directory=str(BASE_DIR / "app" / "templates"))
+from app.freshness.tracker import freshness_label as _freshness_label
+templates.env.filters["freshness_label"] = _freshness_label
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "app" / "static")), name="static")
 
 
@@ -289,16 +292,25 @@ def jobs_page(
     resume_status: str = "",
     high_priority: bool = False,
     full_time_only: bool = True,
+    fresh_under_1hr: bool = False,
+    fresh_under_6hr: bool = False,
 ):
     """Dedicated Jobs browser: search + the same filter axes as the
     Dashboard's pipeline table, rendered as product cards (CLAUDE.md premium
     UI brief). Shares app.pipeline_dashboard.build_job_rows() with the
-    Dashboard route -- never a second, duplicate row-building implementation."""
+    Dashboard route -- never a second, duplicate row-building implementation.
+
+    Tsenta-parity-closure-v1, P1: fresh_under_1hr/fresh_under_6hr were
+    already fully supported by app.jobs_repo.list_jobs()'s filter dict (the
+    Dashboard already exposed them) -- this route just wires the same two
+    query params/chips in here too, matching the Dashboard exactly."""
     filters = {
         "work_arrangement": work_arrangement or None,
         "sponsorship_status": sponsorship_status or None,
         "application_state": application_state or None,
         "high_priority": high_priority or None,
+        "fresh_under_1hr": fresh_under_1hr or None,
+        "fresh_under_6hr": fresh_under_6hr or None,
     }
     row_data = pipeline_dashboard.build_job_rows(
         filters, full_time_only=full_time_only, resume_status=resume_status,
@@ -314,6 +326,7 @@ def jobs_page(
                 "q": q, "work_arrangement": work_arrangement, "sponsorship_status": sponsorship_status,
                 "application_state": application_state, "resume_status": resume_status,
                 "high_priority": high_priority, "full_time_only": full_time_only,
+                "fresh_under_1hr": fresh_under_1hr or None, "fresh_under_6hr": fresh_under_6hr or None,
             },
         },
     )
@@ -1075,8 +1088,9 @@ def api_resume_optimizer_metrics():
 # --- Phase 8: safe ATS application executor ---------------------------------
 
 _APPLICATIONS_TABS = [
-    ("", "All"), ("ready", "Ready to Apply"), ("needs_action", "Needs Action"),
-    ("submitting", "Applying"), ("applied", "Applied"), ("failed", "Failed"), ("skipped", "Skipped"),
+    ("", "All"), ("ready", "Ready to Apply"), ("approved", "Ready for Final Review"), ("needs_action", "Needs Action"),
+    ("submitting", "Applying"), ("applied", "Applied"), ("completed_by_user", "Completed by You"),
+    ("failed", "Failed"), ("skipped", "Skipped"),
 ]
 
 
@@ -1102,7 +1116,10 @@ def applications_page(
     # "in_flight" convenience union, which would double-count against
     # "ready"/"submitting" etc).
     tab_counts[""] = sum(
-        tab_counts.get(b, 0) for b in ("ready", "approved", "queued", "preparing", "submitting", "needs_action", "applied", "failed")
+        tab_counts.get(b, 0) for b in (
+            "ready", "approved", "queued", "preparing", "submitting", "needs_action", "applied",
+            "completed_by_user", "failed",
+        )
     ) + tab_counts["skipped"]
 
     job_ids = [r["job_id"] for r in rows if r.get("job_id") is not None]
@@ -1326,6 +1343,7 @@ def application_detail_page(request: Request, execution_id: str):
     # on every ordinary page load; the CLI remains the way to force a fresh
     # provider-form check when actually needed.
     final_review = presubmit_manifest.build_manifest(job.id, discover_form=False)
+    ready_for_final_review = applications_handoff.is_ready_for_final_review(execution)
 
     return templates.TemplateResponse(
         request, "application_detail.html",
@@ -1337,6 +1355,7 @@ def application_detail_page(request: Request, execution_id: str):
             "current_variant": current_variant, "quality_report": quality_row["report"] if quality_row else None,
             "jd_analysis": jd_analysis_row,
             "final_review": final_review.as_dict() if final_review else None,
+            "ready_for_final_review": ready_for_final_review,
             "auto_submit_enabled": config.AUTO_SUBMIT_ENABLED,
             # Advanced/debug section (section C): technical identifiers only
             # -- never a raw lifecycle-state enum (execution.status/
@@ -1556,6 +1575,28 @@ def execution_reconcile(
     if not result.ok:
         raise HTTPException(400, result.detail)
     return RedirectResponse(url=f"/jobs/{execution['job_id']}", status_code=303)
+
+
+@app.post("/executions/{execution_id}/handoff-outcome")
+def execution_handoff_outcome(
+    execution_id: str, outcome: str = Form(...), confirmation_id: str = Form(""),
+    confirmation_url: str = Form(""), note: str = Form(""),
+):
+    """Tsenta-parity-closure-v1, P0#2: the one action a human takes after
+    using "Open Application / Continue Manually" from the READY FOR FINAL
+    REVIEW hand-off, to tell the app what happened. See
+    app.applications.handoff.record_manual_outcome for the full contract --
+    never fabricates a receipt/confirmation, never marks APPLIED without a
+    confirmation id/URL the human supplies themselves."""
+    execution = applications_repo.get_execution(execution_id)
+    if execution is None:
+        raise HTTPException(404, "execution not found")
+    result = applications_handoff.record_manual_outcome(
+        execution_id, outcome, confirmation_id=confirmation_id, confirmation_url=confirmation_url, note=note,
+    )
+    if not result.ok:
+        raise HTTPException(400, result.detail)
+    return RedirectResponse(url=f"/applications/{execution_id}/detail#detail-final-review", status_code=303)
 
 
 @app.get("/applications/browser-sessions", response_class=HTMLResponse)

@@ -199,6 +199,51 @@
   <h2>Final Review</h2>
   <p class="faint">A snapshot of everything that would be checked before a real submission could ever happen. This
     page never submits anything by itself.</p>
+
+  {% if ready_for_final_review %}
+  <div class="banner banner-warn" style="margin-bottom:1rem;">
+    <strong>READY FOR FINAL REVIEW</strong> — we've prepared everything we safely can for this application, but
+    this employer's platform hasn't earned verified autonomous-submit capability, so final submission is always
+    your call. Open the application below, finish it yourself, then tell us what happened so we can keep an
+    accurate record and the agent can move on to your other applications.
+  </div>
+  <div class="btn-row" style="margin-bottom:1rem;">
+    {% if final_review and final_review.canonical_url %}
+    <a class="btn btn-primary" href="{{ final_review.canonical_url }}" target="_blank" rel="noopener">Open Application / Continue Manually</a>
+    {% endif %}
+    <a class="btn" href="/">Resume Agent (keep working on other jobs)</a>
+  </div>
+  <form method="post" action="/executions/{{ execution.execution_id }}/handoff-outcome">
+    <div class="field-row">
+      <div class="field">
+        <label for="handoff-outcome">What happened?</label>
+        <select id="handoff-outcome" name="outcome">
+          <option value="USER_COMPLETED_EXTERNALLY">I completed it myself (no confirmation to share)</option>
+          <option value="SUBMITTED_CONFIRMED">I submitted it and have a confirmation</option>
+          <option value="NOT_SUBMITTED">I did not submit it</option>
+          <option value="SUBMISSION_STATUS_UNKNOWN">I'm not sure what happened</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="handoff-confirmation-id">Confirmation id (only if you submitted and have one)</label>
+        <input type="text" id="handoff-confirmation-id" name="confirmation_id">
+      </div>
+      <div class="field">
+        <label for="handoff-confirmation-url">Confirmation link (optional)</label>
+        <input type="text" id="handoff-confirmation-url" name="confirmation_url">
+      </div>
+    </div>
+    <div class="field">
+      <label for="handoff-note">Note (optional)</label>
+      <input type="text" id="handoff-note" name="note">
+    </div>
+    <button class="btn btn-primary" type="submit">Record Outcome</button>
+  </form>
+  <p class="faint" style="margin-top:0.5rem;">We never mark this APPLIED just because you opened the form — only
+    when you tell us you submitted it (with a confirmation, if you have one), or when we independently observe a
+    real confirmation ourselves.</p>
+  {% endif %}
+
   {% if not final_review %}
   <p class="faint">Not available for this job.</p>
   {% else %}

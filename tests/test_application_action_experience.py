@@ -109,10 +109,10 @@ def test_applications_page_shows_approve_and_apply_cta(tmp_env, sample_profile):
 
 
 # --- H: a real provider with genuine form-fill support but no verified
-#        final-submission capability shows CONTINUE APPLICATION, never a
+#        final-submission capability shows READY FOR FINAL REVIEW, never a
 #        fake APPLIED, everywhere the CTA is rendered.
 
-def test_unsupported_final_submission_provider_shows_continue_application_everywhere(tmp_env, sample_profile):
+def test_unsupported_final_submission_provider_shows_ready_for_final_review_everywhere(tmp_env, sample_profile):
     save_profile(sample_profile)
 
     fixture_payload = {
@@ -147,18 +147,18 @@ def test_unsupported_final_submission_provider_shows_continue_application_everyw
         assert approve_resp.status_code == 303
 
         job_detail = client.get(f"/jobs/{job.id}")
-        assert "CONTINUE APPLICATION" in job_detail.text
+        assert "READY FOR FINAL REVIEW" in job_detail.text
         assert "APPLIED ✓" not in job_detail.text
         assert "not verified for this provider" in job_detail.text
 
         jobs_page = client.get("/jobs")
-        assert "CONTINUE APPLICATION" in jobs_page.text
+        assert "READY FOR FINAL REVIEW" in jobs_page.text
 
         applications_page = client.get("/applications", params={"bucket": "approved"})
-        assert "CONTINUE APPLICATION" in applications_page.text
+        assert "READY FOR FINAL REVIEW" in applications_page.text
 
         api_status = client.get(f"/api/jobs/{job.id}/apply-status").json()
-        assert api_status["cta"]["label"] == "CONTINUE APPLICATION"
+        assert api_status["cta"]["label"] == "READY FOR FINAL REVIEW"
         assert api_status["cta"]["style"] == "secondary"
     finally:
         provider_registry._PROVIDERS["greenhouse"] = original_provider

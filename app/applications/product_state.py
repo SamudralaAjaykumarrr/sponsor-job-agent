@@ -51,6 +51,11 @@ class ProductStage(str, Enum):
     # generic NEEDS_USER_INPUT stage, and never surfaced via a blocker row
     # (RATE_LIMITED is deliberately unmapped in app.applications.blockers).
     APPLICATION_LIMIT_REACHED = "APPLICATION_LIMIT_REACHED"
+    # Tsenta-parity-closure-v1: the human said, after a READY FOR FINAL
+    # REVIEW hand-off, that they finished this application themselves.
+    # Deliberately never grouped with CONFIRMED -- see
+    # app.applications.models.ExecutionStatus.USER_COMPLETED_EXTERNALLY.
+    COMPLETED_BY_USER = "COMPLETED_BY_USER"
 
 
 # Genuine blockers only (spec section 15: "Do NOT use Needs Action merely
@@ -86,6 +91,7 @@ _EXEC_TO_STAGE: dict[str, ProductStage] = {
     ExecutionStatus.DUPLICATE_APPLICATION_BLOCKED.value: ProductStage.TRACKING,
     ExecutionStatus.WITHDRAWN.value: ProductStage.TRACKING,
     ExecutionStatus.JOB_NO_LONGER_ACTIVE.value: ProductStage.TRACKING,
+    ExecutionStatus.USER_COMPLETED_EXTERNALLY.value: ProductStage.COMPLETED_BY_USER,
 }
 
 # NEEDS_USER_ACTION carries a specific reason via validation.policy_reasons
@@ -122,6 +128,7 @@ _STAGE_LABELS: dict[ProductStage, str] = {
     ProductStage.UNSUPPORTED_SUBMISSION: "Manual submission required",
     ProductStage.SKIPPED: "Skipped",
     ProductStage.APPLICATION_LIMIT_REACHED: "Application limit reached",
+    ProductStage.COMPLETED_BY_USER: "Completed by you",
 }
 
 

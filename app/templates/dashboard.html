@@ -323,7 +323,7 @@ window.submitBulkApprove = function (evt) {
       <tr>
         <td>{{ job.company }}{% if job.is_test_fixture %} <span class="tag tag-test">TEST</span>{% endif %}</td>
         <td>{{ job.title }}</td>
-        <td>{{ job.freshness_tier.value }}{% if job.freshness_minutes is not none %} (~{{ "%.0f"|format(job.freshness_minutes) }}m){% endif %}</td>
+        <td>{{ job.freshness_tier | freshness_label }}{% if job.freshness_minutes is not none %} (~{{ "%.0f"|format(job.freshness_minutes) }}m){% endif %}</td>
         <td><span class="tag tag-{{ job.work_arrangement.value.lower() }}">{{ job.work_arrangement.value }}</span></td>
         <td><span class="tag {{ 'tag-good' if row.employment_classified == 'FULL_TIME' else ('tag-bad' if row.employment_classified not in ('FULL_TIME', 'UNKNOWN') else 'tag-neutral') }}">{{ row.employment_classified }}</span>
           {% if job.employment_type %}<br><span class="faint">raw: {{ job.employment_type }}</span>{% endif %}</td>

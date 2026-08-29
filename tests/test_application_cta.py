@@ -66,11 +66,24 @@ def test_submission_ready_is_the_one_primary_approve_cta():
     assert cta.action == {"type": "approve", "job_id": 42, "href": "/jobs/42/applications/approve"}
 
 
-def test_approved_without_browser_session_shows_continue_application():
+def test_approved_without_browser_session_shows_ready_for_final_review():
     cta = compute_apply_cta(1, None, execution=_exec(ExecutionStatus.APPROVED))
     assert cta.style == STYLE_SECONDARY
-    assert cta.label == "CONTINUE APPLICATION"
+    assert cta.label == "READY FOR FINAL REVIEW"
     assert "not verified" in cta.reason
+
+
+def test_browser_session_unsupported_submission_pause_shows_ready_for_final_review():
+    """Tsenta-parity-closure-v1 regression: a real gap the audit found --
+    PAUSED_UNSUPPORTED_SUBMISSION/PAUSED_PLATFORM_RESTRICTED used to fall
+    into the generic paused-session branch and show the misleading
+    "ANSWER & CONTINUE" label, even though there is no question to answer --
+    only a provider capability that hasn't been earned."""
+    for status in (BrowserSessionStatus.PAUSED_UNSUPPORTED_SUBMISSION, BrowserSessionStatus.PAUSED_PLATFORM_RESTRICTED):
+        session = {"session_id": "s1", "status": status.value}
+        cta = compute_apply_cta(1, None, execution=_exec(ExecutionStatus.APPROVED), browser_session=session)
+        assert cta.label == "READY FOR FINAL REVIEW"
+        assert "not verified" in cta.reason
 
 
 def test_approved_with_active_browser_session_shows_filling():

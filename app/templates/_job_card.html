@@ -7,7 +7,7 @@
       <div class="jc-role">{{ job.title }}</div>
       <div class="jc-company">{{ job.company }}{% if job.is_test_fixture %} <span class="tag tag-test">TEST</span>{% endif %}</div>
       <div class="jc-loc">{{ job.location or 'Location not specified' }}
-        · {{ job.freshness_tier.value }}{% if job.freshness_minutes is not none %} (~{{ "%.0f"|format(job.freshness_minutes) }}m){% endif %}</div>
+        · {{ job.freshness_tier | freshness_label }}{% if job.freshness_minutes is not none %} (~{{ "%.0f"|format(job.freshness_minutes) }}m){% endif %}</div>
     </div>
     <a class="btn btn-sm btn-ghost" href="/jobs/{{ job.id }}">View</a>
   </div>
