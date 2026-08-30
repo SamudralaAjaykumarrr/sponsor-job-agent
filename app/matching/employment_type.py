@@ -46,27 +46,33 @@ _NEGATIVE_TYPE_SIGNALS: list[tuple[EmploymentType, tuple[str, ...]]] = [
 ]
 
 
-def _scan_signal(text: str) -> Optional[EmploymentType]:
+def _scan_signal(text: str, *, allow_bare_contract: bool = True) -> Optional[EmploymentType]:
     """Shared token scan used by BOTH classify_employment_type() (unchanged
     contract, below) and the newer resolve_employment_type_evidence() --
     the one and only place negative/positive keyword tokens are matched, so
     the two functions can never silently diverge on what counts as a
-    signal. Returns None (no signal / abstain), never a guess."""
+    signal. Returns None (no signal / abstain), never a guess.
+
+    `allow_bare_contract=False` drops the bare "contract" catch-all token
+    (the last, least specific entry of the CONTRACT tuple) from the scan.
+    Both call sites pass False when scanning free-text JD body prose: a
+    bare "contract" is only a reliable signal on a short, authoritative
+    STRUCTURED field (a provider literally reporting "Contract"), never
+    inside a paragraph, where the word routinely appears in senses that
+    have nothing to do with employment type -- "smart contract(s)"
+    (blockchain/crypto terminology) and "API/service contract governance"
+    are two real cases caught live (canary-candidate preflight and a
+    subsequent integrity re-screen) that each silently misclassified an
+    ordinary full-time posting as CONTRACT. The more specific multi-word
+    phrases ("contract-to-hire", "contract position", "contract role",
+    "this is a contract", "w2 contract", "contractor") remain active in
+    free text either way -- they are specific enough to stay reliable."""
     lower = (text or "").strip().lower()
     if not lower:
         return None
-    # Real bug caught live during canary-candidate preflight: the bare
-    # "contract" catch-all token (last entry of the CONTRACT tuple, meant to
-    # cover a raw structured field or a plain-English "the role is a
-    # contract" sentence) also fires on "smart contract(s)" -- ordinary
-    # blockchain/crypto-industry terminology with nothing to do with
-    # employment type, e.g. a Web3 team's JD saying "familiarity with smart
-    # contracts" silently misclassified an otherwise-ordinary full-time
-    # corporate posting as CONTRACT. Strip that specific phrase before the
-    # scan; every other "contract" phrase (raw "Contract", "contract
-    # position", "the role is a contract", etc.) is unaffected.
-    lower = lower.replace("smart contract", "")
     for etype, tokens in _NEGATIVE_TYPE_SIGNALS:
+        if etype == EmploymentType.CONTRACT and not allow_bare_contract:
+            tokens = tuple(t for t in tokens if t != "contract")
         if any(tok in lower for tok in tokens):
             return etype
     if any(tok in lower for tok in _STRUCTURED_FULL_TIME_TOKENS):
@@ -91,10 +97,10 @@ def classify_employment_type(employment_type_raw: str, title: str = "", descript
     contract. Employment Type Evidence Hardening V1 adds a separate, richer
     function below (resolve_employment_type_evidence) rather than changing
     this one, precisely so nothing here is disturbed."""
-    raw_signal = _scan_signal(employment_type_raw)
+    raw_signal = _scan_signal(employment_type_raw, allow_bare_contract=True)
     if raw_signal is not None:
         return raw_signal
-    text_signal = _scan_signal(f"{title or ''} {description or ''}")
+    text_signal = _scan_signal(f"{title or ''} {description or ''}", allow_bare_contract=False)
     return text_signal if text_signal is not None else EmploymentType.UNKNOWN
 
 
@@ -219,9 +225,9 @@ def resolve_employment_type_evidence(
     "contract" -- those are simply never inputs to this function at all."""
     jd_text = f"{title or ''} {description or ''}".strip()
     votes: list[tuple[EmploymentTypeEvidenceSource, str, Optional[EmploymentType]]] = [
-        (EmploymentTypeEvidenceSource.JD_TEXT, jd_text, _scan_signal(jd_text)),
+        (EmploymentTypeEvidenceSource.JD_TEXT, jd_text, _scan_signal(jd_text, allow_bare_contract=False)),
         (EmploymentTypeEvidenceSource.PROVIDER_STRUCTURED, (employment_type_raw or "").strip(),
-         _scan_signal(employment_type_raw)),
+         _scan_signal(employment_type_raw, allow_bare_contract=True)),
         (EmploymentTypeEvidenceSource.STRUCTURED_PAGE_JSONLD, (structured_page_value or "").strip(),
          normalize_structured_page_employment_type(structured_page_value)),
     ]
