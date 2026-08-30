@@ -86,6 +86,31 @@ def captcha_page(tmp_path: Path) -> str:
     """))
 
 
+# --- Reliable Human-Handoff V1: solved-vs-unsolved CAPTCHA state ------------
+#
+# A real live handoff against Robinhood's Greenhouse posting caught this:
+# the widget's own container element (`<div class="g-recaptcha">`) never
+# disappears once rendered, whether the challenge is still blocking or a
+# human already solved it -- only the standard hidden response-token field
+# (populated ONLY once solved, by every mainstream provider) distinguishes
+# the two states. These fixtures include the identity JSON-LD block so they
+# can be opened directly via browser_runtime.open_session() with matching
+# expected_title/expected_company.
+def captcha_page_with_identity(tmp_path: Path, *, solved: bool = False,
+                                response_field: str = "g-recaptcha-response") -> str:
+    response_value = "fake-solved-token-abc123" if solved else ""
+    body = _jsonld_block() + textwrap.dedent(f"""
+        <form>
+          <label for="fname">Full Name</label><input id="fname" name="full_name" type="text">
+          <div class="g-recaptcha" data-sitekey="fake-test-key">Please verify you are human (captcha).</div>
+          <textarea id="{response_field}" name="{response_field}" style="display:none">{response_value}</textarea>
+          <button type="submit">Submit Application</button>
+        </form>
+    """)
+    name = f"captcha_identity_{'solved' if solved else 'unsolved'}_{response_field.replace('-', '_')}.html"
+    return _write(tmp_path, name, body)
+
+
 def legal_question_page(tmp_path: Path) -> str:
     return _write(tmp_path, "legal.html", _jsonld_block() + textwrap.dedent("""
         <form>

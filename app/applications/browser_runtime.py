@@ -674,6 +674,37 @@ class _LiveSession:
             or page.locator("[class*='captcha' i]").count() > 0
             or page.locator("[id*='captcha' i]").count() > 0
         )
+        # Reliable Human-Handoff V1: a captcha widget's own container
+        # element (the signal above) never disappears once rendered -- it
+        # stays in the DOM permanently, whether the challenge is still
+        # blocking or the human already solved it. A real live handoff
+        # against Robinhood's Greenhouse posting caught exactly this: after
+        # the human genuinely completed the CAPTCHA, rediscovery still
+        # reported CAPTCHA_PRESENT (the widget's `<div class="g-recaptcha">`
+        # container was still there), which drove automation code to treat
+        # a solved challenge as still-blocking. Every mainstream CAPTCHA
+        # provider (reCAPTCHA, hCaptcha, Cloudflare Turnstile) populates a
+        # well-documented, standard hidden response-token field ONLY once
+        # solved -- checking that token is non-empty is the correct,
+        # narrow precision fix (matching the same "pure precision
+        # improvement, not a loosened safety boundary" bar as the Phase 13
+        # fix above): it can only ever turn an OTHERWISE-true `has_captcha`
+        # into "not blocking", never invent a pass when no such token
+        # exists, so a genuinely still-unsolved or token-less/custom
+        # challenge keeps pausing exactly as before.
+        if has_captcha:
+            try:
+                solved = page.evaluate(
+                    """() => {
+                        const val = (sel) => (document.querySelector(sel)?.value || '').trim();
+                        return val('#g-recaptcha-response') !== ''
+                            || val("[name='h-captcha-response']") !== ''
+                            || val("[name='cf-turnstile-response']") !== '';
+                    }"""
+                )
+            except Exception:  # noqa: BLE001
+                solved = False
+            has_captcha = not solved
         if has_captcha:
             provider_health.record_failure(self.provider, provider_health.FailureKind.CAPTCHA,
                                             tenant=self.tenant, site=self.site)
