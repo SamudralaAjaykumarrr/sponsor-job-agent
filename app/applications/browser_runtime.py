@@ -952,10 +952,149 @@ class _LiveSession:
                 target.get_by_label(str(value), exact=False).first.check(timeout=5000)
             elif rtype == "select":
                 target.locator(_selector_for(rf)).select_option(label=str(value), timeout=5000)
+            elif rtype == "combobox":
+                return self._fill_combobox(rf, str(value))
             else:
                 target.locator(_selector_for(rf)).fill(str(value), timeout=5000)
             return True
         except Exception:  # noqa: BLE001 -- one unfillable field must never abort the whole pass
+            return False
+
+    def _discover_owned_listbox(self, target, loc) -> Optional[str]:
+        """Reliable Form Interaction V1: resolves the SPECIFIC listbox a
+        just-clicked combobox owns -- `aria-controls` first (the standard
+        ARIA relationship; react-select-style widgets set this dynamically
+        once expanded), else the nearest ancestor wrapper containing a
+        `role="listbox"` descendant. NEVER a document-wide `[role=option]`
+        search -- a real live bug: an unrelated, already-in-DOM-but-hidden
+        widget (a phone number field's own international-dialing-code
+        picker, which pre-renders ~240 country options off-screen) was
+        picked up by a document-wide option scan and silently selected
+        instead of the actually-clicked combobox's real option ("United
+        States +1" instead of "United States" for the application's
+        address Country field)."""
+        try:
+            aria_controls = loc.get_attribute("aria-controls")
+        except Exception:  # noqa: BLE001
+            aria_controls = None
+        if aria_controls:
+            return f"[id='{_css_attr_escape(aria_controls.split()[0])}']"
+        try:
+            handle = loc.element_handle()
+            if handle is None:
+                return None
+            wrapper_id = target.evaluate(
+                """(el) => {
+                    let node = el;
+                    for (let i = 0; i < 5 && node; i++) {
+                        node = node.parentElement;
+                        if (node && node.querySelector('[role="listbox"]')) {
+                            if (!node.id) node.id = 'sja-wrap-' + Math.random().toString(36).slice(2);
+                            return node.id;
+                        }
+                    }
+                    return null;
+                }""",
+                handle,
+            )
+        except Exception:  # noqa: BLE001
+            wrapper_id = None
+        if wrapper_id:
+            return f"[id='{_css_attr_escape(wrapper_id)}'] [role='listbox']"
+        return None
+
+    def _close_popup(self, loc) -> None:
+        try:
+            loc.press("Escape", timeout=2000)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _clear_typed_value(self, loc) -> None:
+        """Best-effort: resets a combobox's typed-but-unmatched filter text
+        back to blank on a failed selection, so the field honestly shows
+        "not yet answered" rather than a value that looks like a real
+        (wrong) answer someone might mistake for intentional."""
+        try:
+            loc.fill("", timeout=2000)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _fill_combobox(self, rf: dict, value: str) -> bool:
+        """Reliable Form Interaction V1: click-open -> type-filter ->
+        SCOPED option match (within the field's own owned listbox only,
+        see `_discover_owned_listbox`) -> click -> verify the field's own
+        displayed value actually reflects the selection -> close the
+        popup. Never claims success from a mere click/fill not throwing --
+        the post-selection displayed value is the only proof accepted
+        (CLAUDE.md Reliable Form Interaction V1 Phase 3/14: "the final
+        displayed/selected state is the proof")."""
+        target = rf.get("_frame") or self.page
+        try:
+            loc = target.locator(_selector_for(rf))
+            loc.click(timeout=5000)
+            listbox_sel = self._discover_owned_listbox(target, loc)
+            if listbox_sel is None:
+                self._close_popup(loc)
+                return False
+            try:
+                loc.fill(value, timeout=3000)
+            except Exception:  # noqa: BLE001
+                pass  # some comboboxes are click-only, not searchable -- fine
+            options = target.locator(f"{listbox_sel} [role='option']")
+            count = 0
+            for _ in range(3):
+                target.wait_for_timeout(250)
+                count = options.count()
+                if count:
+                    break
+            if count == 0:
+                self._close_popup(loc)
+                self._clear_typed_value(loc)
+                return False
+
+            desired_norm = value.strip().lower()
+            match_idx = None
+            option_texts = []
+            for i in range(count):
+                text = (options.nth(i).inner_text() or "").strip()
+                option_texts.append(text)
+                if text.lower() == desired_norm:
+                    match_idx = i
+                    break
+            if match_idx is None:
+                for i, text in enumerate(option_texts):
+                    tl = text.lower()
+                    if desired_norm in tl or tl in desired_norm:
+                        match_idx = i
+                        break
+            if match_idx is None:
+                # No confident match among the field's OWN rendered options
+                # -- never guess. Also never leave the unmatched typed text
+                # sitting in the field looking like a real (wrong) answer.
+                self._close_popup(loc)
+                self._clear_typed_value(loc)
+                return False
+
+            options.nth(match_idx).click(timeout=5000)
+            target.wait_for_timeout(200)
+
+            try:
+                current = loc.input_value(timeout=2000)
+            except Exception:  # noqa: BLE001
+                current = None
+            try:
+                expanded = loc.get_attribute("aria-expanded", timeout=2000) or ""
+            except Exception:  # noqa: BLE001
+                expanded = ""
+            self._close_popup(loc)
+            if expanded == "true":
+                return False  # popup never closed -- do not claim success
+            if current is not None:
+                cl = current.strip().lower()
+                if desired_norm not in cl and cl not in desired_norm:
+                    return False  # displayed value doesn't reflect our selection
+            return True
+        except Exception:  # noqa: BLE001
             return False
 
     def _upload_one(self, rf: dict, path: str) -> bool:
@@ -1158,11 +1297,32 @@ def _detect_apply_entry_control(page, current_host: str) -> Optional[dict]:
     return best
 
 
+def _css_attr_escape(value: str) -> str:
+    """Escapes a value for use inside a CSS attribute-selector string
+    literal (`[attr='...']`). Only quotes and backslashes need escaping
+    there -- unlike an `#id` selector, an attribute selector never requires
+    special handling for a value that starts with a digit."""
+    return str(value).replace("\\", "\\\\").replace("'", "\\'")
+
+
 def _selector_for(rf: dict) -> str:
+    """Reliable Form Interaction V1: an `id`/`name` is always resolved via
+    an ATTRIBUTE selector (`[id='...']`/`[name='...']`), never `#id` --
+    `#1255` is invalid CSS (an ID selector can't start with a digit without
+    manual escaping), a real bug this fixes (a live Greenhouse "gender
+    identity" field with `id="1255"` threw a Playwright SyntaxError on
+    every fill attempt). When neither is present, the field's own
+    `data-sja-idx` DOM marker (stamped by `_detect_fields()` on the actual
+    element, not a document position) is used -- never the old
+    `:nth-match(...)` positional fallback, which silently re-targets the
+    WRONG field once an earlier interaction (e.g. opening one combobox's
+    listbox) inserts/removes sibling nodes elsewhere on the page."""
     if rf.get("id"):
-        return f"#{rf['id']}"
+        return f"[id='{_css_attr_escape(rf['id'])}']"
     if rf.get("name"):
-        return f"[name='{rf['name']}']"
+        return f"[name='{_css_attr_escape(rf['name'])}']"
+    if rf.get("sja_idx") is not None:
+        return f"[data-sja-idx='{_css_attr_escape(rf['sja_idx'])}']"
     return f":nth-match(input, textarea, select, {rf.get('index', 0) + 1})"
 
 
@@ -1201,7 +1361,26 @@ def _detect_fields(page) -> list[dict]:
     application form itself).
     `page` may also be a Playwright Frame -- both expose `.evaluate()`
     identically, so this same function scans an allowed-host iframe's
-    document too (CLAUDE.md Phase 12 section 14)."""
+    document too (CLAUDE.md Phase 12 section 14).
+
+    Reliable Form Interaction V1: every detected element is also stamped
+    with a `data-sja-idx` attribute (a live DOM marker, not a document
+    position) and `sja_idx` is returned in the raw field dict --
+    `_selector_for()` prefers this over the old positional `:nth-match(...)`
+    fallback when a field has neither `id` nor `name`, since a marker tied
+    to the actual element survives unrelated DOM churn elsewhere on the
+    page (a real bug: `:nth-match` silently re-targeted a DIFFERENT field
+    after opening one combobox inserted/removed sibling nodes). An
+    `<input role="combobox">` (the react-select-style pattern used for
+    every Greenhouse custom question, Country, and Location) is classified
+    `type: 'combobox'` rather than its raw `text`/`tel`/etc DOM type, so
+    `_fill_one()` can dispatch it to the listbox-aware `_fill_combobox()`
+    instead of a blind `.fill()`. A field's label also falls back to a
+    `role="group"` ancestor's `aria-labelledby` target text (the pattern
+    Greenhouse uses for its file-upload widgets, whose OWN `<label>` is a
+    generic, visually-hidden "Attach" -- the real "Resume/CV"/"Cover
+    Letter" heading is a sibling `<div>` referenced only via
+    `aria-labelledby` on the enclosing `role="group"`)."""
     return page.evaluate(
         """
         (chromeSelector) => {"""
@@ -1224,7 +1403,20 @@ def _detect_fields(page) -> list[dict]:
               const legend = fs.querySelector('legend');
               if (legend) fieldsetLabel = legend.innerText;
             }
+            let groupLabel = '';
+            const grp = el.closest('[role="group"]');
+            if (grp) {
+              const labelledby = grp.getAttribute('aria-labelledby');
+              if (labelledby) {
+                const texts = labelledby.split(/\\s+/).map((id) => {
+                  const ref = document.getElementById(id);
+                  return ref ? ref.innerText.trim() : '';
+                }).filter(Boolean);
+                groupLabel = texts.join(' ');
+              }
+            }
             const required = !!(el.required || el.getAttribute('aria-required') === 'true');
+            el.setAttribute('data-sja-idx', String(idx));
 
             if (type === 'radio' || type === 'checkbox') {
               const groupKey = 'group:' + (el.name || ('idx' + idx));
@@ -1247,8 +1439,8 @@ def _detect_fields(page) -> list[dict]:
               // choice's text, so match_field() never recognized the
               // question at all.
               results.push({
-                index: idx, label: (fieldsetLabel || label || '').trim(), type: type,
-                name: el.name || '', id: '', required: required, choices: choices,
+                index: idx, label: (fieldsetLabel || label || groupLabel || '').trim(), type: type,
+                name: el.name || '', id: '', required: required, choices: choices, sja_idx: idx,
               });
               return;
             }
@@ -1257,9 +1449,20 @@ def _detect_fields(page) -> list[dict]:
             if (el.tagName === 'SELECT') {
               choices = Array.from(el.options).map((o) => o.textContent.trim()).filter(Boolean);
             }
+            const resolvedType = (el.getAttribute('role') === 'combobox') ? 'combobox' : type;
+            // A FILE input's own <label> commonly captions the button
+            // action ("Attach"), identically for every upload field on the
+            // page -- never the actual field identity. For file inputs
+            // ONLY, a role="group" ancestor's aria-labelledby (which
+            // Greenhouse's real Resume/CV vs Cover Letter widgets both
+            // carry, pointing at a sibling "Resume/CV"/"Cover Letter"
+            // heading) wins over that generic per-button label. Every
+            // other field type keeps its unchanged, existing priority.
+            const resolvedLabel = (type === 'file' && groupLabel)
+              ? groupLabel : (label || fieldsetLabel || groupLabel || '');
             results.push({
-              index: idx, label: (label || fieldsetLabel || '').trim(), type: type,
-              name: el.name || '', id: el.id || '', required: required, choices: choices,
+              index: idx, label: resolvedLabel.trim(), type: resolvedType,
+              name: el.name || '', id: el.id || '', required: required, choices: choices, sja_idx: idx,
             });
           });
           return results;

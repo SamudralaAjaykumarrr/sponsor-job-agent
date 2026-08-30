@@ -69,9 +69,20 @@ def test_close_session_on_unknown_session_is_a_safe_no_op():
     browser_runtime.close_session("never-existed")  # must not raise
 
 
-def test_selector_for_prefers_id_then_name_then_nth_match():
-    assert browser_runtime._selector_for({"id": "abc", "name": "x", "index": 0}) == "#abc"
+def test_selector_for_prefers_id_then_name_then_sja_idx_then_nth_match():
+    # Reliable Form Interaction V1: id/name resolve via an ATTRIBUTE
+    # selector, never `#id` -- an id starting with a digit (a real observed
+    # Greenhouse field id, e.g. "1255") is invalid as a `#`-selector without
+    # manual CSS escaping, but always valid inside `[id='...']`.
+    assert browser_runtime._selector_for({"id": "abc", "name": "x", "index": 0}) == "[id='abc']"
+    assert browser_runtime._selector_for({"id": "1255", "index": 0}) == "[id='1255']"
     assert browser_runtime._selector_for({"id": "", "name": "email", "index": 0}) == "[name='email']"
+    # A field with neither id nor name resolves via its own DOM marker
+    # (stamped by _detect_fields on the actual element), never a document
+    # position -- positional selectors silently re-target the wrong field
+    # once an earlier interaction (e.g. opening a combobox listbox)
+    # inserts/removes sibling nodes elsewhere on the page.
+    assert browser_runtime._selector_for({"id": "", "name": "", "sja_idx": 7, "index": 3}) == "[data-sja-idx='7']"
     assert browser_runtime._selector_for({"id": "", "name": "", "index": 3}) == ":nth-match(input, textarea, select, 4)"
 
 

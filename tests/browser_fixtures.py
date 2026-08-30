@@ -1170,6 +1170,153 @@ def _provider_form_page(
     return _write(tmp_path, name, body)
 
 
+# --- Reliable Form Interaction V1: a react-select-style combobox fixture ----
+#
+# Mirrors the REAL live Greenhouse job-boards.greenhouse.io DOM structure
+# captured during this feature's own diagnosis (a vanilla-JS approximation
+# of the same accessibility pattern -- role=combobox input, dynamically
+# aria-controls-linked role=listbox/role=option popup, click-to-select):
+#   - a numeric-id combobox field (id="1255", the real observed failure --
+#     `#1255` is invalid CSS as an ID selector)
+#   - an application-address "Country" combobox, positioned NEXT TO an
+#     unrelated "Phone" widget that has its OWN pre-rendered (hidden, never
+#     opened) listbox with a confusable option ("United States +1") -- the
+#     real bug this closes: a document-wide option search silently picked
+#     that up instead of the actually-clicked Country field's own option
+#   - two file inputs whose OWN <label> is a generic, visually-hidden
+#     "Attach" (exactly like the real form) -- disambiguated only via a
+#     role="group" ancestor's aria-labelledby pointing at a sibling
+#     "Resume/CV"/"Cover Letter" heading <div>, never a <label> at all
+_COMBOBOX_WIDGET_JS = """
+<script>
+function sjaOpenCombobox(inputId, listboxId) {
+  const input = document.getElementById(inputId);
+  const listbox = document.getElementById(listboxId);
+  input.setAttribute('aria-expanded', 'true');
+  input.setAttribute('aria-controls', listboxId);
+  listbox.style.display = 'block';
+}
+function sjaSelectOption(inputId, listboxId, text) {
+  const input = document.getElementById(inputId);
+  const listbox = document.getElementById(listboxId);
+  input.value = text;
+  input.setAttribute('aria-expanded', 'false');
+  listbox.style.display = 'none';
+}
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    document.querySelectorAll('[role=listbox]').forEach((lb) => { lb.style.display = 'none'; });
+    document.querySelectorAll('[role=combobox]').forEach((cb) => { cb.setAttribute('aria-expanded', 'false'); });
+  }
+});
+</script>
+"""
+
+
+def combobox_reliability_page(tmp_path: Path) -> str:
+    body = _jsonld_block() + _COMBOBOX_WIDGET_JS + textwrap.dedent("""
+        <h1>Job Application</h1>
+        <form id="application-form">
+          <label for="fname">First Name</label><input id="fname" name="first_name" type="text" required>
+          <label for="mail">Email</label><input id="mail" name="email" type="text" required>
+
+          <!-- Application address Country -- a role=combobox with its OWN
+               listbox, positioned next to an unrelated Phone widget that
+               has a confusable pre-rendered (hidden) listbox of its own. -->
+          <label id="country-label" for="country">Country</label>
+          <input id="country" role="combobox" aria-expanded="false" aria-labelledby="country-label"
+                 onclick="sjaOpenCombobox('country', 'country-listbox')"
+                 oninput="sjaOpenCombobox('country', 'country-listbox')">
+          <div id="country-listbox" role="listbox" style="display:none">
+            <div role="option" onclick="sjaSelectOption('country', 'country-listbox', 'United States')">United States</div>
+            <div role="option" onclick="sjaSelectOption('country', 'country-listbox', 'Canada')">Canada</div>
+          </div>
+
+          <label id="phone-label" for="phone">Phone</label>
+          <input id="phone" type="tel">
+          <!-- Unrelated widget's own pre-rendered, NEVER opened listbox --
+               a document-wide option search would wrongly find this. -->
+          <div id="phone-country-listbox" role="listbox" style="display:none">
+            <div role="option">United States +1</div>
+            <div role="option">Canada +1</div>
+          </div>
+
+          <!-- A field with a numeric id -- the real observed failure mode
+               (Playwright rejects "#1255" as invalid CSS). -->
+          <label id="1255-label" for="1255">What is your gender identity?</label>
+          <input id="1255" role="combobox" aria-expanded="false" aria-labelledby="1255-label"
+                 onclick="sjaOpenCombobox('1255', '1255-listbox')"
+                 oninput="sjaOpenCombobox('1255', '1255-listbox')">
+          <div id="1255-listbox" role="listbox" style="display:none">
+            <div role="option" onclick="sjaSelectOption('1255', '1255-listbox', 'Male')">Male</div>
+            <div role="option" onclick="sjaSelectOption('1255', '1255-listbox', 'Female')">Female</div>
+            <div role="option" onclick="sjaSelectOption('1255', '1255-listbox', 'I don\\'t wish to answer')">I don't wish to answer</div>
+          </div>
+
+          <!-- Preferred office location -- exact-match combobox exercised
+               separately from Country/gender-identity above. -->
+          <label id="office-label" for="office">What is your preferred office location?</label>
+          <input id="office" role="combobox" aria-expanded="false" aria-labelledby="office-label"
+                 onclick="sjaOpenCombobox('office', 'office-listbox')"
+                 oninput="sjaOpenCombobox('office', 'office-listbox')">
+          <div id="office-listbox" role="listbox" style="display:none">
+            <div role="option" onclick="sjaSelectOption('office', 'office-listbox', 'Menlo Park, CA')">Menlo Park, CA</div>
+            <div role="option" onclick="sjaSelectOption('office', 'office-listbox', 'New York, NY')">New York, NY</div>
+          </div>
+
+          <!-- Resume/CV vs Cover Letter -- both file inputs share an
+               identical, generic, visually-hidden <label>; only a
+               role=group ancestor's aria-labelledby distinguishes them. -->
+          <div role="group" aria-labelledby="upload-label-resume" aria-required="true">
+            <div id="upload-label-resume">Resume/CV</div>
+            <label style="display:none" for="resume">Attach</label>
+            <input id="resume" type="file">
+          </div>
+          <div role="group" aria-labelledby="upload-label-cover_letter" aria-required="false">
+            <div id="upload-label-cover_letter">Cover Letter</div>
+            <label style="display:none" for="cover_letter">Attach</label>
+            <input id="cover_letter" type="file">
+          </div>
+
+          <button type="submit">Submit Application</button>
+        </form>
+    """)
+    return _write(tmp_path, "combobox_reliability.html", body)
+
+
+def combobox_reliability_page_option_changed(tmp_path: Path) -> str:
+    """Same STRUCTURAL shape (same questions/required/types) as
+    combobox_reliability_page, used to prove that filling/selecting values
+    normally never trips drift detection, while a page whose real option
+    SET materially changed still correctly does."""
+    body = _jsonld_block() + _COMBOBOX_WIDGET_JS + textwrap.dedent("""
+        <h1>Job Application</h1>
+        <form id="application-form">
+          <label for="fname">First Name</label><input id="fname" name="first_name" type="text" required>
+          <label for="mail">Email</label><input id="mail" name="email" type="text" required>
+          <label id="country-label" for="country">Country</label>
+          <input id="country" role="combobox" aria-expanded="false" aria-labelledby="country-label">
+          <label id="phone-label" for="phone">Phone</label>
+          <input id="phone" type="tel">
+          <label id="1255-label" for="1255">What is your gender identity?</label>
+          <input id="1255" role="combobox" aria-expanded="false" aria-labelledby="1255-label">
+          <!-- office field REMOVED entirely -- a genuine structural change -->
+          <div role="group" aria-labelledby="upload-label-resume" aria-required="true">
+            <div id="upload-label-resume">Resume/CV</div>
+            <label style="display:none" for="resume">Attach</label>
+            <input id="resume" type="file">
+          </div>
+          <div role="group" aria-labelledby="upload-label-cover_letter" aria-required="false">
+            <div id="upload-label-cover_letter">Cover Letter</div>
+            <label style="display:none" for="cover_letter">Attach</label>
+            <input id="cover_letter" type="file">
+          </div>
+          <button type="submit">Submit Application</button>
+        </form>
+    """)
+    return _write(tmp_path, "combobox_reliability_changed.html", body)
+
+
 # --- Greenhouse-shaped -------------------------------------------------------
 
 def greenhouse_like_application_page(
