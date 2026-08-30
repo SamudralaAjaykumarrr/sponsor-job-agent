@@ -1085,15 +1085,23 @@ class _LiveSession:
         enough to find a DIFFERENT nearby field's listbox instead. Giving
         the attribute a brief chance to appear fixes the race at its
         actual source rather than trying to make the fallback smarter."""
+        # Reliable Form Interaction V1: a real sequential live run (15
+        # fields filled in one pass against the real Robinhood/Greenhouse
+        # form) caught this retry budget being too short under real load --
+        # a field late in the sequence failed here with an EXACT real
+        # option available (confirmed by direct comparison against the
+        # identical logic run in isolation, which succeeded reliably),
+        # while an earlier, less-loaded field succeeded. 10x150ms is the
+        # budget proven reliable in that direct comparison; 5x100ms was not.
         aria_controls = None
-        for _ in range(5):
+        for _ in range(10):
             try:
                 aria_controls = loc.get_attribute("aria-controls")
             except Exception:  # noqa: BLE001
                 aria_controls = None
             if aria_controls:
                 break
-            target.wait_for_timeout(100)
+            target.wait_for_timeout(150)
         if aria_controls:
             return f"[id='{_css_attr_escape(aria_controls.split()[0])}']"
         try:
