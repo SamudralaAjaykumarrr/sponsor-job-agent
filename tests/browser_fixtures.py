@@ -1457,6 +1457,26 @@ def greenhouse_like_otp_page(tmp_path: Path) -> str:
     """))
 
 
+def mfa_phrase_false_positive_page(tmp_path: Path) -> str:
+    """Reliable Human-Handoff V1: mirrors a real false positive caught live
+    against Robinhood's Greenhouse posting -- an ordinary application form
+    with NO authentication challenge anywhere, but an MFA phrase ("2fa")
+    happens to appear buried inside an unrelated third-party iframe's own
+    hashed URL fragment (a Google API proxy iframe, loaded for the page's
+    own "Attach resume from Google Drive" option), present in the raw HTML
+    source but never rendered as visible text anywhere a person would read
+    it."""
+    body = _jsonld_block() + textwrap.dedent("""
+        <form>
+          <label for="fname">Full Name</label><input id="fname" name="full_name" type="text">
+          <button type="submit">Submit Application</button>
+        </form>
+        <iframe title="Google Drive picker proxy" style="display:none" width="0" height="0"
+                src="https://content.googleapis.com/static/proxy.html?jsh=m%3b_%2fscs%2fabc-static%2f_%2fjs%2fk%3dgapi.lb.en.zhtt8br0ho8.2fa6180792.o%2fd%3d1"></iframe>
+    """)
+    return _write(tmp_path, "mfa_false_positive.html", body)
+
+
 def greenhouse_like_expired_page(tmp_path: Path) -> str:
     """The page a closed Greenhouse posting shows: no form at all, and no
     apply control -- the "job expired" terminal case."""

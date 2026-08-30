@@ -645,7 +645,6 @@ class _LiveSession:
         if not is_allowed_host_for_session(self.provider, self.application_url, current_url):
             return DiscoveryOutcome(pause_reason="PLATFORM_POLICY_RESTRICTED", current_url=current_url)
 
-        content_lower = page.content().lower()
         try:
             body_text = page.inner_text("body")
         except Exception:  # noqa: BLE001
@@ -776,7 +775,22 @@ class _LiveSession:
         # behind `login_wall`. An MFA phrase is specific and narrow enough
         # (see `_MFA_PHRASES`) to stand on its own as a genuine auth-gate
         # signal, independent of whether a password field is also present.
-        has_mfa_phrase = any(p in content_lower for p in _MFA_PHRASES)
+        #
+        # Reliable Human-Handoff V1: this must scan VISIBLE text (body_text)
+        # rather than raw page.content() -- a real live handoff against
+        # Robinhood's Greenhouse posting caught "2fa" matching inside an
+        # unrelated Google API proxy iframe's own hashed URL fragment
+        # (content.googleapis.com/static/proxy.html, loaded for the page's
+        # own "Attach from Google Drive" resume-upload option), nowhere
+        # near any actual authentication prompt and never shown to a
+        # person. This is the exact same class of bug the Phase 13 CAPTCHA
+        # fix already established a fix for (a raw-HTML-source substring
+        # scan matching unrelated script/URL text) -- applying the same
+        # precision fix here: an MFA phrase actually rendered on the page
+        # (a real auth-gate, still caught) reads identically in body_text;
+        # only a match confined to markup/script/URL text a person never
+        # sees is excluded.
+        has_mfa_phrase = any(p in body_text.lower() for p in _MFA_PHRASES)
         if login_wall or has_mfa_phrase:
             provider_health.record_failure(self.provider, provider_health.FailureKind.AUTH_GATE,
                                             tenant=self.tenant, site=self.site)
