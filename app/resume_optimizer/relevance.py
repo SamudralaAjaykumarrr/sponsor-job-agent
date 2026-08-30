@@ -19,7 +19,7 @@ backstop regardless)."""
 import re
 from dataclasses import dataclass, field
 
-from app.matching.skills import extract_jd_keywords
+from app.matching.skills import contains_term, extract_jd_keywords
 from app.resume_optimizer.models import (
     EvidenceGraph,
     JDAnalysisResult,
@@ -60,8 +60,13 @@ class RelevanceModel:
     weights: dict[str, float] = field(default_factory=dict)  # lowercase term -> weight
 
     def term_hits(self, text: str) -> set[str]:
-        b = text.lower()
-        return {t for t in self.weights if t and t in b}
+        # Real bug fix (canary-candidate integrity re-screen): this used to
+        # be a raw `t in b` substring check, which let e.g. a weighted
+        # "go" term score a hit off a bullet merely mentioning "Django" --
+        # same false-positive class app.matching.skills.match_candidate_
+        # skills had. contains_term requires an isolated-token/phrase
+        # match, never a fragment of an unrelated word.
+        return {t for t in self.weights if t and contains_term(text, t)}
 
     def score(self, text: str) -> float:
         hits = self.term_hits(text)
