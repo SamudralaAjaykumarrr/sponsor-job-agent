@@ -111,6 +111,40 @@ def captcha_page_with_identity(tmp_path: Path, *, solved: bool = False,
     return _write(tmp_path, name, body)
 
 
+# reCAPTCHA's own permanent, non-interactive "protected by reCAPTCHA" badge
+# (invisible/Enterprise mode) -- mirrors the EXACT live DOM shape captured
+# from a real handoff against Robinhood's Greenhouse posting: a
+# `grecaptcha-badge`/`grecaptcha-logo` div containing an anchor iframe whose
+# src carries `size=invisible`, plus the always-present (id-suffixed, per
+# reCAPTCHA Enterprise) hidden response-token holder. None of this is a
+# blocking challenge -- it is present on every page load regardless of
+# whether any challenge is ever shown.
+def invisible_recaptcha_badge_page(tmp_path: Path, *, with_genuine_challenge: bool = False) -> str:
+    genuine_challenge = (
+        '<div class="g-recaptcha" data-sitekey="fake-test-key">Please verify you are human.</div>'
+        if with_genuine_challenge else ""
+    )
+    body = _jsonld_block() + textwrap.dedent(f"""
+        <form>
+          <label for="fname">Full Name</label><input id="fname" name="full_name" type="text">
+          {genuine_challenge}
+          <button type="submit">Submit Application</button>
+        </form>
+        <div class="grecaptcha-badge" data-style="bottomright" style="position:fixed;bottom:14px;right:-186px;">
+          <div class="grecaptcha-logo">
+            <iframe title="reCAPTCHA" width="256" height="60" role="presentation"
+                    src="https://www.recaptcha.net/recaptcha/enterprise/anchor?size=invisible&amp;cb=abc123">
+            </iframe>
+          </div>
+          <div class="grecaptcha-error"></div>
+          <textarea id="g-recaptcha-response-100000" name="g-recaptcha-response"
+                    class="g-recaptcha-response" style="display:none"></textarea>
+        </div>
+    """)
+    name = f"invisible_recaptcha_badge{'_with_challenge' if with_genuine_challenge else ''}.html"
+    return _write(tmp_path, name, body)
+
+
 def legal_question_page(tmp_path: Path) -> str:
     return _write(tmp_path, "legal.html", _jsonld_block() + textwrap.dedent("""
         <form>

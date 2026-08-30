@@ -669,35 +669,92 @@ class _LiveSession:
         # genuinely rendered SmartRecruiters/DataDome-style challenge still
         # trips this via its own challenge iframe/class, and this project
         # never attempts to solve or bypass one either way.
+        # Reliable Human-Handoff V1: a real live handoff against Robinhood's
+        # Greenhouse posting caught two DISTINCT false-positive sources here,
+        # both confirmed by inspecting the actual live DOM (never assumed):
+        #
+        # 1. Invisible reCAPTCHA (v2 Enterprise "invisible" mode, which this
+        #    real posting uses) renders a PERMANENT, non-interactive
+        #    "protected by reCAPTCHA" branding badge in the page corner --
+        #    class `grecaptcha-badge`/`grecaptcha-logo`/`grecaptcha-error`,
+        #    inside an anchor `<iframe title="reCAPTCHA" ... src="...
+        #    size=invisible...">`. This badge is present on EVERY page load
+        #    (Google's ToS requires it) whether or not a challenge is EVER
+        #    shown to anyone -- it is not itself a blocking challenge.
+        # 2. The always-present hidden response-token holder (`<textarea
+        #    name="g-recaptcha-response">`, h-captcha/turnstile equivalents)
+        #    is likewise rendered as soon as the widget library loads,
+        #    regardless of solved/challenged state -- reCAPTCHA Enterprise
+        #    additionally suffixes its id (observed live:
+        #    id="g-recaptcha-response-100000", not the classic
+        #    id="g-recaptcha-response"), so matching is done by the stable
+        #    `name` attribute, which stays constant across that suffix.
+        #
+        # Both are excluded from the presence signal itself (never
+        # themselves proof of an active block) rather than only via the
+        # solved-token check below, since for INVISIBLE reCAPTCHA the token
+        # legitimately stays empty for as long as the user is still filling
+        # the form -- verification only fires on the bound submit action, so
+        # "empty token" cannot distinguish "badge present, nothing has
+        # happened yet" from "a real challenge is blocking" in invisible
+        # mode. A genuine rendered challenge is a SEPARATE, additional
+        # element this exclusion does not touch (a full challenge iframe/
+        # modal, e.g. the classic `class="g-recaptcha"` checkbox widget the
+        # existing local fixture covers, or a real `bframe` challenge
+        # iframe) -- excluding only these specific, well-documented
+        # classes/ids can only ever turn an otherwise-true has_captcha into
+        # "not blocking" for THOSE elements; it can never mask a
+        # differently-classed/id'd genuine challenge element present
+        # alongside them.
+        _NEVER_BLOCKING_CLASSES = ("grecaptcha-badge", "grecaptcha-logo", "grecaptcha-error")
+        _NEVER_BLOCKING_ID_PREFIXES = ("g-recaptcha-response", "h-captcha-response", "cf-turnstile-response")
+
+        def _all_matches_never_blocking(loc) -> bool:
+            try:
+                count = loc.count()
+            except Exception:  # noqa: BLE001
+                return False
+            if count == 0:
+                return False
+            for i in range(count):
+                el = loc.nth(i)
+                try:
+                    cls = (el.get_attribute("class") or "")
+                    src = (el.get_attribute("src") or "")
+                    el_id = (el.get_attribute("id") or "")
+                except Exception:  # noqa: BLE001
+                    return False
+                is_badge_class = any(b in cls for b in _NEVER_BLOCKING_CLASSES)
+                is_invisible_anchor_iframe = "size=invisible" in src
+                is_response_holder = any(el_id.startswith(p) for p in _NEVER_BLOCKING_ID_PREFIXES)
+                if not (is_badge_class or is_invisible_anchor_iframe or is_response_holder):
+                    return False
+            return True
+
+        iframe_loc = page.locator("iframe[src*='captcha' i]")
+        class_loc = page.locator("[class*='captcha' i]")
+        id_loc = page.locator("[id*='captcha' i]")
         has_captcha = (
-            page.locator("iframe[src*='captcha' i]").count() > 0
-            or page.locator("[class*='captcha' i]").count() > 0
-            or page.locator("[id*='captcha' i]").count() > 0
+            (iframe_loc.count() > 0 and not _all_matches_never_blocking(iframe_loc))
+            or (class_loc.count() > 0 and not _all_matches_never_blocking(class_loc))
+            or (id_loc.count() > 0 and not _all_matches_never_blocking(id_loc))
         )
-        # Reliable Human-Handoff V1: a captcha widget's own container
-        # element (the signal above) never disappears once rendered -- it
-        # stays in the DOM permanently, whether the challenge is still
-        # blocking or the human already solved it. A real live handoff
-        # against Robinhood's Greenhouse posting caught exactly this: after
-        # the human genuinely completed the CAPTCHA, rediscovery still
-        # reported CAPTCHA_PRESENT (the widget's `<div class="g-recaptcha">`
-        # container was still there), which drove automation code to treat
-        # a solved challenge as still-blocking. Every mainstream CAPTCHA
-        # provider (reCAPTCHA, hCaptcha, Cloudflare Turnstile) populates a
-        # well-documented, standard hidden response-token field ONLY once
-        # solved -- checking that token is non-empty is the correct,
-        # narrow precision fix (matching the same "pure precision
-        # improvement, not a loosened safety boundary" bar as the Phase 13
-        # fix above): it can only ever turn an OTHERWISE-true `has_captcha`
-        # into "not blocking", never invent a pass when no such token
-        # exists, so a genuinely still-unsolved or token-less/custom
-        # challenge keeps pausing exactly as before.
+        # A captcha widget's own container element never disappears once
+        # rendered -- it stays in the DOM permanently, whether the challenge
+        # is still blocking or the human already solved it. Every mainstream
+        # CAPTCHA provider (reCAPTCHA, hCaptcha, Cloudflare Turnstile)
+        # populates a well-documented, standard hidden response-token field
+        # ONLY once solved -- checking that token is non-empty is the
+        # correct, narrow precision fix: it can only ever turn an OTHERWISE-
+        # true `has_captcha` into "not blocking", never invent a pass when
+        # no such token exists, so a genuinely still-unsolved or token-less/
+        # custom challenge keeps pausing exactly as before.
         if has_captcha:
             try:
                 solved = page.evaluate(
                     """() => {
                         const val = (sel) => (document.querySelector(sel)?.value || '').trim();
-                        return val('#g-recaptcha-response') !== ''
+                        return val("[name='g-recaptcha-response']") !== ''
                             || val("[name='h-captcha-response']") !== ''
                             || val("[name='cf-turnstile-response']") !== '';
                     }"""

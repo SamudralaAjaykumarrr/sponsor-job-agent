@@ -13,7 +13,12 @@ import pytest
 
 from app import config
 from app.applications import browser_runtime
-from tests.browser_fixtures import DEFAULT_JOB_COMPANY, DEFAULT_JOB_TITLE, captcha_page_with_identity
+from tests.browser_fixtures import (
+    DEFAULT_JOB_COMPANY,
+    DEFAULT_JOB_TITLE,
+    captcha_page_with_identity,
+    invisible_recaptcha_badge_page,
+)
 
 pytestmark = pytest.mark.browser
 
@@ -131,6 +136,48 @@ def test_repeated_rediscovery_after_solve_remains_unblocked(tmp_path):
 def test_empty_response_field_present_still_pauses(tmp_path):
     url = captcha_page_with_identity(tmp_path, solved=False, response_field="g-recaptcha-response")
     session_id = "t-captcha-empty-token"
+    try:
+        outcome = _open(session_id, url)
+        assert outcome.pause_reason == "CAPTCHA_PRESENT"
+    finally:
+        browser_runtime.close_session(session_id)
+
+
+# --- invisible reCAPTCHA's permanent, non-interactive badge must NEVER
+# be treated as a blocking challenge -- the real live false positive this
+# whole feature was built to fix. Enterprise's suffixed response-token id
+# (g-recaptcha-response-100000) is exercised here too. ---
+
+def test_invisible_recaptcha_badge_alone_does_not_pause(tmp_path):
+    url = invisible_recaptcha_badge_page(tmp_path, with_genuine_challenge=False)
+    session_id = "t-badge-only"
+    try:
+        outcome = _open(session_id, url)
+        assert outcome.pause_reason is None
+    finally:
+        browser_runtime.close_session(session_id)
+
+
+def test_invisible_recaptcha_badge_repeated_rediscovery_stays_unblocked(tmp_path):
+    """Mirrors what a real multi-minute human-handoff wait produces --
+    the badge alone must never start blocking on a later poll either."""
+    url = invisible_recaptcha_badge_page(tmp_path, with_genuine_challenge=False)
+    session_id = "t-badge-repeated"
+    try:
+        outcome = _open(session_id, url)
+        assert outcome.pause_reason is None
+        for _ in range(3):
+            outcome = browser_runtime.rediscover(session_id)
+            assert outcome.pause_reason is None
+    finally:
+        browser_runtime.close_session(session_id)
+
+
+# --- the badge must never mask a GENUINE challenge rendered alongside it --
+
+def test_invisible_badge_never_masks_a_genuine_challenge_present_alongside_it(tmp_path):
+    url = invisible_recaptcha_badge_page(tmp_path, with_genuine_challenge=True)
+    session_id = "t-badge-plus-real-challenge"
     try:
         outcome = _open(session_id, url)
         assert outcome.pause_reason == "CAPTCHA_PRESENT"
