@@ -75,6 +75,32 @@ def test_classify_negative_signal_wins_even_with_structured_full_time_text():
     ) == EmploymentType.CONTRACT
 
 
+def test_bare_contract_word_in_free_text_does_not_false_positive():
+    # Real bugs caught live re-screening real Greenhouse postings: the bare
+    # "contract" catch-all token is only a reliable signal on a short
+    # STRUCTURED field, never inside JD body prose, where it routinely
+    # appears in senses unrelated to employment type.
+    assert classify_employment_type(
+        "", "Software Engineer", "Familiarity with smart contracts and EVM blockchains.",
+    ) == EmploymentType.UNKNOWN
+    assert classify_employment_type(
+        "", "Software Engineer",
+        "Experience with HTTP/REST and gRPC APIs, including versioning and contract governance.",
+    ) == EmploymentType.UNKNOWN
+
+
+def test_bare_contract_word_still_works_on_structured_raw_field():
+    # The structured field is short and authoritative -- the bare token
+    # stays a valid signal there.
+    assert classify_employment_type("Contract", "Engineer", "") == EmploymentType.CONTRACT
+
+
+def test_specific_contract_phrases_still_fire_in_free_text():
+    # Narrowing the bare catch-all must not weaken the specific phrases.
+    assert classify_employment_type("", "Engineer", "This is a contract position.") == EmploymentType.CONTRACT
+    assert classify_employment_type("", "Engineer", "We need a contractor for 6 months.") == EmploymentType.CONTRACT
+
+
 # --- eligibility gate ---------------------------------------------------------
 
 def test_eligibility_full_time_confirmed_sponsor_enters_queue_and_auto_eligible(job_factory):
