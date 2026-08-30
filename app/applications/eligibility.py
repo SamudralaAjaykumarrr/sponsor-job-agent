@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 
 from app import config
 from app.config import NEEDS_USER_INPUT
+from app.applications.human_verified_employment_evidence import get_verified_value as get_human_verified_employment_type
 from app.matching.compensation import evaluate_compensation
 from app.matching.employment_type import resolve_employment_type_evidence
 from app.matching.geography import is_us_location
@@ -86,8 +87,16 @@ def evaluate_executor_eligibility(job: Job) -> EligibilityResult:
     # module docstring for the one real gap it fixes: an explicit JD
     # "contract" no longer gets silently outvoted by a positive provider
     # field, the opposite of a weakening).
+    #
+    # Human-Verified Employment Type Evidence + Canary Revalidation V1:
+    # get_human_verified_employment_type() is itself a DB-only read (no
+    # network call), so it keeps this same fast/network-independent
+    # contract, and is itself already gated (exact job-bound identity
+    # match, explicit human confirmation, posting not stale) before it can
+    # ever return non-None.
     employment_type = resolve_employment_type_evidence(
         job.employment_type, job.title, job.description, job.employment_type_page_evidence_raw,
+        human_verified_value=get_human_verified_employment_type(job),
     ).value
     if employment_type not in (EmploymentType.FULL_TIME, EmploymentType.UNKNOWN):
         return EligibilityResult(

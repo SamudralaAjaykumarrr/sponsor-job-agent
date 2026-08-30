@@ -77,6 +77,7 @@ from app.applications.provider_registry import get_application_provider
 from app.applications import provider_health
 from app.db import db_session
 from app.applications.employment_type_evidence import refresh_page_evidence
+from app.applications.human_verified_employment_evidence import get_verified_value as get_human_verified_employment_type
 from app.matching.employment_type import resolve_employment_type_evidence
 from app.matching.geography import is_us_location
 from app.matching.roles import is_target_role
@@ -215,7 +216,15 @@ def _employment_type(job: Job) -> DimensionResult:
     schema.org JobPosting JSON-LD `employmentType` evidence -- never a
     guess, never inferred from salary/benefits/location/title alone. A page
     fetch failure degrades to whatever page evidence was already persisted
-    (or none) rather than blocking this dimension."""
+    (or none) rather than blocking this dimension.
+
+    Human-Verified Employment Type Evidence + Canary Revalidation V1: also
+    consults get_human_verified_employment_type(job) -- itself already
+    gated (exact job-bound identity match, explicit human confirmation,
+    posting not stale; see that module) -- as a fourth vote into the SAME
+    resolve_employment_type_evidence() safer-negative-wins policy. Never
+    itself decides anything; a stale/unconfirmed/non-exact row silently
+    contributes nothing (None), same as this dimension's other sources."""
     if job.provider == "mock_ats":
         # Never a real network touchpoint for the deterministic test-fixture
         # provider -- matches every other module's mock_ats exclusion
@@ -226,7 +235,14 @@ def _employment_type(job: Job) -> DimensionResult:
             page_raw = refresh_page_evidence(job)
         except Exception:  # noqa: BLE001 -- a feasibility check must never raise
             page_raw = job.employment_type_page_evidence_raw
-    decision = resolve_employment_type_evidence(job.employment_type, job.title, job.description, page_raw)
+    try:
+        human_verified = get_human_verified_employment_type(job)
+    except Exception:  # noqa: BLE001 -- a feasibility check must never raise
+        human_verified = None
+    decision = resolve_employment_type_evidence(
+        job.employment_type, job.title, job.description, page_raw,
+        human_verified_value=human_verified,
+    )
     provenance = f"{decision.reason} (source: {decision.source.value})"
     if decision.value == EmploymentType.FULL_TIME:
         return DimensionResult(FeasibilityVerdict.PASS, f"classified FULL_TIME -- {provenance}")

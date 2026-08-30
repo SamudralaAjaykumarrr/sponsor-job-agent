@@ -1766,6 +1766,65 @@ def _m062_provider_submit_claims_table(conn, backend: str) -> None:
     )
 
 
+def _m063_human_verified_employment_evidence_table(conn, backend: str) -> None:
+    """Human-Verified Employment Type Evidence + Canary Revalidation V1:
+    a fourth, deliberately separate employment-type evidence source for
+    supervised applications where an ATS's own metadata (structured field,
+    JD text, JobPosting JSON-LD -- the three sources
+    app.matching.employment_type.resolve_employment_type_evidence already
+    consults) omits employment type entirely. Every row is a permanent,
+    append-only observation (never updated in place, matching this
+    project's employer_sponsorship_evidence/sponsorship_decisions
+    convention) -- a re-verification always inserts a new row; only the
+    most recent row per job_id is ever consulted for a live decision (see
+    app.applications.human_verified_employment_evidence.get_verified_value).
+
+    `posting_fingerprint_at_verification` snapshots the job's own
+    `jd_sponsorship_fingerprint` (already recomputed on every JD reanalysis
+    -- no second fingerprint scheme invented) at the moment of verification;
+    a later mismatch against the job's CURRENT fingerprint means the
+    posting materially changed since verification and the row is
+    considered stale/invalidated, never silently reused.
+
+    `identity_match_verdict` is one of EXACT_MATCH/PROBABLE_MATCH/
+    AMBIGUOUS/MISMATCH -- only EXACT_MATCH rows are ever eligible to
+    influence a live decision. `human_confirmed` (0/1) is a SEPARATE gate
+    from identity_match_verdict: a row can be an EXACT_MATCH identity
+    determination that the human has not yet explicitly confirmed, and it
+    must still never count -- both an EXACT_MATCH verdict AND
+    human_confirmed=1 are required before this evidence can ever surface as
+    a live FULL_TIME (or other) signal. Neither condition alone is
+    sufficient; this is the actual enforcement point for 'external evidence
+    alone must never silently upgrade UNKNOWN' and 'user confirmation is
+    required'."""
+    id_column = "id BIGSERIAL PRIMARY KEY" if backend == "postgres" else "id INTEGER PRIMARY KEY AUTOINCREMENT"
+    conn.execute(
+        f"""CREATE TABLE IF NOT EXISTS human_verified_employment_evidence (
+            {id_column},
+            job_id INTEGER NOT NULL,
+            provider TEXT NOT NULL DEFAULT '',
+            external_job_id TEXT NOT NULL DEFAULT '',
+            posting_fingerprint_at_verification TEXT NOT NULL DEFAULT '',
+            evidence_url TEXT NOT NULL,
+            evidence_source_name TEXT NOT NULL DEFAULT '',
+            raw_employment_type_value TEXT NOT NULL,
+            normalized_value TEXT NOT NULL,
+            identity_match_verdict TEXT NOT NULL,
+            identity_match_evidence TEXT NOT NULL DEFAULT '',
+            captured_at TEXT NOT NULL,
+            human_confirmed INTEGER NOT NULL DEFAULT 0,
+            human_confirmed_at TEXT NOT NULL DEFAULT '',
+            human_confirmed_text TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_human_verified_employment_evidence_job "
+        "ON human_verified_employment_evidence (job_id, created_at)"
+    )
+
+
 MIGRATIONS: list[tuple[int, str, Callable]] = [
     (2, "phase6_worker_identity_columns", _m002_worker_identity_columns),
     (3, "phase6_schema_drift_table", _m003_schema_drift_table),
@@ -1828,6 +1887,7 @@ MIGRATIONS: list[tuple[int, str, Callable]] = [
     (60, "recruiter_updates_table", _m060_recruiter_updates_table),
     (61, "jobs_employment_type_page_evidence_columns", _m061_jobs_employment_type_page_evidence_columns),
     (62, "provider_submit_claims_table", _m062_provider_submit_claims_table),
+    (63, "human_verified_employment_evidence_table", _m063_human_verified_employment_evidence_table),
 ]
 
 # Version 1 is the implicit Phase 1-5 baseline schema, applied by
