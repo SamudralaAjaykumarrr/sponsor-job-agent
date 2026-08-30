@@ -717,9 +717,16 @@ def test_generate_optimized_resume_content_is_deterministic():
 
 def test_optimizer_version_bump_forces_regeneration_identity_change(tmp_env):
     """CLAUDE.md idempotency contract: a changed optimizer_version is part
-    of the resume_variants identity key, so the JD-intelligence-v3 rewrite
-    (which bumped OPTIMIZER_VERSION) never silently reuses a pre-v3 variant
-    row for the same job/JD/profile."""
+    of the resume_variants identity key, so a content-selection rewrite
+    never silently reuses a pre-change variant row for the same job/JD/
+    profile. Bumped to v3 for the select_bullets() one-page-overflow fix
+    (canary-candidate investigation): the v3-JD-intelligence version (v2)
+    always padded an entry's bullets/projects out to their cap even once
+    genuinely relevant content was exhausted, which systematically inflated
+    every generated resume and silently exhausted one_page.enforce_one_page's
+    bounded compression ladder before reaching one page for nearly all real
+    JDs. v3 stops selecting once no remaining bullet adds relevance/novelty,
+    once at least one relevant bullet is already chosen."""
     from app.resume_optimizer.fingerprint import OPTIMIZER_VERSION
 
-    assert OPTIMIZER_VERSION == "resume-optimizer-v2"
+    assert OPTIMIZER_VERSION == "resume-optimizer-v3"

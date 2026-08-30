@@ -55,6 +55,17 @@ def _scan_signal(text: str) -> Optional[EmploymentType]:
     lower = (text or "").strip().lower()
     if not lower:
         return None
+    # Real bug caught live during canary-candidate preflight: the bare
+    # "contract" catch-all token (last entry of the CONTRACT tuple, meant to
+    # cover a raw structured field or a plain-English "the role is a
+    # contract" sentence) also fires on "smart contract(s)" -- ordinary
+    # blockchain/crypto-industry terminology with nothing to do with
+    # employment type, e.g. a Web3 team's JD saying "familiarity with smart
+    # contracts" silently misclassified an otherwise-ordinary full-time
+    # corporate posting as CONTRACT. Strip that specific phrase before the
+    # scan; every other "contract" phrase (raw "Contract", "contract
+    # position", "the role is a contract", etc.) is unaffected.
+    lower = lower.replace("smart contract", "")
     for etype, tokens in _NEGATIVE_TYPE_SIGNALS:
         if any(tok in lower for tok in tokens):
             return etype

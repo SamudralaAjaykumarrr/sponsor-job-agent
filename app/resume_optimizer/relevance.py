@@ -124,7 +124,25 @@ def select_bullets(bullets: list[str], model: RelevanceModel, cap: int) -> list[
     genuinely different requirement -- non-redundancy, not just a top-K sort.
     Falls back to the bullets' own original order when nothing scores above
     zero (an unweighted/GENERAL-archetype JD), matching the prior
-    unweighted behavior exactly."""
+    unweighted behavior exactly.
+
+    Stops picking once every remaining bullet has zero gain (no relevance
+    score, no novel term coverage) AND at least one genuinely relevant
+    bullet has already been chosen -- it never pads an entry out to `cap`
+    with zero-value filler just because slots remain. Real regression: the
+    original v3 version kept filling to `cap` regardless of relevance,
+    which silently made every generated resume systematically longer than
+    v1's -- v1's `_select_bullets` only ever included bullets matching at
+    least one relevance term when any existed at all, leaving an entry's
+    selection genuinely short rather than padded. That inflation was
+    invisible in isolated per-bullet tests (this function's own contract
+    was never pinned against a sparse-relevance-model + many-bullet entry)
+    but silently exhausted `one_page.enforce_one_page`'s bounded compression
+    ladder before reaching one page for the vast majority of real JDs,
+    caught live while investigating a canary-candidate one-page failure
+    across the entire real Greenhouse candidate pool. When NOTHING scores
+    above zero (a fully unweighted/GENERAL-archetype JD), the original
+    fallback-to-cap behavior is preserved unchanged."""
     if not bullets:
         return []
     cap = min(cap, len(bullets))
@@ -141,6 +159,8 @@ def select_bullets(bullets: list[str], model: RelevanceModel, cap: int) -> list[
             gain = model.score(b) + 0.75 * novelty
             if best_gain is None or gain > best_gain:
                 best_gain, best_bullet, best_hits = gain, b, hits
+        if best_gain is not None and best_gain <= 0 and chosen:
+            break
         chosen.append(best_bullet)
         covered |= best_hits
         remaining.remove(best_bullet)
