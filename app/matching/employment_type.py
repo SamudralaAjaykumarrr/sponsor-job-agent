@@ -118,6 +118,12 @@ class EmploymentTypeEvidenceSource(str, Enum):
     JD_TEXT = "JD_TEXT"
     PROVIDER_STRUCTURED = "PROVIDER_STRUCTURED"
     STRUCTURED_PAGE_JSONLD = "STRUCTURED_PAGE_JSONLD"
+    # Human-Verified Employment Type Evidence + Canary Revalidation V1: a
+    # human-reviewed, exact-identity-matched, explicitly-confirmed external
+    # source (see app.applications.human_verified_employment_evidence) --
+    # never itself a live fetch or a guess. Only ever passed in by a caller
+    # that already ran that module's get_verified_value(job) gate.
+    HUMAN_VERIFIED_EXTERNAL_EVIDENCE = "HUMAN_VERIFIED_EXTERNAL_EVIDENCE"
     CONFLICT = "CONFLICT"
     NONE = "NONE"
 
@@ -176,24 +182,42 @@ def resolve_employment_type_evidence(
     title: str = "",
     description: str = "",
     structured_page_value: str = "",
+    human_verified_value: Optional[EmploymentType] = None,
 ) -> EmploymentTypeDecision:
     """Evidence-based FULL_TIME resolution (Employment Type Evidence
-    Hardening V1). Combines three independent, genuinely-sourced signals --
-    explicit JD text, the provider's own structured employment-type field,
-    and a JobPosting JSON-LD `employmentType` value read from the real
-    posting page -- under one safety-first policy: ANY explicit NEGATIVE
-    signal (CONTRACT/PART_TIME/C2C/TEMPORARY/SEASONAL/FREELANCE/
-    INTERNSHIP), from ANY source, wins outright and is never overridden by
-    a positive FULL_TIME signal from another source. This is CLAUDE.md
-    conflict rule D's explicitly-sanctioned "safer negative" alternative to
-    a bare CONFLICT/UNKNOWN result -- and, empirically, the ONLY policy
-    consistent with this project's own pre-existing tests (e.g.
+    Hardening V1; `human_verified_value` added by Human-Verified Employment
+    Type Evidence + Canary Revalidation V1). Combines up to FOUR
+    independent, genuinely-sourced signals -- explicit JD text, the
+    provider's own structured employment-type field, a JobPosting JSON-LD
+    `employmentType` value read from the real posting page, and (optional)
+    a human-reviewed external-evidence value -- under one safety-first
+    policy: ANY explicit NEGATIVE signal (CONTRACT/PART_TIME/C2C/TEMPORARY/
+    SEASONAL/FREELANCE/INTERNSHIP), from ANY source, wins outright and is
+    never overridden by a positive FULL_TIME signal from another source.
+    This is CLAUDE.md conflict rule D's explicitly-sanctioned "safer
+    negative" alternative to a bare CONFLICT/UNKNOWN result -- and,
+    empirically, the ONLY policy consistent with this project's own
+    pre-existing tests (e.g.
     tests/test_canary_feasibility.py::test_contract_employment_type_rejects
     requires a structured `employment_type="contract"` field to reject even
     though the JD text used across that whole test file's fixture also
     contains generic "Full-time, permanent position" boilerplate -- an
     earlier version of this function that let JD text unconditionally
     decide, in either direction, broke that pre-existing test live).
+
+    `human_verified_value` must already have passed every gate in
+    app.applications.human_verified_employment_evidence.get_verified_value()
+    (exact job-bound identity match, explicit human confirmation, posting
+    not stale) -- this function trusts its caller on that and does not
+    re-derive it, exactly as it already trusts its caller for
+    `structured_page_value`. Passing None (the default, and every existing
+    caller's un-updated behavior) reproduces the prior three-source
+    behavior exactly. Critically, this new source participates in the
+    SAME voting policy above, unmodified: an explicit official CONTRACT/
+    PART_TIME/etc. signal from JD text or the provider's own structured
+    field still always overrides a human-verified positive vote -- this
+    function cannot be used to force FULL_TIME against contradicting
+    official evidence.
 
     When more than one source votes negative but they disagree on the
     SPECIFIC subtype (e.g. JD text implies C2C while the provider field
@@ -218,11 +242,12 @@ def resolve_employment_type_evidence(
     it without changing this function's public contract.
 
     Only when NO source votes negative does a lone or mutually-agreeing
-    FULL_TIME signal (JD text, provider field, or JSON-LD page) produce
-    FULL_TIME; no source voting anything at all produces UNKNOWN,
-    source=NONE. Never infers FULL_TIME from salary, benefits, office
-    location, company reputation, or a title merely lacking the word
-    "contract" -- those are simply never inputs to this function at all."""
+    FULL_TIME signal (JD text, provider field, JSON-LD page, or verified
+    human evidence) produce FULL_TIME; no source voting anything at all
+    produces UNKNOWN, source=NONE. Never infers FULL_TIME from salary,
+    benefits, office location, company reputation, or a title merely
+    lacking the word "contract" -- those are simply never inputs to this
+    function at all."""
     jd_text = f"{title or ''} {description or ''}".strip()
     votes: list[tuple[EmploymentTypeEvidenceSource, str, Optional[EmploymentType]]] = [
         (EmploymentTypeEvidenceSource.JD_TEXT, jd_text, _scan_signal(jd_text, allow_bare_contract=False)),
@@ -230,6 +255,8 @@ def resolve_employment_type_evidence(
          _scan_signal(employment_type_raw, allow_bare_contract=True)),
         (EmploymentTypeEvidenceSource.STRUCTURED_PAGE_JSONLD, (structured_page_value or "").strip(),
          normalize_structured_page_employment_type(structured_page_value)),
+        (EmploymentTypeEvidenceSource.HUMAN_VERIFIED_EXTERNAL_EVIDENCE,
+         human_verified_value.value if human_verified_value else "", human_verified_value),
     ]
 
     negative_votes = [(s, r, sig) for s, r, sig in votes if sig is not None and sig != EmploymentType.FULL_TIME]
@@ -257,5 +284,5 @@ def resolve_employment_type_evidence(
     return EmploymentTypeDecision(
         EmploymentType.UNKNOWN, EmploymentTypeEvidenceSource.NONE, "",
         "no reliable employment-type evidence found (no explicit JD text, no provider structured field, "
-        "no JobPosting JSON-LD)",
+        "no JobPosting JSON-LD, no confirmed human-verified external evidence)",
     )
