@@ -1074,11 +1074,26 @@ class _LiveSession:
         picked up by a document-wide option scan and silently selected
         instead of the actually-clicked combobox's real option ("United
         States +1" instead of "United States" for the application's
-        address Country field)."""
-        try:
-            aria_controls = loc.get_attribute("aria-controls")
-        except Exception:  # noqa: BLE001
-            aria_controls = None
+        address Country field).
+
+        `aria-controls` is read with a short bounded retry, not a single
+        synchronous read right after `.click()` -- a SECOND real live
+        occurrence of the exact same wrong-widget selection was traced to
+        this: React sets `aria-controls` asynchronously on expand, so a
+        read immediately after click can still see it empty and fall
+        through to the (less precise) ancestor search, which climbed far
+        enough to find a DIFFERENT nearby field's listbox instead. Giving
+        the attribute a brief chance to appear fixes the race at its
+        actual source rather than trying to make the fallback smarter."""
+        aria_controls = None
+        for _ in range(5):
+            try:
+                aria_controls = loc.get_attribute("aria-controls")
+            except Exception:  # noqa: BLE001
+                aria_controls = None
+            if aria_controls:
+                break
+            target.wait_for_timeout(100)
         if aria_controls:
             return f"[id='{_css_attr_escape(aria_controls.split()[0])}']"
         try:
@@ -1177,9 +1192,43 @@ class _LiveSession:
                 self._clear_typed_value(loc)
                 return False
 
+            chosen_text = option_texts[match_idx].strip().lower()
             options.nth(match_idx).click(timeout=5000)
             target.wait_for_timeout(200)
 
+            # Reliable Form Interaction V1: react-select-style widgets clear
+            # the search input's OWN value back to "" once a real selection
+            # is made -- the chosen value instead renders in a SEPARATE
+            # sibling "single value" display element. A real live bug: the
+            # old verification read only input_value() and compared it with
+            # a bidirectional substring check ("x in y or y in x"); Python's
+            # `"" in y` is always True, so an empty (correctly-cleared)
+            # input silently PASSED verification no matter what was
+            # actually selected -- this masked the exact wrong-option
+            # selection bug this module exists to catch. The display
+            # element (matched by the stable `single-value` class fragment,
+            # not the CSS-module-hashed suffix) is checked FIRST and is
+            # authoritative when present; input_value() is only the
+            # fallback for a plain text/autocomplete field that genuinely
+            # has no such display element (e.g. Location/City).
+            try:
+                displayed = target.evaluate(
+                    """(sel) => {
+                        const el = document.querySelector(sel);
+                        if (!el) return null;
+                        let node = el;
+                        for (let i = 0; i < 6 && node; i++) {
+                            node = node.parentElement;
+                            if (!node) break;
+                            const disp = node.querySelector('[class*="single-value" i]');
+                            if (disp) return disp.innerText;
+                        }
+                        return null;
+                    }""",
+                    _selector_for(rf),
+                )
+            except Exception:  # noqa: BLE001
+                displayed = None
             try:
                 current = loc.input_value(timeout=2000)
             except Exception:  # noqa: BLE001
@@ -1191,11 +1240,20 @@ class _LiveSession:
             self._close_popup(loc)
             if expanded == "true":
                 return False  # popup never closed -- do not claim success
-            if current is not None:
-                cl = current.strip().lower()
-                if desired_norm not in cl and cl not in desired_norm:
-                    return False  # displayed value doesn't reflect our selection
-            return True
+
+            def _matches(text: Optional[str]) -> Optional[bool]:
+                if not text:
+                    return None  # inconclusive -- caller tries the next source
+                t = text.strip().lower()
+                return t == chosen_text or desired_norm in t or t in desired_norm
+
+            for candidate in (displayed, current):
+                verdict = _matches(candidate)
+                if verdict is not None:
+                    return verdict
+            # Neither the display element nor input_value() yielded any
+            # non-empty evidence at all -- never claim success on silence.
+            return False
         except Exception:  # noqa: BLE001
             return False
 

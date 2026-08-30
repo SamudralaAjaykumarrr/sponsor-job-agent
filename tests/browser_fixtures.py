@@ -1252,15 +1252,34 @@ function sjaOpenCombobox(inputId, listboxId) {
   const input = document.getElementById(inputId);
   const listbox = document.getElementById(listboxId);
   input.setAttribute('aria-expanded', 'true');
-  input.setAttribute('aria-controls', listboxId);
   listbox.style.display = 'block';
+  // Real react-select sets aria-controls ASYNCHRONOUSLY (a React re-render
+  // after the click/focus handler runs), not synchronously in the click
+  // handler itself -- a real live bug this project's own fix (a bounded
+  // retry in _discover_owned_listbox) exists to handle. Mirrored here with
+  // a deliberate short delay so a regression in that retry is caught.
+  setTimeout(() => { input.setAttribute('aria-controls', listboxId); }, 150);
 }
 function sjaSelectOption(inputId, listboxId, text) {
   const input = document.getElementById(inputId);
   const listbox = document.getElementById(listboxId);
-  input.value = text;
+  // Real react-select CLEARS the search input's own value back to "" on a
+  // real selection -- the chosen value instead renders in a separate
+  // sibling "single value" display element. Mirrored here exactly (a real
+  // live bug: an old verification checked only input_value(), which a
+  // correctly-cleared empty string satisfies via Python's `"" in x`
+  // always-true substring check, silently masking a wrong selection).
+  input.value = '';
   input.setAttribute('aria-expanded', 'false');
+  input.removeAttribute('aria-controls');
   listbox.style.display = 'none';
+  let display = input.parentElement.querySelector('.select__single-value');
+  if (!display) {
+    display = document.createElement('div');
+    display.className = 'select__single-value';
+    input.parentElement.appendChild(display);
+  }
+  display.innerText = text;
 }
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {

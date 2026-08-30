@@ -48,6 +48,23 @@ def _open(tmp_path, session_id: str, url: str):
     return outcome
 
 
+def _displayed_value(page, selector: str) -> str:
+    """Reads the real selected-value display (a sibling `.select__single-
+    value` element, matching react-select's actual behavior) rather than
+    the search input's own value -- a real combobox clears its input back
+    to "" on selection, so asserting against input_value() alone would
+    pass on an empty string no matter what was actually chosen."""
+    return page.evaluate(
+        """(sel) => {
+            const el = document.querySelector(sel);
+            if (!el) return null;
+            const disp = el.parentElement ? el.parentElement.querySelector('.select__single-value') : null;
+            return disp ? disp.innerText : null;
+        }""",
+        selector,
+    )
+
+
 def _field(fields: list[dict], label_prefix: str) -> dict:
     match = next((rf for rf in fields if (rf.get("label") or "").strip().startswith(label_prefix)), None)
     assert match is not None, f"field {label_prefix!r} not found among: {[rf.get('label') for rf in fields]}"
@@ -88,7 +105,7 @@ def test_combobox_exact_option_selection_is_verified(tmp_path):
         live = browser_runtime._get_live(session_id)
         ok = live.run(live._fill_one, office, "Menlo Park, CA", timeout=15)
         assert ok is True
-        displayed = live.run(lambda: live.page.locator("#office").input_value(), timeout=10)
+        displayed = live.run(lambda: _displayed_value(live.page, "#office"), timeout=10)
         assert displayed == "Menlo Park, CA"
         expanded = live.run(lambda: live.page.locator("#office").get_attribute("aria-expanded"), timeout=10)
         assert expanded == "false"
@@ -105,7 +122,7 @@ def test_combobox_decline_to_answer_option_selection(tmp_path):
         live = browser_runtime._get_live(session_id)
         ok = live.run(live._fill_one, gender, "I don't wish to answer", timeout=15)
         assert ok is True
-        displayed = live.run(lambda: live.page.locator("[id='1255']").input_value(), timeout=10)
+        displayed = live.run(lambda: _displayed_value(live.page, "[id='1255']"), timeout=10)
         assert displayed == "I don't wish to answer"
     finally:
         browser_runtime.close_session(session_id)
@@ -122,7 +139,7 @@ def test_country_combobox_never_selects_phone_country_code_option(tmp_path):
         live = browser_runtime._get_live(session_id)
         ok = live.run(live._fill_one, country, "United States", timeout=15)
         assert ok is True
-        displayed = live.run(lambda: live.page.locator("#country").input_value(), timeout=10)
+        displayed = live.run(lambda: _displayed_value(live.page, "#country"), timeout=10)
         # The real observed bug: this used to end up "United States +1"
         # (the unrelated phone widget's own pre-rendered option).
         assert displayed == "United States"
@@ -148,7 +165,7 @@ def test_opening_country_dropdown_does_not_contaminate_next_field_selection(tmp_
         assert country_expanded == "false"
 
         assert live.run(live._fill_one, gender, "Male", timeout=15) is True
-        gender_value = live.run(lambda: live.page.locator("[id='1255']").input_value(), timeout=10)
+        gender_value = live.run(lambda: _displayed_value(live.page, "[id='1255']"), timeout=10)
         assert gender_value == "Male"
     finally:
         browser_runtime.close_session(session_id)
