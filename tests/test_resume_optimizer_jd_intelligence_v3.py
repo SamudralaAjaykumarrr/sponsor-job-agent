@@ -719,14 +719,24 @@ def test_optimizer_version_bump_forces_regeneration_identity_change(tmp_env):
     """CLAUDE.md idempotency contract: a changed optimizer_version is part
     of the resume_variants identity key, so a content-selection rewrite
     never silently reuses a pre-change variant row for the same job/JD/
-    profile. Bumped to v3 for the select_bullets() one-page-overflow fix
-    (canary-candidate investigation): the v3-JD-intelligence version (v2)
-    always padded an entry's bullets/projects out to their cap even once
-    genuinely relevant content was exhausted, which systematically inflated
-    every generated resume and silently exhausted one_page.enforce_one_page's
-    bounded compression ladder before reaching one page for nearly all real
-    JDs. v3 stops selecting once no remaining bullet adds relevance/novelty,
-    once at least one relevant bullet is already chosen."""
+    profile.
+
+    v2 -> v3: select_bullets() one-page-overflow fix (canary-candidate
+    investigation) -- v2 always padded an entry's bullets/projects out to
+    their cap even once genuinely relevant content was exhausted, which
+    systematically inflated every generated resume and silently exhausted
+    one_page.enforce_one_page's bounded compression ladder before reaching
+    one page for nearly all real JDs. v3 stops selecting once no remaining
+    bullet adds relevance/novelty, once at least one relevant bullet is
+    already chosen.
+
+    v3 -> v4: RelevanceModel.term_hits() (Candidate Integrity Re-Screen +
+    Canary Selection V1) used a raw `t in b` substring check for bullet-
+    relevance scoring -- the same false-positive class app.matching.skills
+    .match_candidate_skills() had ("go" scoring a hit off a bullet merely
+    mentioning "Django"). Now uses app.matching.skills.contains_term's
+    isolated-token/phrase boundary check, which can change which bullets a
+    resume selects."""
     from app.resume_optimizer.fingerprint import OPTIMIZER_VERSION
 
-    assert OPTIMIZER_VERSION == "resume-optimizer-v3"
+    assert OPTIMIZER_VERSION == "resume-optimizer-v4"

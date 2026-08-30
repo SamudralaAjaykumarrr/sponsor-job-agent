@@ -8,7 +8,7 @@ import json
 
 from app.candidate.schema import CandidateProfile
 
-OPTIMIZER_VERSION = "resume-optimizer-v3"
+OPTIMIZER_VERSION = "resume-optimizer-v4"
 
 
 def compute_jd_fingerprint(title: str, company: str, description: str) -> str:

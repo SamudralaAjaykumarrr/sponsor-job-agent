@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 
 from app.candidate.schema import CandidateProfile
-from app.matching.skills import extract_jd_keywords
+from app.matching.skills import extract_jd_keywords, extract_skill_ids
 
 
 @dataclass
@@ -58,34 +58,41 @@ class ResumeContent:
     target_role: str = ""
 
 
-def _relevance(skills_used: list[str], jd_keywords: list[str]) -> int:
-    su = [s.lower() for s in skills_used]
-    return sum(1 for k in jd_keywords if any(k in s or s in k for s in su))
+def _relevance(skills_used: list[str], jd_keyword_ids: set[str]) -> int:
+    used_ids: set[str] = set()
+    for s in skills_used:
+        used_ids |= extract_skill_ids(s)
+    return len(used_ids & jd_keyword_ids)
 
 
 def generate_resume_content(
     profile: CandidateProfile, job_title: str, job_description: str
 ) -> ResumeContent:
     jd_keywords = extract_jd_keywords(f"{job_title}\n{job_description}")
+    jd_keyword_ids = set(jd_keywords)
 
-    matched_skills = [
-        s for s in profile.skills
-        if any(k in s.lower() or s.lower() in k for k in jd_keywords)
-    ]
+    # Real bug fix (canary-candidate integrity re-screen): this used to be a
+    # hand-rolled `k in s.lower() or s.lower() in k` substring check --
+    # exactly the same false-positive-prone pattern app.matching.skills's
+    # match_candidate_skills had ("go" inside "Django", "java" inside
+    # "JavaScript"). Now normalizes every candidate skill string onto the
+    # SAME canonical id space as the JD keywords (extract_skill_ids) and
+    # compares by set intersection, never substring containment.
+    candidate_skill_ids: dict[str, set[str]] = {s: extract_skill_ids(s) for s in profile.skills}
+    all_candidate_ids: set[str] = set().union(*candidate_skill_ids.values()) if candidate_skill_ids else set()
+
+    matched_skills = [s for s in profile.skills if candidate_skill_ids[s] & jd_keyword_ids]
     rest_skills = [s for s in profile.skills if s not in matched_skills]
     skills_ordered = matched_skills + rest_skills
 
-    gap_skills = [
-        k for k in jd_keywords
-        if not any(k in s.lower() or s.lower() in k for s in profile.skills)
-    ]
+    gap_skills = [k for k in jd_keywords if k not in all_candidate_ids]
 
     experience_sorted = sorted(
-        profile.employment, key=lambda e: _relevance(e.skills_used, jd_keywords), reverse=True
+        profile.employment, key=lambda e: _relevance(e.skills_used, jd_keyword_ids), reverse=True
     )
     experience = []
     for e in experience_sorted:
-        bullets = [b for b in e.verified_bullets if any(k in b.lower() for k in jd_keywords)]
+        bullets = [b for b in e.verified_bullets if extract_skill_ids(b) & jd_keyword_ids]
         if not bullets:
             bullets = list(e.verified_bullets)
         experience.append(
@@ -96,11 +103,11 @@ def generate_resume_content(
         )
 
     projects_sorted = sorted(
-        profile.projects, key=lambda p: _relevance(p.skills_used, jd_keywords), reverse=True
+        profile.projects, key=lambda p: _relevance(p.skills_used, jd_keyword_ids), reverse=True
     )
     projects = []
     for p in projects_sorted[:3]:
-        bullets = [b for b in p.verified_bullets if any(k in b.lower() for k in jd_keywords)]
+        bullets = [b for b in p.verified_bullets if extract_skill_ids(b) & jd_keyword_ids]
         if not bullets:
             bullets = list(p.verified_bullets)
         projects.append(ProjectBlock(name=p.name, description=p.description, bullets=bullets, url=p.url))
