@@ -1825,6 +1825,62 @@ def _m063_human_verified_employment_evidence_table(conn, backend: str) -> None:
     )
 
 
+def _m064_browser_verified_field_evidence_table(conn, backend: str) -> None:
+    """Browser-Verified Answer Canonical Readiness Integration V1: the
+    canonical, provider-agnostic record that a real, browser-rendered
+    provider-specific question was answered and the answer's actual
+    displayed/selected value was independently verified against the live
+    page -- never merely that a click/fill call returned without raising.
+    Only app.applications.browser_assist.record_verified_custom_answer()
+    ever writes a row here, and only after browser_runtime's own
+    _fill_one()/_fill_combobox() dispatch reports the field's real
+    post-selection displayed value genuinely matches (see CLAUDE.md
+    Reliable Form Interaction V1 for why that verification -- not a bare
+    click/fill success -- is the only acceptable proof).
+
+    Append-only (matching employer_sponsorship_evidence/sponsorship_
+    decisions/human_verified_employment_evidence's existing convention in
+    this project) -- a re-verification always inserts a new row; only the
+    most recent row per (execution_id, question_label_normalized) is ever
+    consulted live. Staleness is never a stored flag: job_identity_
+    fingerprint and jd_fingerprint_at_verification are compared against the
+    job's CURRENT values by app.applications.verified_field_evidence at
+    read time (the exact same fingerprints app.applications.approval and
+    app.applications.resume_integrity already use for their own staleness
+    checks -- no new fingerprint scheme invented), and the browser pipeline
+    additionally re-attempts the actual fill+live-verify against the
+    current DOM before ever treating a field as resolved, so genuine
+    per-field drift (an option disappearing, the control changing shape) is
+    still caught even when the coarser fingerprints still match."""
+    id_column = "id BIGSERIAL PRIMARY KEY" if backend == "postgres" else "id INTEGER PRIMARY KEY AUTOINCREMENT"
+    conn.execute(
+        f"""CREATE TABLE IF NOT EXISTS browser_verified_field_evidence (
+            {id_column},
+            execution_id TEXT NOT NULL,
+            job_id INTEGER NOT NULL,
+            provider TEXT NOT NULL DEFAULT '',
+            session_id TEXT NOT NULL DEFAULT '',
+            question_label TEXT NOT NULL,
+            question_label_normalized TEXT NOT NULL,
+            field_type TEXT NOT NULL DEFAULT '',
+            required INTEGER NOT NULL DEFAULT 0,
+            expected_answer TEXT NOT NULL,
+            actual_displayed_value TEXT NOT NULL,
+            structural_form_fingerprint TEXT NOT NULL DEFAULT '',
+            job_identity_fingerprint TEXT NOT NULL DEFAULT '',
+            jd_fingerprint_at_verification TEXT NOT NULL DEFAULT '',
+            verification_result TEXT NOT NULL DEFAULT 'PASS',
+            provenance TEXT NOT NULL DEFAULT 'browser_verified',
+            captured_at TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_browser_verified_field_evidence_lookup "
+        "ON browser_verified_field_evidence (execution_id, question_label_normalized, id)"
+    )
+
+
 MIGRATIONS: list[tuple[int, str, Callable]] = [
     (2, "phase6_worker_identity_columns", _m002_worker_identity_columns),
     (3, "phase6_schema_drift_table", _m003_schema_drift_table),
@@ -1888,6 +1944,7 @@ MIGRATIONS: list[tuple[int, str, Callable]] = [
     (61, "jobs_employment_type_page_evidence_columns", _m061_jobs_employment_type_page_evidence_columns),
     (62, "provider_submit_claims_table", _m062_provider_submit_claims_table),
     (63, "human_verified_employment_evidence_table", _m063_human_verified_employment_evidence_table),
+    (64, "browser_verified_field_evidence_table", _m064_browser_verified_field_evidence_table),
 ]
 
 # Version 1 is the implicit Phase 1-5 baseline schema, applied by

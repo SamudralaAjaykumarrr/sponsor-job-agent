@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Optional
 
 from app import config
-from app.applications.mapping import match_field
+from app.applications.mapping import match_field, match_field_with_application_fields
 from app.applications.models import ApplicationField, FieldCategory, FieldConfidence, SENSITIVE_CATEGORIES
 from app.models import Job
 
@@ -290,11 +290,25 @@ def _verify_resume(job: Job) -> tuple[bool, str, str]:
     return True, "", digest
 
 
-def _build_fields_for_job(job: Job) -> list[ApplicationField]:
+def _build_fields_for_job(job: Job, execution_id: str = "") -> list[ApplicationField]:
+    """Browser-Verified Answer Canonical Readiness Integration V1: the
+    generic, candidate-profile-driven ApplicationField list is UNCHANGED --
+    non-stale browser-verified evidence for THIS execution (see
+    app.applications.verified_field_evidence) is simply APPENDED. A
+    provider-specific question with no generic mapping resolves via
+    match_field_with_application_fields()'s exact-label fallback finding
+    one of these appended entries; a question that already has a real
+    generic alias is untouched (the generic entry stays first/authoritative
+    since match_field()'s fixed alias table is always checked first)."""
     profile = load_profile()
-    return build_application_fields(
+    fields = build_application_fields(
         profile, resume_path=job.resume_pdf_path or "", cover_letter_path=job.cover_letter_path or "",
     )
+    if execution_id:
+        from app.applications.verified_field_evidence import build_application_field_overrides
+
+        fields = fields + build_application_field_overrides(execution_id, job).fields
+    return fields
 
 
 def _classify_unresolved(raw_fields: list[dict], application_fields: list[ApplicationField],
@@ -308,7 +322,9 @@ def _classify_unresolved(raw_fields: list[dict], application_fields: list[Applic
         label = rf.get("label") or rf.get("name") or f"field#{rf.get('index')}"
         if label not in labels:
             continue
-        field_id, _confidence = match_field(rf.get("label", ""), rf.get("name", ""))
+        field_id, _confidence = match_field_with_application_fields(
+            rf.get("label", ""), rf.get("name", ""), application_fields,
+        )
         app_field = find_field(application_fields, field_id) if field_id else None
         if app_field is not None and app_field.category == FieldCategory.LEGAL_ATTESTATION:
             return BrowserPauseReason.LEGAL_ATTESTATION
@@ -652,7 +668,7 @@ def start_session(execution_id: str) -> dict:
     if not resume_ok:
         return {"created": False, "reason": resume_reason}
 
-    application_fields = _build_fields_for_job(job)
+    application_fields = _build_fields_for_job(job, execution_id)
     answers_version = sum(1 for f in application_fields if f.verified_value is not None)
 
     try:
@@ -719,7 +735,7 @@ def resume_session(session_id: str) -> dict:
         job = get_job(session["job_id"])
         if job is None:
             return {"ok": False, "detail": f"job {session['job_id']} not found"}
-        application_fields = _build_fields_for_job(job)
+        application_fields = _build_fields_for_job(job, session.get("execution_id", ""))
 
         if browser_runtime.is_live(session_id):
             browser_session.touch_activity(session_id)
@@ -784,6 +800,79 @@ def mark_user_action_complete(session_id: str) -> dict:
     return resume_session(session_id)
 
 
+def record_verified_custom_answer(session_id: str, question_label_prefix: str, answer_value: str) -> dict:
+    """Browser-Verified Answer Canonical Readiness Integration V1: the ONLY
+    sanctioned way an explicit, human-provided answer to a provider-
+    specific question (one with no generic candidate-profile mapping) ever
+    becomes durable, canonical evidence. Resolves the field matching
+    `question_label_prefix` on the session's CURRENT live page (by
+    normalized-label prefix -- never positional), fills it via the SAME
+    type-aware `browser_runtime.fill_one_field()` dispatch every other fill
+    path uses (including `_fill_combobox`'s scoped-listbox resolution and
+    displayed-value verification for a combobox), and ONLY IF that fill
+    genuinely succeeded records a `browser_verified_field_evidence` row --
+    a click/fill that returned False, or a field that could not be found
+    at all, records NOTHING (see CLAUDE.md Reliable Form Interaction V1:
+    "never claim success from a mere click/fill not throwing").
+
+    Returns {"ok": bool, "detail": str, "expected": str, "actual": str|None,
+    "evidence_id": str|None}."""
+    session = browser_session.get_session(session_id)
+    if session is None:
+        return {"ok": False, "detail": f"session {session_id} not found", "expected": answer_value,
+                "actual": None, "evidence_id": None}
+    if not browser_runtime.is_live(session_id):
+        return {"ok": False, "detail": "browser session is not open in this process -- resume it first",
+                "expected": answer_value, "actual": None, "evidence_id": None}
+
+    job = get_job(session["job_id"])
+    if job is None:
+        return {"ok": False, "detail": f"job {session['job_id']} not found", "expected": answer_value,
+                "actual": None, "evidence_id": None}
+
+    outcome = browser_runtime.rediscover(session_id)
+    if outcome.pause_reason:
+        return {"ok": False, "detail": f"a genuine pause ({outcome.pause_reason}) is present -- not recording "
+                                        f"anything against an unstable page state",
+                "expected": answer_value, "actual": None, "evidence_id": None}
+
+    prefix_n = _norm_label_for_matching(question_label_prefix)
+    rf = next(
+        (f for f in outcome.fields if _norm_label_for_matching(f.get("label", "")).startswith(prefix_n)),
+        None,
+    )
+    if rf is None:
+        return {"ok": False, "detail": f"no field on the current page matches label prefix {question_label_prefix!r}",
+                "expected": answer_value, "actual": None, "evidence_id": None}
+
+    ok = browser_runtime.fill_one_field(session_id, rf, answer_value)
+    if not ok:
+        return {"ok": False, "detail": "fill/verification did not succeed -- recording nothing",
+                "expected": answer_value, "actual": None, "evidence_id": None}
+
+    actual = browser_runtime.read_displayed_value(session_id, rf)
+    if not actual:
+        return {"ok": False, "detail": "fill reported success but no displayed value could be read afterward -- "
+                                        "recording nothing (silence is never treated as proof)",
+                "expected": answer_value, "actual": None, "evidence_id": None}
+
+    from app.applications.verified_field_evidence import record_verified_answer
+
+    evidence_id = record_verified_answer(
+        execution_id=session.get("execution_id", ""), job_id=job.id, provider=job.provider or "",
+        session_id=session_id, question_label=rf.get("label", question_label_prefix),
+        field_type=rf.get("type", ""), required=bool(rf.get("required")),
+        expected_answer=answer_value, actual_displayed_value=actual,
+        structural_form_fingerprint=outcome.fingerprint, job=job,
+    )
+    return {"ok": True, "detail": "verified and recorded", "expected": answer_value, "actual": actual,
+            "evidence_id": evidence_id}
+
+
+def _norm_label_for_matching(label: str) -> str:
+    return " ".join((label or "").split())
+
+
 def advance_step(session_id: str) -> dict:
     """CLAUDE.md Phase 10 section 10: clicks a safe "Next"/"Continue" control
     on a multi-step form (never a final submit action) and rediscovers the
@@ -810,7 +899,7 @@ def advance_step(session_id: str) -> dict:
             return {"ok": False, "detail": reason, "session": session}
 
         job = get_job(session["job_id"])
-        application_fields = _build_fields_for_job(job) if job else []
+        application_fields = _build_fields_for_job(job, session.get("execution_id", "")) if job else []
         session = browser_session.update_session(session_id, current_step=result["current_step"])
         checkpoints.record_checkpoint(
             session_id, checkpoints.CheckpointStage.STEP_COMPLETED, job_id=session.get("job_id"),

@@ -58,7 +58,7 @@ from urllib.parse import urlparse
 import httpx
 
 from app.applications.form_model import FormFieldSource, NormalizedForm, normalize_form_snapshot
-from app.applications.mapping import match_field
+from app.applications.mapping import match_field, match_field_with_application_fields
 from app.applications.models import (
     ApplicationCapabilities,
     ApplicationField,
@@ -334,10 +334,22 @@ class GreenhouseApplicationProvider(ApplicationProvider):
     # --- mapping / fill / validation (unchanged Phase 8 behavior) ---------
 
     def map_fields(self, form: FormSnapshot, application_fields) -> MappingResult:
+        # Browser-Verified Answer Canonical Readiness Integration V1:
+        # match_field_with_application_fields() falls back to an EXACT
+        # normalized-label match against `application_fields` (which, by
+        # the time this is called from app.applications.executor.
+        # process_execution(), already includes any non-stale browser-
+        # verified evidence for this execution -- see
+        # app.applications.verified_field_evidence.
+        # build_application_field_overrides()) when the fixed FIELD_ALIASES
+        # vocabulary has no entry for a provider-specific question. Never
+        # positional, never fuzzy -- match_field()'s own existing behavior
+        # is completely unchanged; this only fills a gap it already
+        # reported as unresolved.
         mapped: list[MappedField] = []
         unmapped_required: list[FormField] = []
         for ff in form.fields:
-            field_id, confidence = match_field(ff.label, ff.name)
+            field_id, confidence = match_field_with_application_fields(ff.label, ff.name, application_fields)
             app_field = find_field(application_fields, field_id) if field_id else None
             mapped.append(MappedField(form_field=ff, application_field=app_field, confidence=confidence))
             if ff.required and app_field is None:

@@ -146,3 +146,32 @@ def match_field(label: str, name: str = "") -> tuple[str | None, FieldConfidence
         return candidate[0], FieldConfidence.MEDIUM
 
     return None, FieldConfidence.LOW
+
+
+def match_field_with_application_fields(label: str, name: str, application_fields: list) -> tuple[str | None, FieldConfidence]:
+    """Browser-Verified Answer Canonical Readiness Integration V1: the
+    single shared resolution step both app.applications.browser_runtime's
+    fill pass and every ApplicationProvider.map_fields() implementation
+    call, instead of bare match_field(), so a provider-specific question
+    with NO entry in the fixed FIELD_ALIASES vocabulary can still be
+    resolved -- but ONLY via an EXACT normalized-label match against an
+    `application_fields` entry's own `.label` (never positional, never a
+    fuzzy/token-overlap guess). This is how a live, human-verified answer
+    (app.applications.verified_field_evidence.build_application_field_
+    overrides()) reaches the SAME resolved/filled bookkeeping a generic
+    profile-mapped field already gets, without weakening match_field()'s
+    own existing, well-tested behavior at all -- match_field() itself is
+    completely unchanged; this is a strictly additive wrapper.
+
+    The fixed alias vocabulary is checked FIRST and always wins if a
+    genuine canonical alias exists -- an application_fields entry only
+    ever fills a gap match_field() itself could not resolve."""
+    field_id, confidence = match_field(label, name)
+    if field_id is not None:
+        return field_id, confidence
+    norm_label = normalize_label(label)
+    for af in application_fields or []:
+        af_label = getattr(af, "label", None)
+        if af_label and normalize_label(af_label) == norm_label:
+            return af.field_id, FieldConfidence.EXACT
+    return None, FieldConfidence.LOW

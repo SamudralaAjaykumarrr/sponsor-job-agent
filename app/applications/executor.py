@@ -367,7 +367,23 @@ def process_execution(execution_id: str, *, allow_submission: bool = True, appro
                                     attempt_id=attempt_id, source="executor.form_schema_changed")
             return repo.get_execution(execution_id)
 
-        mapping = provider.map_fields(form, fields)
+        # Browser-Verified Answer Canonical Readiness Integration V1:
+        # merged in AFTER snapshot_answers() above (so that call's own
+        # profile-only answers_version/source_version meaning is completely
+        # unchanged) but before mapping/validation, so a provider-specific
+        # question with no generic profile mapping that a human has
+        # already explicitly answered and had independently verified in
+        # the live browser (app.applications.browser_assist.
+        # record_verified_custom_answer()) can still reach
+        # ExecutionStatus.SUBMISSION_READY through this API-schema-driven
+        # pipeline. Non-stale evidence only (see verified_field_evidence.
+        # is_stale()) -- a changed JD or job identity since verification
+        # never carries forward silently.
+        from app.applications.verified_field_evidence import build_application_field_overrides
+
+        fields_with_evidence = fields + build_application_field_overrides(execution_id, job).fields
+
+        mapping = provider.map_fields(form, fields_with_evidence)
         repo.log_event(execution_id, job_id, "form_mapped", detail=f"mapped={len(mapping.mapped)}",
                         correlation_id=correlation_id)
         draft = provider.fill_draft(form, mapping)

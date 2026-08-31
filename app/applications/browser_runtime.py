@@ -68,7 +68,7 @@ from app.applications.job_identity import (
     verify_job_identity,
     verify_job_identity_full,
 )
-from app.applications.mapping import match_field
+from app.applications.mapping import match_field, match_field_with_application_fields
 from app.applications.models import ApplicationField, FieldConfidence, SENSITIVE_CATEGORIES
 from app.applications import provider_health
 from app.applications.schema import DECLINE_TO_SELF_IDENTIFY_PHRASES, find_field
@@ -988,7 +988,9 @@ class _LiveSession:
         outcome = FillOutcome()
         for rf in raw_fields:
             label = rf.get("label") or rf.get("name") or f"field#{rf.get('index')}"
-            field_id, confidence = match_field(rf.get("label", ""), rf.get("name", ""))
+            field_id, confidence = match_field_with_application_fields(
+                rf.get("label", ""), rf.get("name", ""), application_fields,
+            )
             app_field = find_field(application_fields, field_id) if field_id else None
 
             if app_field is not None and app_field.category in SENSITIVE_CATEGORIES and not app_field.auto_fill_allowed:
@@ -1264,6 +1266,47 @@ class _LiveSession:
             return False
         except Exception:  # noqa: BLE001
             return False
+
+    def _read_displayed_value(self, rf: dict) -> Optional[str]:
+        """Browser-Verified Answer Canonical Readiness Integration V1: reads
+        a field's CURRENT real displayed/selected value -- the same
+        "display element first, input_value() fallback" logic
+        `_fill_combobox` uses for its own post-selection verification,
+        exposed standalone so a caller can re-check an ALREADY-filled
+        field's live state (e.g. app.applications.browser_assist.
+        record_verified_custom_answer(), immediately after a fill, to
+        capture the exact evidence text durably). Never mutates anything."""
+        target = rf.get("_frame") or self.page
+        try:
+            loc = target.locator(_selector_for(rf))
+        except Exception:  # noqa: BLE001
+            return None
+        try:
+            displayed = target.evaluate(
+                """(sel) => {
+                    const el = document.querySelector(sel);
+                    if (!el) return null;
+                    let node = el;
+                    for (let i = 0; i < 6 && node; i++) {
+                        node = node.parentElement;
+                        if (!node) break;
+                        const disp = node.querySelector('[class*="single-value" i]');
+                        if (disp) return disp.innerText;
+                    }
+                    return null;
+                }""",
+                _selector_for(rf),
+            )
+        except Exception:  # noqa: BLE001
+            displayed = None
+        if displayed:
+            return displayed
+        try:
+            if rf.get("type") == "checkbox":
+                return "true" if loc.is_checked(timeout=2000) else "false"
+            return loc.input_value(timeout=2000)
+        except Exception:  # noqa: BLE001
+            return None
 
     def _upload_one(self, rf: dict, path: str) -> bool:
         target = rf.get("_frame") or self.page
@@ -1759,6 +1802,26 @@ def rediscover(session_id: str) -> DiscoveryOutcome:
 def fill_fields(session_id: str, raw_fields: list[dict], application_fields: list[ApplicationField]) -> FillOutcome:
     live = _get_live(session_id)
     return live.run(live._do_fill, raw_fields, application_fields, timeout=60)
+
+
+def fill_one_field(session_id: str, rf: dict, value: str) -> bool:
+    """Browser-Verified Answer Canonical Readiness Integration V1: public
+    single-field fill, dispatching through the SAME `_fill_one` type-aware
+    logic (including `_fill_combobox`'s scoped-listbox resolution and
+    displayed-value verification) every other fill path in this project
+    uses. Used by app.applications.browser_assist.
+    record_verified_custom_answer() to apply one explicit, human-provided
+    answer to one specific field -- never a batch/positional operation."""
+    live = _get_live(session_id)
+    return live.run(live._fill_one, rf, value, timeout=15)
+
+
+def read_displayed_value(session_id: str, rf: dict) -> Optional[str]:
+    """Public wrapper for `_LiveSession._read_displayed_value` -- reads a
+    field's CURRENT real displayed/selected value without filling
+    anything. See that method's docstring."""
+    live = _get_live(session_id)
+    return live.run(live._read_displayed_value, rf, timeout=10)
 
 
 def advance_apply_entry(session_id: str) -> dict:
