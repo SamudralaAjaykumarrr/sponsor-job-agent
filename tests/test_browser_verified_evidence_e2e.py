@@ -214,3 +214,31 @@ def test_evidence_survives_as_durable_state_independent_of_the_recording_call(tm
     overrides = vfe.build_application_field_overrides(execution_id, job).fields
     assert len(overrides) == 1
     assert overrides[0].verified_value == "United States"
+
+
+# --- real live bug: reading a plain text field's displayed value must
+# never leak a NEARBY combobox's single-value display element. ---
+
+def test_reading_plain_text_field_never_leaks_nearby_combobox_display(tmp_path, monkeypatch):
+    url = combobox_reliability_page(tmp_path)
+    session_id = "t-no-leak"
+    try:
+        outcome = browser_runtime.open_session(
+            session_id, provider="greenhouse", url=url,
+            expected_title=DEFAULT_JOB_TITLE, expected_company=DEFAULT_JOB_COMPANY,
+        )
+        country = next(rf for rf in outcome.fields if (rf.get("label") or "").startswith("Country"))
+        fname = next(rf for rf in outcome.fields if (rf.get("label") or "").startswith("First Name"))
+
+        # Fill the combobox first -- this renders a real "single-value"
+        # display element elsewhere in the DOM.
+        assert browser_runtime.fill_one_field(session_id, country, "United States") is True
+
+        # Reading the UNRELATED plain text field afterward must reflect
+        # ONLY that field's own (empty -- never filled) value, never the
+        # combobox's "United States" display text.
+        value = browser_runtime.read_displayed_value(session_id, fname)
+        assert value in (None, "")
+        assert value != "United States"
+    finally:
+        browser_runtime.close_session(session_id)

@@ -1275,30 +1275,42 @@ class _LiveSession:
         exposed standalone so a caller can re-check an ALREADY-filled
         field's live state (e.g. app.applications.browser_assist.
         record_verified_custom_answer(), immediately after a fill, to
-        capture the exact evidence text durably). Never mutates anything."""
+        capture the exact evidence text durably). Never mutates anything.
+
+        The ancestor-climbing "single-value" display search is only ever
+        attempted for `type == "combobox"` fields -- a real live bug: for
+        an ordinary text field, that search could climb past the field's
+        own (nonexistent) display wrapper and find a DIFFERENT, nearby
+        combobox field's single-value element instead, since real forms
+        commonly place several fields close together in the DOM. A plain
+        text/tel/textarea field has no such display element of its own by
+        construction, so it goes straight to input_value(); a checkbox
+        goes straight to is_checked()."""
         target = rf.get("_frame") or self.page
         try:
             loc = target.locator(_selector_for(rf))
         except Exception:  # noqa: BLE001
             return None
-        try:
-            displayed = target.evaluate(
-                """(sel) => {
-                    const el = document.querySelector(sel);
-                    if (!el) return null;
-                    let node = el;
-                    for (let i = 0; i < 6 && node; i++) {
-                        node = node.parentElement;
-                        if (!node) break;
-                        const disp = node.querySelector('[class*="single-value" i]');
-                        if (disp) return disp.innerText;
-                    }
-                    return null;
-                }""",
-                _selector_for(rf),
-            )
-        except Exception:  # noqa: BLE001
-            displayed = None
+        displayed = None
+        if rf.get("type") == "combobox":
+            try:
+                displayed = target.evaluate(
+                    """(sel) => {
+                        const el = document.querySelector(sel);
+                        if (!el) return null;
+                        let node = el;
+                        for (let i = 0; i < 6 && node; i++) {
+                            node = node.parentElement;
+                            if (!node) break;
+                            const disp = node.querySelector('[class*="single-value" i]');
+                            if (disp) return disp.innerText;
+                        }
+                        return null;
+                    }""",
+                    _selector_for(rf),
+                )
+            except Exception:  # noqa: BLE001
+                displayed = None
         if displayed:
             return displayed
         try:

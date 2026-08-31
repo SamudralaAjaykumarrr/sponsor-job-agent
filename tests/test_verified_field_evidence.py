@@ -196,7 +196,7 @@ def test_match_field_with_application_fields_requires_exact_label():
     af = ApplicationField(
         field_id="verified:abc", label="Have you ever worked for Acme?", category=FieldCategory.CUSTOM_TEXT,
         normalized_type="select", required=True, verified_value="No", confidence=FieldConfidence.EXACT,
-        auto_fill_allowed=True,
+        auto_fill_allowed=True, value_source="browser_verified_field_evidence",
     )
     assert match_field_with_application_fields("Have you ever worked for Acme?", "", [af]) == \
         ("verified:abc", FieldConfidence.EXACT)
@@ -219,3 +219,43 @@ def test_match_field_with_application_fields_never_overrides_a_real_alias():
 def test_match_field_with_application_fields_backward_compatible_with_no_overrides():
     assert match_field_with_application_fields("Email", "", []) == ("email", FieldConfidence.EXACT)
     assert match_field_with_application_fields("Some totally unknown question", "", []) == (None, FieldConfidence.LOW)
+
+
+# --- real live bug: evidence must win over a same-topic MEDIUM-confidence
+# generic token-overlap guess whose answer shape is wrong for this form. ---
+
+def test_evidence_wins_over_medium_confidence_generic_token_overlap_match():
+    label = "Are you legally work authorized to work in the US?"
+    # Confirm the real bug's precondition still holds: the generic engine
+    # alone (no evidence) resolves this via MEDIUM-confidence token
+    # overlap to work_authorization_status, whose verified_value is a raw
+    # status string ("F-1 OPT"), not one of THIS form's actual Yes/No
+    # choices -- exactly what silently left it unresolved live.
+    generic_only = match_field_with_application_fields(label, "", [])
+    assert generic_only[1] == FieldConfidence.MEDIUM
+    assert generic_only[0] == "work_authorization_status"
+
+    evidence_field = ApplicationField(
+        field_id="verified:legally_authorized", label=label, category=FieldCategory.CUSTOM_TEXT,
+        normalized_type="select", required=True, verified_value="Yes", confidence=FieldConfidence.EXACT,
+        auto_fill_allowed=True, value_source="browser_verified_field_evidence",
+    )
+    field_id, confidence = match_field_with_application_fields(label, "", [evidence_field])
+    assert field_id == "verified:legally_authorized"
+    assert confidence == FieldConfidence.EXACT
+
+
+def test_non_evidence_application_field_never_gets_elevated_priority():
+    """A generically-mapped application_fields entry that merely happens to
+    share label text (value_source anything OTHER than
+    'browser_verified_field_evidence') must NOT get the evidence
+    fast-path -- only genuinely evidence-sourced entries do."""
+    label = "Are you legally work authorized to work in the US?"
+    lookalike = ApplicationField(
+        field_id="not_evidence_at_all", label=label, category=FieldCategory.CUSTOM_TEXT,
+        normalized_type="select", required=True, verified_value="Yes", confidence=FieldConfidence.EXACT,
+        auto_fill_allowed=True, value_source="candidate_profile.something_else",
+    )
+    field_id, confidence = match_field_with_application_fields(label, "", [lookalike])
+    assert field_id == "work_authorization_status"  # falls through to the unchanged generic behavior
+    assert confidence == FieldConfidence.MEDIUM

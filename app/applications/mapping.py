@@ -163,15 +163,33 @@ def match_field_with_application_fields(label: str, name: str, application_field
     own existing, well-tested behavior at all -- match_field() itself is
     completely unchanged; this is a strictly additive wrapper.
 
-    The fixed alias vocabulary is checked FIRST and always wins if a
-    genuine canonical alias exists -- an application_fields entry only
-    ever fills a gap match_field() itself could not resolve."""
-    field_id, confidence = match_field(label, name)
-    if field_id is not None:
-        return field_id, confidence
+    An EXACT canonical alias (e.g. "Email") always wins outright, checked
+    before anything else -- a deliberate, well-tested mapping must never
+    be shadowed. A `browser_verified_field_evidence`-sourced override is
+    checked NEXT, before match_field()'s own weaker HIGH-confidence
+    name-alias and MEDIUM-confidence token-overlap fallbacks -- a real
+    live case caught exactly why this ordering matters: Robinhood's "Are
+    you legally work authorized to work in the US?" (choices strictly
+    Yes/No) token-overlap-matched the generic `work_authorization_status`
+    canonical field (MEDIUM confidence) purely on shared words, whose
+    verified_value is the candidate's raw status string ("F-1 OPT") --
+    not one of the form's actual Yes/No choices, so the field stayed
+    unresolved even with a confirmed, human-verified "Yes" answer sitting
+    unused in the evidence table. A confirmed answer for THIS EXACT
+    question is more specific and more trustworthy than a same-topic
+    guess assuming a different answer shape; only a genuine EXACT
+    canonical alias may still override it. Only entries this module
+    itself marks as evidence-sourced (value_source ==
+    "browser_verified_field_evidence") get this elevated priority --
+    an ordinary generically-mapped application_fields entry that happens
+    to share label text is untouched, falling through to match_field()'s
+    own unchanged behavior exactly as before."""
     norm_label = normalize_label(label)
+    if norm_label in _ALIAS_INDEX:
+        return _ALIAS_INDEX[norm_label], FieldConfidence.EXACT
     for af in application_fields or []:
         af_label = getattr(af, "label", None)
-        if af_label and normalize_label(af_label) == norm_label:
+        if af_label and normalize_label(af_label) == norm_label \
+                and getattr(af, "value_source", "") == "browser_verified_field_evidence":
             return af.field_id, FieldConfidence.EXACT
-    return None, FieldConfidence.LOW
+    return match_field(label, name)

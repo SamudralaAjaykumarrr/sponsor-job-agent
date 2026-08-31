@@ -856,6 +856,20 @@ def record_verified_custom_answer(session_id: str, question_label_prefix: str, a
                                         "recording nothing (silence is never treated as proof)",
                 "expected": answer_value, "actual": None, "evidence_id": None}
 
+    # Never record evidence whose actual displayed value doesn't genuinely
+    # correspond to the intended answer -- `_fill_one` reporting `ok=True`
+    # for a plain text field only means `.fill()` didn't raise, not that
+    # the right field received it (a real live bug: a nearby field's value
+    # was misread here before this check existed). Bidirectional substring
+    # match mirrors `_fill_combobox`'s own verification; empty strings are
+    # excluded from both sides so this can never trivially "match" nothing.
+    expected_norm = answer_value.strip().lower()
+    actual_norm = actual.strip().lower()
+    if not (expected_norm and actual_norm and (expected_norm in actual_norm or actual_norm in expected_norm)):
+        return {"ok": False, "detail": f"displayed value {actual!r} does not correspond to the intended answer "
+                                        f"{answer_value!r} -- recording nothing",
+                "expected": answer_value, "actual": actual, "evidence_id": None}
+
     from app.applications.verified_field_evidence import record_verified_answer
 
     evidence_id = record_verified_answer(
