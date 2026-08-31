@@ -292,9 +292,17 @@ def build_manifest(job_id: int, *, discover_form: bool = True) -> Optional[PreSu
         manifest.unanswered_required = [
             f.label or f.provider_field_id for f in normalized.unanswered_required()
         ]
+        # Required only -- matches unanswered_required()'s own filter and
+        # greenhouse_submit_contract.py's identical fix: an optional,
+        # unmapped high-risk field left genuinely blank (e.g. a
+        # conditional "if you answered Yes, explain" follow-up that is
+        # correctly empty because the parent question was answered "No")
+        # is not something a human needs to resolve, and this report must
+        # never disagree with the browser session's own readiness for the
+        # same reason.
         manifest.high_risk_pending = [
             f.label or f.provider_field_id for f in normalized.high_risk_fields()
-            if not f.safe_answer_available
+            if f.required and not f.safe_answer_available
         ]
         manifest.answers = [
             AnswerEntry(

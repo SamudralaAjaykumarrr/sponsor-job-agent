@@ -266,7 +266,20 @@ def build_submit_contract(
             ).fields
         normalized = normalize_form_snapshot(current_form, application_fields)
         unanswered = normalized.unanswered_required()
-        high_risk_pending = [f for f in normalized.high_risk_fields() if not f.safe_answer_available]
+        # A high-risk field only blocks readiness when it is REQUIRED --
+        # matching unanswered_required()'s own required filter, and
+        # browser_runtime._fill_pass's identical rule (it only ever
+        # appends to `unresolved` when `rf.get("required")`). An OPTIONAL,
+        # unmapped high-risk field left genuinely blank (the common real
+        # shape: a conditional "if you answered Yes, explain" follow-up
+        # that is correctly empty because the parent question was
+        # answered "No") is not something a human needs to resolve, and
+        # has no path to ever become non-blank -- filling it while the
+        # parent answer is "No" would be fabricated, not truthful. A real
+        # live case caught this permanently blocking contract.ready for
+        # an execution the browser session itself had already correctly
+        # resolved.
+        high_risk_pending = [f for f in normalized.high_risk_fields() if f.required and not f.safe_answer_available]
         if unanswered:
             steps.append(_step(6, "required_fields_complete", False,
                                 f"{len(unanswered)} required field(s) have no safe verified answer: "

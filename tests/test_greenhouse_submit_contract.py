@@ -45,6 +45,16 @@ UNANSWERABLE_PAYLOAD = {
     ],
 }
 
+# Real live shape: a conditional "if you answered Yes, explain" follow-up,
+# OPTIONAL, unmapped, and genuinely blank (the parent Yes/No question was
+# answered "No") -- must never permanently block contract.ready.
+OPTIONAL_HIGH_RISK_PAYLOAD = {
+    "questions": MINIMAL_PAYLOAD["questions"] + [
+        {"label": "If you answered \"Yes\" to the above question, please provide additional information here:",
+         "required": False, "fields": [{"name": "question_99002", "type": "input_text", "values": []}]},
+    ],
+}
+
 
 @pytest.fixture(autouse=True)
 def _executor_enabled(monkeypatch):
@@ -139,6 +149,30 @@ def test_missing_required_field_blocks_readiness(tmp_env, sample_profile):
         assert required_step.status.value == "FAILED"
         assert contract.ready is False
         assert any("required field" in r for r in contract.blocking_reasons)
+    finally:
+        _restore(original)
+
+
+def test_optional_unmapped_high_risk_field_never_permanently_blocks_readiness(tmp_env, sample_profile):
+    """Real live bug: an OPTIONAL, unmapped high-risk question left
+    genuinely blank (no generic mapping, no evidence -- and none could ever
+    apply, since it's a conditional follow-up whose parent question was
+    answered "No") used to fail required_fields_complete forever, even
+    though it is not required and the browser session's own readiness
+    check correctly resolves the identical form."""
+    save_profile(sample_profile)
+    original = _install_mock_greenhouse(OPTIONAL_HIGH_RISK_PAYLOAD)
+    try:
+        job = ingest_and_process(_make_job("gh-c-optional-high-risk"))
+        execution_id = _drive_to_approved(job)
+
+        contract = build_submit_contract(job.id)
+        assert contract is not None
+        assert contract.execution_id == execution_id
+        required_step = next(s for s in contract.steps if s.name == "required_fields_complete")
+        assert required_step.status.value == "PASSED", required_step.detail
+        assert contract.ready is True
+        assert contract.blocking_reasons == []
     finally:
         _restore(original)
 
