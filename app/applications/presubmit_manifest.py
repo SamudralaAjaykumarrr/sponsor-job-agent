@@ -245,6 +245,18 @@ def build_manifest(job_id: int, *, discover_form: bool = True) -> Optional[PreSu
     application_fields = build_application_fields(
         profile, resume_path=job.resume_pdf_path or "", cover_letter_path=job.cover_letter_path or "",
     )
+    # Browser-Verified Answer Canonical Readiness Integration V1: this
+    # STRICTLY READ-ONLY report must reflect the SAME canonical resolved
+    # state app.applications.executor.process_execution() actually acts
+    # on, or an accurate SUBMISSION_READY execution would misleadingly
+    # show as "not ready" here -- never a new gate, purely keeping this
+    # report's own field-resolution picture consistent with the real one.
+    if execution is not None:
+        from app.applications.verified_field_evidence import build_application_field_overrides
+
+        application_fields = application_fields + build_application_field_overrides(
+            execution["execution_id"], job,
+        ).fields
 
     manifest = PreSubmitManifest(
         job_id=job.id, company=job.company or "", title=job.title or "", location=job.location or "",

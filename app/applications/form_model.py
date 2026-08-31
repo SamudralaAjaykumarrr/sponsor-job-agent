@@ -45,7 +45,7 @@ from dataclasses import dataclass, field as dataclass_field
 from enum import Enum
 from typing import Optional
 
-from app.applications.mapping import match_field
+from app.applications.mapping import match_field_with_application_fields
 from app.applications.models import (
     ApplicationField,
     FieldCategory,
@@ -323,7 +323,7 @@ def _normalize_one(
     choices: list[str], source: FormFieldSource, application_fields: list[ApplicationField],
     evidence: str,
 ) -> NormalizedFormField:
-    canonical_id, confidence = match_field(label or "", provider_field_id or "")
+    canonical_id, confidence = match_field_with_application_fields(label or "", provider_field_id or "", application_fields)
     app_field = find_field(application_fields, canonical_id) if canonical_id else None
     assessment = classify_high_risk(app_field, label)
 
