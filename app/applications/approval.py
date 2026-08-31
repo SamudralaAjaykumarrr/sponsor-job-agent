@@ -317,6 +317,65 @@ def approve_and_apply(job_id: int) -> ApprovalResult:
                            browser_assist=bridge_result)
 
 
+def reapprove_if_stale(job_id: int) -> ApprovalResult:
+    """Refreshes a durable approval record for an execution that is ALREADY
+    past initial approval (APPROVED or later -- never SUBMISSION_READY,
+    which is approve_and_apply()'s own job) whose latest approval row has
+    gone stale relative to the job/execution's CURRENT fingerprints. Unlike
+    approve_and_apply(), this NEVER calls process_execution(approved=True)
+    and never re-runs the pipeline -- the execution already correctly
+    reached its stage; only the approval record's own snapshot needs
+    updating. This does not weaken approve_and_apply()'s "the ONLY caller
+    of process_execution(approved=True)" invariant, because this function
+    never calls it at all.
+
+    Idempotent: if the latest approval is already current, this is a no-op
+    (already=True, no new row). Only ever called as part of a human
+    explicitly re-authorizing a specific execution (the caller is
+    responsible for having just received that authorization) -- this
+    function itself performs no submission and unlocks nothing beyond
+    recording the row; verify_durable_approval_for_submission() is still
+    the real gate re-checked immediately before any submit attempt.
+
+    Real gap this closes: job 200/Robinhood's approval was recorded before
+    a genuine human-verified FULL_TIME record was correctly wired in
+    (fixed 2026-08-31), leaving its ACTIVE approval permanently stale with
+    no way back to a valid state -- approve_and_apply() itself is a no-op
+    once status is already APPROVED."""
+    job = get_job(job_id)
+    if job is None:
+        return ApprovalResult(False, None, None, None, "job not found")
+
+    execution = repo.get_active_execution_for_job(job_id)
+    if execution is None:
+        return ApprovalResult(False, None, None, None, "no active application prepared for this job yet")
+
+    if execution["status"] == ExecutionStatus.SUBMISSION_READY.value:
+        return ApprovalResult(False, execution["execution_id"], None, execution,
+                               "execution has no prior approval yet -- use approve_and_apply(), not this")
+
+    existing = get_latest_approval(execution["execution_id"])
+    if existing is None:
+        return ApprovalResult(False, execution["execution_id"], None, execution,
+                               "no prior approval exists for this execution to refresh")
+
+    valid, reasons = is_current_valid(job, execution, existing)
+    if valid:
+        return ApprovalResult(True, execution["execution_id"], existing["approval_id"], execution,
+                               "existing approval is already current -- nothing to refresh", already=True)
+
+    provider = get_application_provider(job)
+    approval_id = _record_approval_row(
+        job, execution, provider_submission_supported=provider.capabilities.submission_supported,
+    )
+    repo.log_event(
+        execution["execution_id"], job_id, "reapproved",
+        detail=f"approval_id={approval_id}; refreshed because: {'; '.join(reasons)}",
+    )
+    return ApprovalResult(True, execution["execution_id"], approval_id, execution,
+                           "approval refreshed against current fingerprints")
+
+
 @dataclass
 class BulkApprovalResult:
     results: list[dict] = field(default_factory=list)

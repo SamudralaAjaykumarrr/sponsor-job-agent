@@ -286,6 +286,115 @@ def test_record_approval_row_and_revalidation_consume_confirmed_human_evidence(t
     assert reasons == []
 
 
+def test_reapprove_if_stale_refreshes_approval_already_past_approve_and_apply(tmp_env, sample_profile):
+    """approve_and_apply() is a no-op once execution.status == APPROVED (it
+    just reports 'already approved'), so once a real approval goes stale
+    after that point -- exactly job 200/Robinhood's situation, where the
+    approval predated the human-verified-employment-evidence wiring fix --
+    there was no way back to a valid, current approval short of directly
+    poking the database. reapprove_if_stale() closes that gap: never calls
+    process_execution(approved=True) (the execution already correctly
+    reached APPROVED), only refreshes the approval row."""
+    from app.applications.human_verified_employment_evidence import confirm_by_human, record_identity_check
+
+    save_profile(sample_profile)
+    silent_jd = (
+        "As a Software Engineer, you'll build and own backend services. "
+        "What you bring: 2+ years of experience in software development. "
+        "Proficiency in Go or Python."
+    )
+
+    fixture_payload = {
+        "questions": [
+            {"label": "First Name", "required": True,
+             "fields": [{"name": "first_name", "type": "input_text", "values": []}]},
+            {"label": "Last Name", "required": True,
+             "fields": [{"name": "last_name", "type": "input_text", "values": []}]},
+            {"label": "Email", "required": True,
+             "fields": [{"name": "email", "type": "input_text", "values": []}]},
+            {"label": "Resume/CV", "required": True,
+             "fields": [{"name": "resume", "type": "input_file", "values": []}]},
+        ],
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=fixture_payload)
+
+    mocked_client = httpx.Client(transport=httpx.MockTransport(handler))
+    original_provider = provider_registry._PROVIDERS["greenhouse"]
+    provider_registry._PROVIDERS["greenhouse"] = GreenhouseApplicationProvider(client=mocked_client)
+    try:
+        job = ingest_and_process(Job(
+            title="Backend Software Engineer", company="Acme Corp", location="Remote - US",
+            description=silent_jd, employment_type="", provider="greenhouse",
+            external_job_id="gh-appr-reapprove", company_identifier="acme", mode=ApplicationMode.ASSIST,
+        ))
+        _prepare_ready_for_approval(job)
+
+        # A no-op call before ANY prior approval exists is correctly refused
+        # (there's nothing to refresh yet -- approve_and_apply() is the right call).
+        premature = applications_approval.reapprove_if_stale(job.id)
+        assert premature.ok is False
+        assert "no prior approval" in premature.reason
+
+        # Normal first approval, recorded UNKNOWN (JD genuinely silent, no
+        # human-verified evidence yet) -- this is what approve_and_apply() does
+        # for a real, ASSIST_ONLY provider: lands on APPROVED, never SUBMITTED.
+        first = applications_approval.approve_and_apply(job.id)
+        assert first.ok is True
+        execution_id = first.execution_id
+        execution = applications_repo.get_execution(execution_id)
+        assert execution["status"] == ExecutionStatus.APPROVED.value
+        first_approval = applications_approval.get_latest_approval(execution_id)
+        assert first_approval["employment_type_at_approval"] == "UNKNOWN"
+
+        # approve_and_apply() is now a genuine no-op -- the standard path has
+        # no way to refresh a stale approval once past initial approval.
+        noop = applications_approval.approve_and_apply(job.id)
+        assert noop.already is True
+        assert applications_approval.get_latest_approval(execution_id)["approval_id"] == first_approval["approval_id"]
+
+        # A person independently verifies FULL_TIME against matched external
+        # evidence -- the approval is now stale relative to current truth.
+        rec = record_identity_check(
+            get_job(job.id), evidence_url="https://www.dice.com/job-detail/a611e17c-f091-4309-ae52-0af36a7306de",
+            evidence_source_name="Dice", raw_employment_type_value="Full Time",
+            normalized_value=EmploymentType.FULL_TIME, identity_match_verdict="EXACT_MATCH",
+            identity_match_evidence="title+company+locations+salary+2yr-req all match",
+        )
+        confirm_by_human(rec.id, confirmation_text="I VERIFY JOB AS FULL_TIME BASED ON THE PRESENTED MATCHED EVIDENCE.")
+        stale_valid, stale_reasons = applications_approval.is_current_valid(
+            get_job(job.id), applications_repo.get_execution(execution_id), first_approval,
+        )
+        assert stale_valid is False
+        assert "employment classification changed since approval" in stale_reasons
+
+        # reapprove_if_stale() records a fresh row -- execution status is
+        # untouched (still APPROVED, never re-driven through the pipeline).
+        refreshed = applications_approval.reapprove_if_stale(job.id)
+        assert refreshed.ok is True
+        assert refreshed.already is False
+        assert refreshed.approval_id != first_approval["approval_id"]
+        assert applications_repo.get_execution(execution_id)["status"] == ExecutionStatus.APPROVED.value
+
+        new_approval = applications_approval.get_latest_approval(execution_id)
+        assert new_approval["approval_id"] == refreshed.approval_id
+        assert new_approval["employment_type_at_approval"] == "FULL_TIME"
+        valid, reasons = applications_approval.is_current_valid(
+            get_job(job.id), applications_repo.get_execution(execution_id), new_approval,
+        )
+        assert valid is True
+        assert reasons == []
+
+        # Idempotent: calling again when already current does nothing further.
+        again = applications_approval.reapprove_if_stale(job.id)
+        assert again.already is True
+        assert again.approval_id == refreshed.approval_id
+        assert len(applications_approval.list_approvals_for_job(job.id)) == 2
+    finally:
+        provider_registry._PROVIDERS["greenhouse"] = original_provider
+
+
 def test_approved_submit_permitted_rejects_unsupported_provider(monkeypatch):
     """Pure-function guard: no submission is ever unlocked for a provider
     that hasn't genuinely earned submission_supported=True, regardless of
