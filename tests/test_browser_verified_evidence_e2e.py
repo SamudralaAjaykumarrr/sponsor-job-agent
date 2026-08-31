@@ -19,6 +19,7 @@ from tests.browser_fixtures import (
     DEFAULT_JOB_COMPANY,
     DEFAULT_JOB_TITLE,
     combobox_reliability_page,
+    sensitive_evidence_gate_page,
 )
 
 pytestmark = pytest.mark.browser
@@ -240,5 +241,141 @@ def test_reading_plain_text_field_never_leaks_nearby_combobox_display(tmp_path, 
         value = browser_runtime.read_displayed_value(session_id, fname)
         assert value in (None, "")
         assert value != "United States"
+    finally:
+        browser_runtime.close_session(session_id)
+
+
+# --- real live bug (2026-08-30): a REQUIRED SENSITIVE_CATEGORIES field
+# never auto-fills through the generic pipeline (unchanged, deliberate), but
+# a session with genuine per-field human evidence for EVERY required
+# sensitive field must be able to reach a resolved state on a later,
+# independent discovery/fill pass -- before this fix, the generic
+# `_fill_pass` unconditionally flagged ANY SENSITIVE_CATEGORIES field as
+# unresolved regardless of `value_source`, so a browser_assist session could
+# never reach READY_FOR_FINAL_SUBMIT at all once a required sensitive field
+# was on the page, even with confirmed evidence on file for every one. ---
+
+def test_required_sensitive_fields_never_resolve_without_verified_evidence(tmp_path, tmp_env, monkeypatch):
+    monkeypatch.setattr("app.applications.browser_assist.get_job", lambda jid: _fake_job(jid))
+    url = sensitive_evidence_gate_page(tmp_path)
+    session_id, execution_id = _session_and_execution(206)
+    try:
+        _open(session_id, url, job_id=206)
+        job = _fake_job(206)
+        application_fields = browser_assist._build_fields_for_job(job, execution_id)
+        outcome = browser_runtime.rediscover(session_id)
+        fill_result = browser_runtime.fill_fields(session_id, outcome.fields, application_fields)
+        # No evidence recorded yet -- both sensitive comboboxes must stay
+        # unresolved, matching the standing "never auto-fill" rule.
+        assert any("gender identity" in u.lower() for u in fill_result.unresolved)
+        assert any("government official" in u.lower() for u in fill_result.unresolved)
+    finally:
+        browser_runtime.close_session(session_id)
+
+
+def test_required_sensitive_fields_resolve_after_individual_verified_evidence(tmp_path, tmp_env, monkeypatch):
+    monkeypatch.setattr("app.applications.browser_assist.get_job", lambda jid: _fake_job(jid))
+    url = sensitive_evidence_gate_page(tmp_path)
+    session_id, execution_id = _session_and_execution(207)
+    try:
+        _open(session_id, url, job_id=207)
+
+        r1 = browser_assist.record_verified_custom_answer(
+            session_id, "What is your gender identity?", "Cisgender man",
+        )
+        assert r1["ok"] is True
+        r2 = browser_assist.record_verified_custom_answer(
+            session_id, "Are you related to or have a close personal relationship", "No",
+        )
+        assert r2["ok"] is True
+
+        # A LATER, independent discovery/fill pass (mirroring a fresh
+        # resume_session() call, or a wholly separate process/session
+        # reconstruction) must now recognize both as RESOLVED -- via the
+        # live-DOM-reverified evidence path, never by remembering the
+        # earlier in-process fill.
+        job = _fake_job(207)
+        application_fields = browser_assist._build_fields_for_job(job, execution_id)
+        outcome = browser_runtime.rediscover(session_id)
+        fill_result = browser_runtime.fill_fields(session_id, outcome.fields, application_fields)
+        assert not any("gender identity" in u.lower() for u in fill_result.unresolved)
+        assert not any("government official" in u.lower() for u in fill_result.unresolved)
+    finally:
+        browser_runtime.close_session(session_id)
+
+
+def test_generic_profile_sensitive_field_never_takes_the_evidence_shortcut(tmp_path, tmp_env, monkeypatch):
+    """A SENSITIVE_CATEGORIES field with only a GENERIC, profile-derived
+    mapping (value_source != "browser_verified_field_evidence") must stay
+    unresolved forever through this pipeline, exactly as before -- the new
+    live-DOM-reverify shortcut is reachable ONLY via record_verified_custom_
+    answer's own genuine evidence, never a same-category same-value
+    coincidence."""
+    monkeypatch.setattr("app.applications.browser_assist.get_job", lambda jid: _fake_job(jid))
+    url = sensitive_evidence_gate_page(tmp_path)
+    session_id, execution_id = _session_and_execution(208)
+    try:
+        _open(session_id, url, job_id=208)
+        outcome = browser_runtime.rediscover(session_id)
+        gender_rf = next(rf for rf in outcome.fields if "gender identity" in (rf.get("label") or "").lower())
+        # Directly fill the DOM the way the generic pipeline never would
+        # (bypassing record_verified_custom_answer entirely -- no evidence
+        # row exists for this field).
+        assert browser_runtime.fill_one_field(session_id, gender_rf, "Cisgender man") is True
+
+        generic_field = ApplicationField(
+            field_id="generic:gender", label="What is your gender identity?",
+            category=FieldCategory.DEMOGRAPHICS, normalized_type="select", required=True, choices=[],
+            value_source="standard_answers.gender", verified_value="Cisgender man",
+            confidence=FieldConfidence.EXACT, needs_user_input=False, sensitive=True, auto_fill_allowed=True,
+        )
+        outcome2 = browser_runtime.rediscover(session_id)
+        fill_result = browser_runtime.fill_fields(session_id, outcome2.fields, [generic_field])
+        assert any("gender identity" in u.lower() for u in fill_result.unresolved)
+    finally:
+        browser_runtime.close_session(session_id)
+
+
+def test_consent_checkbox_verification_uses_checked_state_not_text_match(tmp_path, tmp_env, monkeypatch):
+    """The demographic-data-collection consent checkbox's live displayed
+    value is boolean (is_checked() -> "true"/"false"), not text comparable
+    to the label used to locate/click it -- verification must succeed based
+    on the checked state, and record durable evidence a later pass resolves
+    against."""
+    monkeypatch.setattr("app.applications.browser_assist.get_job", lambda jid: _fake_job(jid))
+    url = sensitive_evidence_gate_page(tmp_path)
+    session_id, execution_id = _session_and_execution(209)
+    try:
+        _open(session_id, url, job_id=209)
+        result = browser_assist.record_verified_custom_answer(
+            session_id, "By checking this box, I consent", "I consent to the company collecting",
+        )
+        assert result["ok"] is True
+        assert result["actual"] == "true"
+        assert result["evidence_id"]
+
+        rows = vfe.list_evidence_for_execution(execution_id)
+        assert len(rows) == 1
+        assert rows[0]["actual_displayed_value"] == "true"
+    finally:
+        browser_runtime.close_session(session_id)
+
+
+def test_consent_checkbox_left_unchecked_never_records_evidence(tmp_path, tmp_env, monkeypatch):
+    """record_verified_custom_answer's checkbox path never records a
+    checked-evidence row for a checkbox that never ended up checked (it
+    only ever calls .check(), never .uncheck() -- but a locator that fails
+    to resolve/click must never be silently treated as success)."""
+    monkeypatch.setattr("app.applications.browser_assist.get_job", lambda jid: _fake_job(jid))
+    url = sensitive_evidence_gate_page(tmp_path)
+    session_id, execution_id = _session_and_execution(210)
+    try:
+        _open(session_id, url, job_id=210)
+        result = browser_assist.record_verified_custom_answer(
+            session_id, "By checking this box, I consent", "this text matches nothing on the page's label at all",
+        )
+        assert result["ok"] is False
+        assert result["evidence_id"] is None
+        assert vfe.list_evidence_for_execution(execution_id) == []
     finally:
         browser_runtime.close_session(session_id)

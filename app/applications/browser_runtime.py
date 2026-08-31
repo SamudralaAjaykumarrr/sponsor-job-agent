@@ -1002,6 +1002,34 @@ class _LiveSession:
                     outcome.unresolved.append(label)
                 continue
 
+            # Browser-Verified Answer Canonical Readiness Integration V1
+            # (part 2): a SENSITIVE_CATEGORIES field never gets auto-filled
+            # by generic policy/profile matching, full stop -- that rule is
+            # unchanged above and below. But a field carrying GENUINE,
+            # individually-verified evidence (value_source is set only by
+            # record_verified_custom_answer's own live read-back check, the
+            # one sanctioned path a human explicitly answers one exact
+            # question through) is re-verified against the CURRENT live DOM
+            # -- never trusted blindly, since a reconstruction/resume can
+            # land on a fresh, unanswered page -- and only THEN treated as
+            # resolved. A generic, profile-derived sensitive field
+            # (value_source != "browser_verified_field_evidence") never
+            # takes this path, regardless of auto_fill_allowed. Without
+            # this, a session could never reach READY_FOR_FINAL_SUBMIT at
+            # all once any SENSITIVE_CATEGORIES field was on the page, even
+            # after a human had explicitly verified every single one.
+            if (app_field is not None and app_field.category in SENSITIVE_CATEGORIES
+                    and app_field.value_source == "browser_verified_field_evidence" and app_field.auto_fill_allowed):
+                actual = self._read_displayed_value(rf)
+                expected_norm = str(app_field.verified_value or "").strip().lower()
+                actual_norm = (actual or "").strip().lower()
+                if expected_norm and actual_norm and (expected_norm in actual_norm or actual_norm in expected_norm):
+                    outcome.filled.append(label)
+                    continue
+                if rf.get("required"):
+                    outcome.unresolved.append(label)
+                continue
+
             if app_field is None or not app_field.auto_fill_allowed or app_field.category in SENSITIVE_CATEGORIES:
                 if rf.get("required"):
                     outcome.unresolved.append(label)

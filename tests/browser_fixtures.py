@@ -1362,6 +1362,53 @@ def combobox_reliability_page(tmp_path: Path) -> str:
     return _write(tmp_path, "combobox_reliability.html", body)
 
 
+def sensitive_evidence_gate_page(tmp_path: Path) -> str:
+    """Mirrors the real Robinhood/Greenhouse shape this fixture exists to
+    regression-test: a REQUIRED demographic combobox, a REQUIRED
+    legal-attestation combobox, and a REQUIRED self-labeled opt-in consent
+    checkbox (its own accessible label IS the "answer" text, matching
+    exactly how the real form's demographic-data-collection consent
+    checkbox is shaped). Used to prove a browser_assist session can only
+    ever reach a resolved (non-unresolved) state for these once each has
+    been explicitly, individually verified via record_verified_custom_answer
+    -- never via generic profile/policy matching, regardless of confidence."""
+    body = _jsonld_block() + _COMBOBOX_WIDGET_JS + textwrap.dedent("""
+        <h1>Job Application</h1>
+        <form id="application-form">
+          <label for="fname">First Name</label><input id="fname" name="first_name" type="text" required>
+          <label for="mail">Email</label><input id="mail" name="email" type="text" required>
+
+          <div class="field-wrap">
+            <label id="gender-label" for="gender">What is your gender identity?</label>
+            <input id="gender" role="combobox" aria-expanded="false" aria-labelledby="gender-label" required
+                   onclick="sjaOpenCombobox('gender', 'gender-listbox')"
+                   oninput="sjaOpenCombobox('gender', 'gender-listbox')">
+            <div id="gender-listbox" role="listbox" style="display:none">
+              <div role="option" onclick="sjaSelectOption('gender', 'gender-listbox', 'Cisgender man')">Cisgender man</div>
+              <div role="option" onclick="sjaSelectOption('gender', 'gender-listbox', 'Cisgender woman')">Cisgender woman</div>
+            </div>
+          </div>
+
+          <div class="field-wrap">
+            <label id="official-label" for="official">Are you related to or have a close personal relationship with a government official?</label>
+            <input id="official" role="combobox" aria-expanded="false" aria-labelledby="official-label" required
+                   onclick="sjaOpenCombobox('official', 'official-listbox')"
+                   oninput="sjaOpenCombobox('official', 'official-listbox')">
+            <div id="official-listbox" role="listbox" style="display:none">
+              <div role="option" onclick="sjaSelectOption('official', 'official-listbox', 'Yes')">Yes</div>
+              <div role="option" onclick="sjaSelectOption('official', 'official-listbox', 'No')">No</div>
+            </div>
+          </div>
+
+          <label for="consent">By checking this box, I consent to the company collecting my demographic survey responses.</label>
+          <input id="consent" type="checkbox" required>
+
+          <button type="submit">Submit Application</button>
+        </form>
+    """)
+    return _write(tmp_path, "sensitive_evidence_gate.html", body)
+
+
 def combobox_reliability_page_option_changed(tmp_path: Path) -> str:
     """Same STRUCTURAL shape (same questions/required/types) as
     combobox_reliability_page, used to prove that filling/selecting values
