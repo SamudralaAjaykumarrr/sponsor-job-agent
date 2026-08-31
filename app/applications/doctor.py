@@ -7,11 +7,11 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
 from app import config
+from app.applications import human_verified_employment_evidence
 from app.applications.models import ExecutionMode
 from app.applications.provider_registry import all_application_capabilities, get_application_provider
 from app.db import db_session
 from app.jobs_repo import get_job
-from app.matching.employment_type import resolve_employment_type_evidence
 from app.models import EmploymentType, SponsorshipStatus
 
 
@@ -281,9 +281,7 @@ def _check_non_full_time_in_submission(conn, report: DoctorReport) -> None:
         job = get_job(r["job_id"])
         if job is None:
             continue
-        etype = resolve_employment_type_evidence(
-            job.employment_type, job.title, job.description, job.employment_type_page_evidence_raw,
-        ).value
+        etype = human_verified_employment_evidence.resolve_for_job(job).value
         if etype != EmploymentType.FULL_TIME:
             report.issues.append(Issue("serious", "non_full_time_in_submission",
                                         f"execution {r['execution_id']} (job {r['job_id']}) reached submission "
@@ -420,9 +418,7 @@ def _check_non_full_time_queued(conn, report: DoctorReport) -> None:
         job = get_job(r["job_id"])
         if job is None:
             continue
-        etype = resolve_employment_type_evidence(
-            job.employment_type, job.title, job.description, job.employment_type_page_evidence_raw,
-        ).value
+        etype = human_verified_employment_evidence.resolve_for_job(job).value
         if etype not in (EmploymentType.FULL_TIME, EmploymentType.UNKNOWN):
             report.issues.append(Issue("serious", "non_full_time_queued",
                                         f"execution {r['execution_id']} (job {r['job_id']}) is active with "
@@ -470,9 +466,7 @@ def _check_browser_session_non_full_time(conn, report: DoctorReport) -> None:
         job = get_job(r["job_id"])
         if job is None:
             continue
-        etype = resolve_employment_type_evidence(
-            job.employment_type, job.title, job.description, job.employment_type_page_evidence_raw,
-        ).value
+        etype = human_verified_employment_evidence.resolve_for_job(job).value
         if etype not in (EmploymentType.FULL_TIME, EmploymentType.UNKNOWN):
             report.issues.append(Issue("serious", "browser_session_non_full_time",
                                         f"session {r['session_id']} (job {r['job_id']}) is active with "

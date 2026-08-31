@@ -173,3 +173,31 @@ def get_verified_value(job: Job) -> Optional[EmploymentType]:
         return EmploymentType(record.normalized_value)
     except ValueError:
         return None
+
+
+def resolve_for_job(job: Job) -> "EmploymentTypeDecision":
+    """The one canonical, DB-only (no live network read) way to resolve a
+    job's employment-type decision with human-verified evidence wired in.
+    Every caller that previously called
+    app.matching.employment_type.resolve_employment_type_evidence() directly
+    with just the four raw-signal arguments was silently never consulting
+    this module at all -- a real bug caught live: approval.py's approval
+    creation AND its own freshness/staleness re-check, app/main.py's
+    dashboard job-detail page, and three app.applications.doctor consistency
+    checks all independently forgot the fifth `human_verified_value=`
+    argument, so a genuinely human-confirmed HUMAN_VERIFIED_EXTERNAL_EVIDENCE
+    record was never actually reaching any of them. Routing all of them
+    through this one function instead of each repeating the same five-argument
+    call closes off that whole class of "forgot to wire it in" bug at any
+    future call site, not just the ones found this time.
+
+    Deliberately excludes canary_feasibility.py's live JSON-LD page refresh
+    (refresh_page_evidence) -- that caller has a genuinely different,
+    already-correct contract (a live network read) that this DB-only helper
+    must never silently add for callers that never expected one."""
+    from app.matching.employment_type import resolve_employment_type_evidence
+
+    return resolve_employment_type_evidence(
+        job.employment_type, job.title, job.description, job.employment_type_page_evidence_raw,
+        human_verified_value=get_verified_value(job),
+    )

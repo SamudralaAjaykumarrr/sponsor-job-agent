@@ -13,12 +13,12 @@ from app.agent import run_state as agent_run_state
 from app.agent.orchestrator import orchestrator as agent_orchestrator
 from app.agent.scheduler import scheduler
 from app.applications import approval as applications_approval
+from app.applications import human_verified_employment_evidence
 from app.applications.cta import compute_apply_cta
 from app.applications import doctor as applications_doctor
 from app.applications import metrics as applications_metrics
 from app.applications import repo as applications_repo
 from app.applications.eligibility import evaluate_executor_eligibility
-from app.matching.employment_type import resolve_employment_type_evidence
 from app.applications.product_state import compute_stage
 from app.applications.executor import (
     AutoSubmitDisabledError,
@@ -356,9 +356,7 @@ def job_detail(request: Request, job_id: int):
     # fall back to the most recent execution row for that purpose only.
     latest_execution = executions[-1] if executions else None
     eligibility = evaluate_executor_eligibility(job)
-    employment_type_decision = resolve_employment_type_evidence(
-        job.employment_type, job.title, job.description, job.employment_type_page_evidence_raw,
-    )
+    employment_type_decision = human_verified_employment_evidence.resolve_for_job(job)
     active_browser_session = browser_session.get_active_session_for_job(job_id)
 
     # --- Phase 14: JD analysis / resume optimization diagnostics ------------

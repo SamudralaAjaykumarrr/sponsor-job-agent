@@ -21,7 +21,8 @@ from app.applications.mock_ats import MockATSProvider
 from app.applications.models import AutomationPolicy, ExecutionStatus
 from app.applications.providers_greenhouse import GreenhouseApplicationProvider
 from app.candidate.profile import save_profile
-from app.models import ApplicationMode, Job
+from app.jobs_repo import get_job
+from app.models import ApplicationMode, EmploymentType, Job
 from app.pipeline import ingest_and_process
 
 JD_TEXT = (
@@ -217,6 +218,72 @@ def test_is_current_valid_detects_sponsorship_and_jd_change(tmp_env, sample_prof
     valid, reasons = applications_approval.is_current_valid(jd_changed, dict(execution), approval)
     assert valid is False
     assert "job description changed since approval" in reasons
+
+
+def test_record_approval_row_and_revalidation_consume_confirmed_human_evidence(tmp_env, sample_profile):
+    """Real bug caught live (2026-08-31, job 200/Robinhood): _record_approval_row()
+    and is_current_valid() both called resolve_employment_type_evidence() directly
+    with only the four raw-signal arguments, so a genuinely human-confirmed
+    HUMAN_VERIFIED_EXTERNAL_EVIDENCE row (app.applications.human_verified_
+    employment_evidence) was silently never consulted -- an approval got recorded
+    (and re-validated) as employment_type_at_approval=UNKNOWN even though a person
+    had explicitly verified FULL_TIME against matched external evidence. Both call
+    sites now go through human_verified_employment_evidence.resolve_for_job()."""
+    from app.applications.human_verified_employment_evidence import confirm_by_human, record_identity_check
+
+    save_profile(sample_profile)
+    silent_jd = (
+        "As a Software Engineer, you'll build and own backend services. "
+        "What you bring: 2+ years of experience in software development. "
+        "Proficiency in Go or Python."
+    )
+    job = ingest_and_process(Job(
+        title="Backend Software Engineer", company="Acme Corp", location="Remote - US",
+        description=silent_jd, employment_type="", provider="mock_ats",
+        external_job_id="mock-appr-human-verified", provider_metadata=json.dumps({"mock_scenario": "simple"}),
+        mode=ApplicationMode.ASSIST,
+    ))
+    execution = _prepare_ready_for_approval(job)
+    provider = provider_registry.get_application_provider(job)
+
+    # Without human-verified evidence, this JD is genuinely silent -> UNKNOWN.
+    approval_id_before = applications_approval._record_approval_row(
+        job, execution, provider_submission_supported=provider.capabilities.submission_supported,
+    )
+    approval_before = applications_approval.get_latest_approval(execution["execution_id"])
+    assert approval_before["approval_id"] == approval_id_before
+    assert approval_before["employment_type_at_approval"] == "UNKNOWN"
+
+    # A person independently verifies FULL_TIME against matched external evidence.
+    rec = record_identity_check(
+        job, evidence_url="https://www.dice.com/job-detail/a611e17c-f091-4309-ae52-0af36a7306de",
+        evidence_source_name="Dice", raw_employment_type_value="Full Time",
+        normalized_value=EmploymentType.FULL_TIME, identity_match_verdict="EXACT_MATCH",
+        identity_match_evidence="title+company+locations+salary+2yr-req all match",
+    )
+    confirm_by_human(rec.id, confirmation_text="I VERIFY JOB AS FULL_TIME BASED ON THE PRESENTED MATCHED EVIDENCE.")
+
+    # A fresh approval created now correctly stamps FULL_TIME.
+    fresh_job = get_job(job.id)
+    fresh_execution = applications_repo.get_active_execution_for_job(job.id)
+    approval_id_after = applications_approval._record_approval_row(
+        fresh_job, fresh_execution, provider_submission_supported=provider.capabilities.submission_supported,
+    )
+    approval_after = applications_approval.get_latest_approval(execution["execution_id"])
+    assert approval_after["approval_id"] == approval_id_after
+    assert approval_after["employment_type_at_approval"] == "FULL_TIME"
+
+    # And is_current_valid() -- the exact function verify_durable_approval_for_
+    # submission() re-checks immediately before a real submit -- re-derives the
+    # SAME FULL_TIME value from a completely fresh DB read (simulating a process
+    # restart: no in-memory object reuse), so the freshly-recorded approval is
+    # reported current, not stale.
+    reread_job = get_job(job.id)
+    reread_execution = applications_repo.get_active_execution_for_job(job.id)
+    reread_approval = applications_approval.get_latest_approval(execution["execution_id"])
+    valid, reasons = applications_approval.is_current_valid(reread_job, reread_execution, reread_approval)
+    assert valid is True
+    assert reasons == []
 
 
 def test_approved_submit_permitted_rejects_unsupported_provider(monkeypatch):

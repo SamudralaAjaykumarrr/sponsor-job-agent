@@ -82,6 +82,49 @@ def test_session_for_likely_sponsor_job_is_not_flagged():
     assert not any(i.check == "browser_session_non_eligible_sponsorship" for i in report.issues)
 
 
+def test_non_full_time_in_submission_not_falsely_flagged_by_human_verified_evidence():
+    """Real bug caught live (2026-08-31, job 200/Robinhood): doctor.py's
+    _check_non_full_time_in_submission/_check_non_full_time_queued/
+    _check_browser_session_non_full_time all called resolve_employment_type_
+    evidence() directly with only the four raw-signal arguments, never
+    consulting app.applications.human_verified_employment_evidence -- so a
+    job whose official ATS metadata is genuinely silent, but which has a
+    real human-confirmed EXACT_MATCH HUMAN_VERIFIED_EXTERNAL_EVIDENCE row,
+    would have been misreported as employment_type=UNKNOWN in a SUBMITTED/
+    APPLIED execution, tripping the 'serious' non_full_time_in_submission
+    false alarm the very first time this exact scenario reached submission."""
+    from app.applications import human_verified_employment_evidence as hvee
+    from app.applications.models import ExecutionStatus
+    from app.models import EmploymentType
+    from app.sponsorship.decision import compute_jd_fingerprint
+
+    silent_jd = (
+        "As a Software Engineer, you'll build and own backend services. "
+        "What you bring: 2+ years of experience in software development."
+    )
+    fingerprint = compute_jd_fingerprint("Backend Software Engineer", "Acme Corp", silent_jd)
+    job_id = insert_job(_job(
+        employment_type="", description=silent_jd, jd_sponsorship_fingerprint=fingerprint,
+    ))
+    job = get_job(job_id)
+    rec = hvee.record_identity_check(
+        job, evidence_url="https://www.dice.com/job-detail/example", evidence_source_name="Dice",
+        raw_employment_type_value="Full Time", normalized_value=EmploymentType.FULL_TIME,
+        identity_match_verdict="EXACT_MATCH", identity_match_evidence="title+company+salary+2yr-req all match",
+    )
+    hvee.confirm_by_human(rec.id, confirmation_text="I VERIFY JOB AS FULL_TIME BASED ON THE PRESENTED MATCHED EVIDENCE.")
+
+    execution_id = _execution_for(job_id)
+    executions_repo.update_execution(execution_id, job_id, ExecutionStatus.APPLIED)
+    browser_session.create_session(execution_id=execution_id, job_id=job_id, provider="greenhouse",
+                                    application_url="https://x")
+
+    report = run_doctor()
+    assert not any(i.check == "non_full_time_in_submission" for i in report.issues)
+    assert not any(i.check == "non_full_time_queued" for i in report.issues)
+    assert not any(i.check == "browser_session_non_full_time" for i in report.issues)
+
+
 def test_stale_active_session_flagged_as_warning(monkeypatch):
     monkeypatch.setattr(config, "BROWSER_SESSION_TIMEOUT_MINUTES", 5)
     job_id = insert_job(_job())
