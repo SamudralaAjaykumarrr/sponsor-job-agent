@@ -248,6 +248,22 @@ def build_submit_contract(
         application_fields = build_application_fields(
             profile, resume_path=job.resume_pdf_path or "", cover_letter_path=job.cover_letter_path or "",
         )
+        # Reliable Form Interaction / Browser-Verified Answer Canonical
+        # Readiness Integration: this step must stay consistent with every
+        # other readiness check in the project (presubmit_manifest.
+        # build_manifest, form_model._normalize_one, browser_runtime.
+        # _fill_pass) -- a required field with genuine, individually
+        # human-verified evidence on file must never be reported here as
+        # "no safe verified answer" just because THIS step rebuilt its own
+        # application_fields list without merging it. Real live bug: this
+        # step disagreed with the browser session's own (correctly
+        # evidence-aware) readiness check for the exact same execution.
+        if execution.get("execution_id"):
+            from app.applications.verified_field_evidence import build_application_field_overrides
+
+            application_fields = application_fields + build_application_field_overrides(
+                execution["execution_id"], job,
+            ).fields
         normalized = normalize_form_snapshot(current_form, application_fields)
         unanswered = normalized.unanswered_required()
         high_risk_pending = [f for f in normalized.high_risk_fields() if not f.safe_answer_available]

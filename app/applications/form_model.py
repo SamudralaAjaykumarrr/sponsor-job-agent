@@ -341,12 +341,28 @@ def _normalize_one(
         # notion of "safe": an auto-fill-allowed field, of at least MEDIUM
         # match confidence, with a verified value, that is not itself a
         # sensitive category and whose offered choices (if any) genuinely
-        # contain that value.
+        # contain that value. A SENSITIVE_CATEGORIES field is the ONE
+        # exception, mirroring browser_runtime._fill_pass's own evidence
+        # carve-out exactly: a field with GENUINE, individually-verified
+        # evidence (value_source is set only by record_verified_custom_
+        # answer's own live read-back check -- the one sanctioned path a
+        # human explicitly answers one exact question through, and whose
+        # overrides are already filtered to non-stale evidence only by
+        # build_application_field_overrides) is safe too. A generic,
+        # profile-derived sensitive field is NEVER safe here, unchanged.
+        # Real live bug: this step disagreed with the browser session's
+        # own (already-fixed) readiness check for the identical execution,
+        # since this module's whole purpose is to REPORT the existing
+        # rules, not a stricter, out-of-sync notion of them.
+        generically_sensitive = (
+            app_field.category in SENSITIVE_CATEGORIES
+            and app_field.value_source != "browser_verified_field_evidence"
+        )
         safe = (
             app_field.auto_fill_allowed
             and app_field.verified_value is not None
             and confidence != FieldConfidence.LOW
-            and app_field.category not in SENSITIVE_CATEGORIES
+            and not generically_sensitive
         )
         if safe and choices and input_type != NormalizedInputType.FILE:
             safe = any(str(app_field.verified_value).strip().lower() == str(c).strip().lower() for c in choices)

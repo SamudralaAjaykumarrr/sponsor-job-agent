@@ -244,3 +244,55 @@ def test_derived_views_report_unanswered_required_and_high_risk(fields):
     d = form.as_dict()
     assert d["field_count"] == 7
     assert d["unanswered_required_count"] == len(form.unanswered_required())
+
+
+# --- real live bug (2026-08-30): safe_answer_available must mirror
+# browser_runtime._fill_pass's own evidence carve-out, or a downstream
+# read-only check (greenhouse_submit_contract's required_fields_complete
+# step) disagrees with the browser session's own already-correct readiness
+# for the identical execution. ---
+
+def test_generic_sensitive_field_never_safe(fields):
+    """A SENSITIVE_CATEGORIES field with only a generic, profile-derived
+    mapping stays never-safe, unchanged -- disability_status here has no
+    genuine record_verified_custom_answer evidence at all."""
+    form = normalize_form_snapshot(_greenhouse_snapshot(), fields)
+    disability = next(f for f in form.fields if f.provider_field_id == "disability_status")
+    assert disability.semantic_type == "DEMOGRAPHICS"
+    assert disability.safe_answer_available is False
+
+
+def test_evidence_backed_sensitive_field_is_safe(fields):
+    """A SENSITIVE_CATEGORIES field carrying GENUINE, individually-verified
+    evidence (value_source == "browser_verified_field_evidence", the marker
+    set only by record_verified_custom_answer's own live read-back check)
+    IS safe -- mirroring _fill_pass's own resolution exactly, so this
+    module's report never disagrees with what the browser session itself
+    already correctly resolved for the same field. Uses a label with no
+    canonical `_ALIAS_INDEX` entry (like the real live case this fix was
+    caught against -- "disability status" DOES have one, and an EXACT
+    canonical alias always wins over evidence by design, so that label
+    would not exercise this path)."""
+    from app.applications.models import ApplicationField, FieldCategory, FieldConfidence
+
+    snapshot = FormSnapshot(
+        provider="greenhouse", tenant_identifier="acme", external_job_id="12345",
+        fingerprint="fp-gender", fields=[
+            FormField(name="q_gender", label="What is your gender identity?",
+                      field_type="multi_value_single_select", required=True,
+                      choices=["Cisgender man", "Cisgender woman"]),
+        ],
+    )
+    evidence_field = ApplicationField(
+        field_id="verified:abc123", label="What is your gender identity?", category=FieldCategory.DEMOGRAPHICS,
+        normalized_type="select", required=True, choices=[],
+        value_source="browser_verified_field_evidence",
+        verified_value="Cisgender man", confidence=FieldConfidence.EXACT,
+        needs_user_input=False, sensitive=True, auto_fill_allowed=True,
+    )
+    form = normalize_form_snapshot(snapshot, fields + [evidence_field])
+    gender = next(f for f in form.fields if f.provider_field_id == "q_gender")
+    assert gender.semantic_type == "DEMOGRAPHICS"
+    assert gender.safe_answer_available is True
+    assert gender.current_value == "Cisgender man"
+    assert form.unanswered_required() == []
