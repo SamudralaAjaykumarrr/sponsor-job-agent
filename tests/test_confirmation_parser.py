@@ -51,6 +51,35 @@ def test_every_phrase_is_a_specific_completed_action_phrase():
     assert "success" not in SUCCESS_PHRASES
 
 
+def test_greenhouse_default_template_confirmation_phrase_is_recognized():
+    """Real bug caught live (2026-08-31, job 200/Robinhood's first real
+    Greenhouse canary submission): Greenhouse's own default confirmation
+    template phrases the BODY text as "Thank you for your interest in
+    joining our world-class team at Robinhood!" -- none of the pre-existing
+    SUCCESS_PHRASES matched it (the page's separate <title> element does say
+    "Thank you for applying", but only <body> inner text is ever scanned).
+    The added phrase is deliberately company-name-free so it generalizes to
+    any Greenhouse-hosted employer using this same default template, not
+    just Robinhood."""
+    body_text = (
+        "Thank you for your interest in joining our world-class team at Robinhood! "
+        "What happens now? We will review your application and contact you if there "
+        "is a good match. If you are not contacted, be assured that your resume will "
+        "remain in our database for future openings. Sincerely, The Robinhood "
+        "Recruiting Team."
+    )
+    parsed = parse_confirmation_text(body_text)
+    assert parsed.phrase_matched is True
+    assert parsed.matched_phrase == "thank you for your interest in joining"
+    assert parsed.already_applied is False
+
+    grade = classify_confirmation_evidence(
+        phrase_matched=parsed.phrase_matched, confirmation_id=parsed.confirmation_id,
+        current_url="https://job-boards.greenhouse.io/robinhood/jobs/7263592/confirmation?gh_src=gh_src%3D",
+    )
+    assert grade.confirms()
+
+
 def test_browser_runtime_uses_this_module_rather_than_its_own_tables():
     """The single-source rule: browser_runtime must not have reintroduced a
     private phrase table."""

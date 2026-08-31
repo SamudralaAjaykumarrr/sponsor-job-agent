@@ -55,6 +55,16 @@ SUCCESS_PHRASES: tuple[str, ...] = (
     "thank you for applying", "application received", "application submitted", "successfully applied",
     "we've received your application", "we have received your application",
     "your application has been submitted", "thank you for your application", "thank you -- your application",
+    # Real bug caught live (2026-08-31, Greenhouse Verified Submission
+    # Contract V1's first real canary run, job 200/Robinhood): Greenhouse's
+    # own default confirmation template phrases the body as "Thank you for
+    # your interest in joining our [team description]!" rather than any of
+    # the phrases above, while a page's <title> (never scanned -- only
+    # `<body>` inner text is) separately says "Thank you for applying". This
+    # phrase is deliberately company-name-free (never "...joining Robinhood",
+    # which would only ever match one employer) so it generalizes to any
+    # Greenhouse-hosted employer using this same default template.
+    "thank you for your interest in joining",
 )
 
 # CLAUDE.md Phase 11 section 36: evidence of a PRIOR application.

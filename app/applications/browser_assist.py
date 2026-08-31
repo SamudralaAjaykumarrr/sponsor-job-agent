@@ -1057,3 +1057,105 @@ def attempt_user_submit_reconciliation(session_id: str) -> dict:
         return {"ok": True, "detail": "confirmed", "session": updated}
     finally:
         browser_session.release_session_lease(session_id)
+
+
+def attempt_user_submit_reconciliation_from_evidence(
+    session_id: str, *, current_url: str, body_text: str,
+) -> dict:
+    """Same decision (CONFIRMED / duplicate-detected / no-evidence-yet) and
+    the SAME persistence as attempt_user_submit_reconciliation() -- reusing
+    the identical confirmation_parser/confirmation_evidence pipeline every
+    other confirmation path in this project goes through -- but driven by
+    INDEPENDENTLY obtained page evidence rather than a live browser DOM read.
+
+    Exists for exactly one situation: a live browser session cannot be
+    safely re-inspected in-process (this project's per-process browser
+    registry means a diagnostic call from the wrong thread/process can fail
+    or, worse, force a reconstruction that reloads the session's ORIGINAL
+    application_url and loses whatever page was actually showing -- a real
+    problem hit live, 2026-08-31, verifying job 200/Robinhood's post-submit
+    Greenhouse confirmation page), while the operator has independently
+    obtained genuine page content through some other safe channel (here: a
+    plain HTTP GET of the provider's own public, static, session-independent
+    confirmation URL -- Greenhouse's `/confirmation` route requires no
+    candidate-specific auth/cookie to render, verified by fetching it with a
+    fresh, cookie-less client and getting the same content the live browser
+    had navigated to).
+
+    NEVER accepts a bare claim of success -- `body_text` still goes through
+    the exact same phrase-match + evidence-grading pipeline; only a
+    STRONG/MODERATE-graded match confirms. Never touches any live browser
+    (no is_live() check, no browser_runtime.close_session() call) -- the
+    caller is responsible for the evidence's provenance and genuineness;
+    this function is responsible only for applying this project's existing,
+    unmodified confirmation-grading and persistence rules to it."""
+    from app.applications.confirmation_evidence import classify_confirmation_evidence
+    from app.applications.confirmation_parser import parse_confirmation_text
+
+    session = browser_session.get_session(session_id)
+    if session is None:
+        return {"ok": False, "detail": f"session {session_id} not found"}
+    if session["status"] == BrowserSessionStatus.CONFIRMED.value:
+        return {"ok": True, "detail": "already confirmed", "session": session}
+
+    owned, current = _claim_or_conflict(session_id)
+    if not owned:
+        return {"ok": False, "detail": "session is currently owned by another worker/process", "session": current}
+    session = current
+    try:
+        parsed = parse_confirmation_text(body_text)
+
+        if parsed.already_applied:
+            execution = _executions_repo.get_execution(session["execution_id"])
+            if execution is not None and execution["active"] == 1:
+                _executions_repo.log_event(
+                    execution["execution_id"], execution["job_id"], "duplicate_detected",
+                    detail="browser_assist_already_applied_evidence_external",
+                )
+            updated = browser_session.update_session(
+                session_id, status=BrowserSessionStatus.DUPLICATE_APPLICATION_DETECTED.value, needs_user_action=1,
+                user_action_reason="the supplied evidence indicates an application already exists for this job -- "
+                                    "a human must reconcile whether this is the same application or a genuine "
+                                    "duplicate",
+            )
+            return {"ok": False, "detail": "supplied evidence shows an existing/duplicate application -- "
+                                            "reconciliation required", "session": updated}
+
+        grade = classify_confirmation_evidence(
+            phrase_matched=parsed.phrase_matched, confirmation_id=parsed.confirmation_id, current_url=current_url,
+        )
+        if not grade.confirms():
+            return {"ok": False, "detail": "no confirmation evidence found in the supplied evidence",
+                    "session": session}
+
+        execution = _executions_repo.get_execution(session["execution_id"])
+        if execution is not None and execution["active"] == 1:
+            _executions_repo.update_execution(
+                execution["execution_id"], execution["job_id"], ExecutionStatus.APPLIED,
+                confirmation_id=parsed.confirmation_id, confirmation_url=current_url,
+                confirmation_text_fingerprint=parsed.text_fingerprint,
+                user_action_reason="confirmed via independently-obtained post-submit evidence",
+                requires_user_action=0,
+            )
+            _executions_repo.log_event(
+                execution["execution_id"], execution["job_id"], "confirmed",
+                detail="browser_assist_external_evidence_reconciliation",
+            )
+            _record_receipt_best_effort(
+                execution_id=execution["execution_id"], job_id=execution["job_id"],
+                provider=session.get("provider", ""),
+                submitted_via=f"browser_assist_external_evidence:{session.get('provider', '')}",
+                confirmation_id=parsed.confirmation_id, sanitized_url=current_url,
+                evidence_strength=grade.strength.value, raw_message_fingerprint=parsed.text_fingerprint,
+                session_id=session_id,
+            )
+
+        updated = browser_session.update_session(
+            session_id, status=BrowserSessionStatus.CONFIRMED.value, confirmation_observed=1,
+            confirmation_id=parsed.confirmation_id, confirmation_url=current_url,
+            confirmation_text_fingerprint=parsed.text_fingerprint, needs_user_action=0,
+            confirmation_evidence_strength=grade.strength.value,
+        )
+        return {"ok": True, "detail": "confirmed via independently-obtained evidence", "session": updated}
+    finally:
+        browser_session.release_session_lease(session_id)
