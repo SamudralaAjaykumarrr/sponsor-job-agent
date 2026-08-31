@@ -280,8 +280,8 @@
     {% elif active_execution.requires_user_action %}
     <p style="color:var(--bad);">Needs user action: {{ active_execution.user_action_reason }}</p>
     {% endif %}
-    {% if active_execution.confirmation_id %}
-    <p>Confirmation: {{ active_execution.confirmation_id }}
+    {% if active_execution.confirmation_id or active_execution.confirmation_url %}
+    <p>Confirmation{% if active_execution.confirmation_id %}: {{ active_execution.confirmation_id }}{% endif %}
        {% if active_execution.confirmation_url %}(<a href="{{ active_execution.confirmation_url }}" target="_blank" rel="noopener">receipt</a>){% endif %}</p>
     {% endif %}
     {% if latest_receipt %}
@@ -325,9 +325,14 @@
       </form>
       <form method="post" action="/jobs/{{ job.id }}/applications/queue"><button class="btn" type="submit">Queue Application</button></form>
     </div>
-    {% if latest_execution and latest_execution.confirmation_id %}
-    <p style="margin-top:0.6rem;">Confirmation: {{ latest_execution.confirmation_id }}
+    {% if latest_execution and (latest_execution.confirmation_id or latest_execution.confirmation_url) %}
+    <p style="margin-top:0.6rem;">Confirmation{% if latest_execution.confirmation_id %}: {{ latest_execution.confirmation_id }}{% endif %}
        {% if latest_execution.confirmation_url %}(<a href="{{ latest_execution.confirmation_url }}" target="_blank" rel="noopener">receipt</a>){% endif %}</p>
+    {% endif %}
+    {% if latest_receipt %}
+    <p class="faint">Receipt <a href="/applications/receipts">{{ latest_receipt.receipt_id }}</a>
+       via {{ latest_receipt.submitted_via }} · evidence: {{ latest_receipt.evidence_strength }} ·
+       recorded {{ latest_receipt.created_at }}</p>
     {% endif %}
     {% endif %}
   </section>

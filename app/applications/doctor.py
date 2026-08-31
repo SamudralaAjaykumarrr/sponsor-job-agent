@@ -146,16 +146,37 @@ def _check_approved_status_without_approval_record(conn, report: DoctorReport) -
 
 def _check_approval_submitted_for_unsupported_provider(conn, report: DoctorReport) -> None:
     """No execution with a recorded approval may ever have progressed to
-    SUBMITTING/SUBMITTED/APPLIED for a provider whose capability was
-    UNSUPPORTED at approval time -- app.applications.executor.
+    SUBMITTING/SUBMITTED/SUBMISSION_CONFIRMED for a provider whose
+    capability was UNSUPPORTED at approval time -- app.applications.executor.
     _approved_submit_permitted must always have blocked it (spec section 9:
     never infer/force a submission capability that doesn't genuinely
-    exist)."""
+    exist). APPLIED is checked SEPARATELY and more narrowly: an UNSUPPORTED
+    (ASSIST_ONLY) provider legitimately reaches APPLIED through a
+    completely different, sanctioned route --
+    app.applications.browser_assist.attempt_user_submit_reconciliation()/
+    _from_evidence(), a human-supervised manual confirmation that never
+    calls provider.submit() at all (this is Greenhouse's whole design: no
+    automated submission capability, but a human can still complete it and
+    have the genuine confirmation reconciled). A real bug caught live
+    (2026-08-31, job 200/Robinhood) had this check flag exactly that
+    legitimate case as a violation. Only an APPLIED execution with NO
+    linked CONFIRMED/confirmation_observed browser_assist_sessions row --
+    meaning it could only have reached APPLIED some other, unaccounted-for
+    way -- is still a genuine finding."""
     rows = conn.execute(
         "SELECT DISTINCT e.execution_id, e.job_id, e.provider FROM application_executions e "
         "JOIN application_approvals a ON a.execution_id = e.execution_id "
-        "WHERE e.status IN ('SUBMITTING', 'SUBMITTED', 'SUBMISSION_CONFIRMED', 'APPLIED') "
+        "WHERE e.status IN ('SUBMITTING', 'SUBMITTED', 'SUBMISSION_CONFIRMED') "
         "AND a.submission_capability = 'UNSUPPORTED'"
+    ).fetchall()
+    rows += conn.execute(
+        "SELECT DISTINCT e.execution_id, e.job_id, e.provider FROM application_executions e "
+        "JOIN application_approvals a ON a.execution_id = e.execution_id "
+        "WHERE e.status = 'APPLIED' AND a.submission_capability = 'UNSUPPORTED' "
+        "AND NOT EXISTS ("
+        "  SELECT 1 FROM browser_assist_sessions s WHERE s.execution_id = e.execution_id "
+        "  AND (s.status = 'CONFIRMED' OR s.confirmation_observed = 1)"
+        ")"
     ).fetchall()
     for r in rows:
         report.issues.append(Issue(
@@ -513,16 +534,33 @@ def _check_browser_confirmation_without_applied_execution(conn, report: DoctorRe
 
 
 def _check_browser_applied_without_confirmation(conn, report: DoctorReport) -> None:
+    """Execution-centric, not session-row-centric: an execution can
+    legitimately accumulate MULTIPLE browser_assist_sessions rows over its
+    lifetime (a stale/EXPIRED session from an earlier reconstruction,
+    followed by the actual CONFIRMED one) -- a real bug caught live
+    (2026-08-31, job 200/Robinhood) had this JOIN flag the OLD, EXPIRED
+    session row even though a DIFFERENT, newer session for the SAME
+    execution genuinely showed CONFIRMED/confirmation_observed=1. Also
+    treats a non-empty `confirmation_url` on the execution row as valid
+    evidence, not just `confirmation_id` -- many employers' confirmation
+    pages (Robinhood's included) genuinely have no extractable reference
+    number, only a URL and a thank-you message."""
     rows = conn.execute(
-        "SELECT s.session_id, s.execution_id FROM browser_assist_sessions s "
-        "JOIN application_executions e ON e.execution_id = s.execution_id "
-        "WHERE e.status = 'APPLIED' AND s.status != 'CONFIRMED' AND s.confirmation_observed = 0 "
-        "AND (e.confirmation_id IS NULL OR e.confirmation_id = '')"
+        "SELECT e.execution_id FROM application_executions e "
+        "WHERE e.status = 'APPLIED' "
+        "AND (e.confirmation_id IS NULL OR e.confirmation_id = '') "
+        "AND (e.confirmation_url IS NULL OR e.confirmation_url = '') "
+        "AND EXISTS (SELECT 1 FROM browser_assist_sessions s WHERE s.execution_id = e.execution_id) "
+        "AND NOT EXISTS ("
+        "  SELECT 1 FROM browser_assist_sessions s2 WHERE s2.execution_id = e.execution_id "
+        "  AND (s2.status = 'CONFIRMED' OR s2.confirmation_observed = 1)"
+        ")"
     ).fetchall()
     for r in rows:
         report.issues.append(Issue("serious", "browser_applied_without_confirmation",
-                                    f"execution linked to browser session {r['session_id']} is APPLIED with "
-                                    f"no confirmation evidence anywhere"))
+                                    f"execution {r['execution_id']} is APPLIED with no confirmation evidence "
+                                    f"anywhere (own confirmation_id/url unset, no linked session shows "
+                                    f"CONFIRMED/confirmation_observed)"))
 
 
 _FORBIDDEN_FIELD_SUBSTRINGS = ("password=", "passwd=", "mfa_code=", "otp=", "secret=", "authorization: bearer",

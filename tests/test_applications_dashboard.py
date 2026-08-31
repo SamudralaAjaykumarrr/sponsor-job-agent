@@ -83,6 +83,49 @@ def test_prepare_application_via_dashboard_reaches_applied(tmp_env, sample_profi
     assert metrics_resp.json()["applications_confirmed"] >= 1
 
 
+def test_job_detail_shows_receipt_when_confirmation_has_no_extractable_id(tmp_env, sample_profile):
+    """Real bug caught live (2026-08-31, job 200/Robinhood's real Greenhouse
+    canary): job_detail.html gated its ENTIRE confirmation/receipt display on
+    `confirmation_id` being non-empty, but many employers' Greenhouse
+    confirmation pages (Robinhood's included) never include a distinct
+    reference number -- only a thank-you message. The application was
+    genuinely APPLIED with a real receipt on file, but the job detail page
+    showed no evidence of it and still offered "Prepare Application" /
+    "Queue Application" as if nothing had happened. Confirmation display now
+    triggers on confirmation_id OR confirmation_url, and the receipt line is
+    also shown once an execution is no longer active (previously only shown
+    while active_execution was set, i.e. never for a terminal APPLIED one)."""
+    from app.applications import browser_assist
+    from app.applications import repo as executions_repo
+    from app.applications import browser_session
+
+    save_profile(sample_profile)
+    job = ingest_and_process(Job(
+        title="Backend Software Engineer", company="Acme Corp", location="Remote - US",
+        description=JD_TEXT, employment_type="Full-time", provider="greenhouse",
+        external_job_id="dash-receipt-1", company_identifier="acme", mode=ApplicationMode.ASSIST,
+    ))
+    execution_id = executions_repo.create_execution(job.id, provider="greenhouse", mode="ASSIST")
+    session = browser_session.create_session(
+        execution_id=execution_id, job_id=job.id, provider="greenhouse",
+        application_url="https://boards.greenhouse.io/acme/jobs/1",
+    )
+    result = browser_assist.attempt_user_submit_reconciliation_from_evidence(
+        session["session_id"],
+        current_url="https://job-boards.greenhouse.io/acme/jobs/1/confirmation",
+        body_text="Thank you for your interest in joining our world-class team at Acme Corp!",
+    )
+    assert result["ok"] is True
+
+    client = TestClient(app)
+    job_detail = client.get(f"/jobs/{job.id}")
+    assert job_detail.status_code == 200
+    assert "Confirmation" in job_detail.text
+    assert "job-boards.greenhouse.io/acme/jobs/1/confirmation" in job_detail.text
+    assert "Receipt" in job_detail.text
+    assert "browser_assist_external_evidence:greenhouse" in job_detail.text
+
+
 def test_test_fixture_execution_never_shows_on_applications_page(tmp_env, sample_profile, monkeypatch):
     """Real bug this integration QA pass caught live: a TEST MODE mock_ats
     execution (app.agent.orchestrator's _seed_test_fixture_if_needed, or any
