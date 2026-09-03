@@ -178,8 +178,15 @@ def test_open_session_failure_after_launch_still_closes_browser(monkeypatch):
     # queued behind the failed _do_open call on the same thread).
     import time as _time
 
+    # Poll for the LAST operation _do_close performs (pw_cm.__exit__), not an
+    # earlier one (browser.close) -- under real thread-scheduling variance in
+    # a large suite, observing an earlier step's completion never guarantees
+    # a later step in the same function has also finished on the worker
+    # thread yet, which made this assertion genuinely flaky (not a real
+    # production bug: __exit__ always eventually fires -- see
+    # app.applications.browser_runtime._LiveSession._do_close).
     for _ in range(50):
-        if created.get("browser") is not None and created["browser"].close.called:
+        if created.get("pw_cm") is not None and created["pw_cm"].__exit__.called:
             break
         _time.sleep(0.02)
 
