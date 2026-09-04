@@ -1640,13 +1640,33 @@ def greenhouse_like_confirmation_page(tmp_path: Path) -> str:
 # tests/test_greenhouse_submit_engine.py.
 # =============================================================================
 
-def greenhouse_like_submit_flow_page(tmp_path: Path, *, disabled_submit: bool = False) -> str:
+def greenhouse_like_submit_flow_page(
+    tmp_path: Path, *, disabled_submit: bool = False, delayed_confirmation_ms: int = 0,
+) -> str:
     """`disabled_submit=True` produces a submit button that is permanently
     disabled -- Playwright's own actionability wait on `.click()` then
     genuinely times out before ever dispatching the click, the honest
     "timeout BEFORE submit" case (distinct from a fetch that hangs AFTER a
-    real click, which the test controls via `page.route()` instead)."""
+    real click, which the test controls via `page.route()` instead).
+
+    Greenhouse Confirmation Detection Forensics V1: `delayed_confirmation_ms`
+    (default 0, every existing caller's behavior byte-for-byte unchanged)
+    simulates the genuine SPA-timing race the post-click settle wait exists
+    to catch -- the old form is removed from the DOM THE INSTANT the fetch
+    resolves (so `_click_and_observe`'s control-disappearance detection
+    fires immediately), but the actual confirmation text is only injected
+    `delayed_confirmation_ms` LATER via `setTimeout`, exactly modeling a
+    real client-side app that clears its old view synchronously and renders
+    the new one asynchronously a short time afterward."""
     disabled_attr = "disabled" if disabled_submit else ""
+    if delayed_confirmation_ms > 0:
+        on_response = textwrap.dedent(f"""
+              .then(function (text) {{
+                document.getElementById('application-form').remove();
+                setTimeout(function () {{ document.body.innerHTML = text; }}, {delayed_confirmation_ms});
+              }})""")
+    else:
+        on_response = "\n              .then(function (text) { document.body.innerHTML = text; })"
     return _write(tmp_path, "greenhouse_submit_flow.html", _jsonld_block() + textwrap.dedent(f"""
         <h1>{DEFAULT_JOB_TITLE}</h1>
         <form id="application-form">
@@ -1658,8 +1678,7 @@ def greenhouse_like_submit_flow_page(tmp_path: Path, *, disabled_submit: bool = 
           document.getElementById('application-form').addEventListener('submit', function (e) {{
             e.preventDefault();
             fetch('https://greenhouse-fixture.local/apply', {{ method: 'POST' }})
-              .then(function (r) {{ return r.text(); }})
-              .then(function (text) {{ document.body.innerHTML = text; }})
+              .then(function (r) {{ return r.text(); }}){on_response}
               .catch(function (err) {{
                 document.getElementById('network-error').innerText = 'Error submitting application: ' + (err && err.message);
               }});

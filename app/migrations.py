@@ -1881,6 +1881,40 @@ def _m064_browser_verified_field_evidence_table(conn, backend: str) -> None:
     )
 
 
+def _m065_greenhouse_submit_claims_evidence_columns(conn, backend: str) -> None:
+    """Greenhouse Confirmation Detection Forensics V1: every one of this
+    project's three real Greenhouse submit attempts (jobs 454/291/342, all
+    2026-09) reached `SUBMISSION_STATUS_UNKNOWN` with error_type
+    UNRECOGNIZED_OUTCOME, and NONE of them left behind any durable record of
+    what was actually observed on the resulting page -- `app.applications.
+    greenhouse_submit_engine._finish()` only ever persisted the generic
+    detail string 'no recognized confirmation, duplicate, or validation-
+    error evidence on the resulting page', never the real captured URL/
+    heading/body text or structural signals, on any NON-CONFIRMED outcome.
+    That made a genuine post-hoc root-cause diagnosis of all three failures
+    impossible -- this migration closes the gap going forward (it cannot
+    retroactively recover data that was never captured).
+
+    These columns are populated by `app.applications.greenhouse_submit_
+    claim.record_outcome()` on EVERY terminal outcome, not just CONFIRMED --
+    bounded, non-PII page-authored text only (a heading/body snippet an
+    ordinary visible page renders, never a raw HTTP payload, never anything
+    the CANDIDATE typed), matching this project's existing 'never store a
+    raw response payload, only a bounded descriptive fact' convention
+    (see provider_schema_drift). `heading_text`/`body_text_snippet` are
+    truncated at write time (300/500 chars) -- diagnostic aids, not a
+    verbatim page archive."""
+    add_columns_if_missing(conn, backend, "greenhouse_submit_claims", [
+        ("final_url", "TEXT NOT NULL DEFAULT ''"),
+        ("heading_text", "TEXT NOT NULL DEFAULT ''"),
+        ("body_text_snippet", "TEXT NOT NULL DEFAULT ''"),
+        ("phrase_matched", "INTEGER"),
+        ("heading_phrase_matched", "INTEGER"),
+        ("submit_control_disappeared", "INTEGER"),
+        ("form_fields_disappeared", "INTEGER"),
+    ])
+
+
 MIGRATIONS: list[tuple[int, str, Callable]] = [
     (2, "phase6_worker_identity_columns", _m002_worker_identity_columns),
     (3, "phase6_schema_drift_table", _m003_schema_drift_table),
@@ -1945,6 +1979,7 @@ MIGRATIONS: list[tuple[int, str, Callable]] = [
     (62, "provider_submit_claims_table", _m062_provider_submit_claims_table),
     (63, "human_verified_employment_evidence_table", _m063_human_verified_employment_evidence_table),
     (64, "browser_verified_field_evidence_table", _m064_browser_verified_field_evidence_table),
+    (65, "greenhouse_submit_claims_evidence_columns", _m065_greenhouse_submit_claims_evidence_columns),
 ]
 
 # Version 1 is the implicit Phase 1-5 baseline schema, applied by

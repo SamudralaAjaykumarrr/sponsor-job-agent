@@ -133,6 +133,46 @@ def _count_fillable_fields(live) -> int:
         return -1
 
 
+def _wait_for_post_click_settle(page) -> None:
+    """Runs inside the live session's dedicated Playwright thread, only
+    ever called AFTER the clicked submit control's own disappearance has
+    already been detected (see `_click_and_observe`) -- never a substitute
+    for that detection, purely an additional bounded settle phase before
+    text is sampled for classification.
+
+    Bounded polling of the page's own visible-text-length signature
+    (`document.body.innerText.length`) until it stops changing across
+    `BROWSER_DOM_STABILIZATION_SETTLE_POLLS` consecutive polls, or
+    `GREENHOUSE_SUBMIT_POST_CLICK_SETTLE_TIMEOUT_MS` elapses -- whichever
+    comes first. Never an arbitrary blind sleep: a page that settles in
+    200ms returns in ~200ms, one that never stops changing within the
+    budget still returns (classification then proceeds against whatever the
+    page shows at that point, exactly as before this function existed) --
+    this only ever adds time when the page is genuinely still changing, and
+    always remains bounded by the same config-driven budget."""
+    import time
+
+    timeout_s = config.GREENHOUSE_SUBMIT_POST_CLICK_SETTLE_TIMEOUT_MS / 1000.0
+    poll_s = max(0.05, config.BROWSER_DOM_STABILIZATION_POLL_MS / 1000.0)
+    settle_target = max(1, config.BROWSER_DOM_STABILIZATION_SETTLE_POLLS)
+    deadline = time.monotonic() + timeout_s
+    last_length: Optional[int] = None
+    stable_polls = 0
+    while time.monotonic() < deadline:
+        try:
+            length = page.evaluate("() => document.body ? document.body.innerText.length : 0")
+        except Exception:  # noqa: BLE001 -- a page mid-navigation may throw transiently; keep polling
+            length = None
+        if length is not None and length == last_length:
+            stable_polls += 1
+            if stable_polls >= settle_target:
+                return
+        else:
+            stable_polls = 0
+        last_length = length
+        time.sleep(poll_s)
+
+
 def _click_and_observe(
     live, control: dict, *, click_timeout_ms: int, observe_timeout_ms: int, observe_poll_ms: int,
     pre_field_count: int = -1,
@@ -212,6 +252,14 @@ def _click_and_observe(
                     # never wait out the rest of the observation window.
                     break
                 time.sleep(poll_s)
+
+        if changed:
+            # The old control is confirmed gone -- give a genuinely SPA-
+            # rendered replacement (the actual confirmation text) a bounded
+            # chance to finish rendering before text is sampled. Never
+            # applied on the timeout/never-changed path, which proceeds
+            # straight to TIMEOUT_AFTER_CLICK regardless of body text.
+            _wait_for_post_click_settle(page)
 
         validation = _detect_validation_errors(page)
         try:
@@ -352,8 +400,8 @@ def run_greenhouse_submit(
             observe_timeout_ms=config.BROWSER_DOM_STABILIZATION_TIMEOUT_MS,
             observe_poll_ms=config.BROWSER_DOM_STABILIZATION_POLL_MS,
             pre_field_count=pre_field_count,
-            timeout=((config.GREENHOUSE_SUBMIT_CLICK_TIMEOUT_MS + config.BROWSER_DOM_STABILIZATION_TIMEOUT_MS)
-                     / 1000.0) + 20,
+            timeout=((config.GREENHOUSE_SUBMIT_CLICK_TIMEOUT_MS + config.BROWSER_DOM_STABILIZATION_TIMEOUT_MS
+                      + config.GREENHOUSE_SUBMIT_POST_CLICK_SETTLE_TIMEOUT_MS) / 1000.0) + 20,
         )
 
         if not observation["clicked"]:
@@ -365,35 +413,42 @@ def run_greenhouse_submit(
 
         if not is_allowed_host_for_session(job.provider or "", session.get("application_url", ""), observation["url"]):
             detail = f"post-click navigation left the allowed provider domain: {observation['url']}"
-            _finish(execution_id, job, SubmitOutcome.BLOCKED, "PLATFORM_POLICY_RESTRICTED", detail)
+            _finish(execution_id, job, SubmitOutcome.BLOCKED, "PLATFORM_POLICY_RESTRICTED", detail,
+                     final_url=observation["url"])
             return SubmitAttemptResult(SubmitOutcome.BLOCKED, "PLATFORM_POLICY_RESTRICTED", detail)
 
         if observation.get("failed_requests"):
             detail = "the submit request failed at the network level after the control was clicked -- outcome unknown"
             outcome = SubmitOutcome.SUBMISSION_STATUS_UNKNOWN
-            _finish(execution_id, job, outcome, "CONNECTION_LOST", detail)
+            _finish(execution_id, job, outcome, "CONNECTION_LOST", detail, final_url=observation["url"])
             return SubmitAttemptResult(outcome, "CONNECTION_LOST", detail)
 
         if observation["timed_out"]:
             detail = "the submit control was clicked but no response was observed before timeout -- outcome unknown"
             outcome = SubmitOutcome.SUBMISSION_STATUS_UNKNOWN
-            _finish(execution_id, job, outcome, "TIMEOUT_AFTER_CLICK", detail)
+            _finish(execution_id, job, outcome, "TIMEOUT_AFTER_CLICK", detail, final_url=observation["url"])
             return SubmitAttemptResult(outcome, "TIMEOUT_AFTER_CLICK", detail)
 
         body_text = observation["body_text"]
         parsed = parse_confirmation_text(body_text, heading_text=observation.get("heading_text", ""))
+        _evidence_kwargs = dict(
+            final_url=observation["url"], heading_text=observation.get("heading_text", ""), body_text=body_text,
+            phrase_matched=parsed.phrase_matched, heading_phrase_matched=parsed.heading_phrase_matched,
+            submit_control_disappeared=observation.get("submit_control_disappeared"),
+            form_fields_disappeared=observation.get("form_fields_disappeared"),
+        )
 
         if parsed.already_applied:
             detail = f"duplicate-application evidence observed: '{parsed.matched_duplicate_phrase}' -- never " \
                       "folded into a fresh confirmation"
             outcome = SubmitOutcome.BLOCKED
-            _finish(execution_id, job, outcome, "DUPLICATE_APPLICATION_DETECTED", detail)
+            _finish(execution_id, job, outcome, "DUPLICATE_APPLICATION_DETECTED", detail, **_evidence_kwargs)
             return SubmitAttemptResult(outcome, "DUPLICATE_APPLICATION_DETECTED", detail)
 
         if observation["validation_errors"]:
             detail = "server-side validation error(s): " + "; ".join(observation["validation_errors"][:5])
             outcome = SubmitOutcome.REJECTED
-            _finish(execution_id, job, outcome, "SERVER_VALIDATION_ERROR", detail)
+            _finish(execution_id, job, outcome, "SERVER_VALIDATION_ERROR", detail, **_evidence_kwargs)
             return SubmitAttemptResult(outcome, "SERVER_VALIDATION_ERROR", detail)
 
         grade = classify_confirmation_evidence(
@@ -409,12 +464,12 @@ def run_greenhouse_submit(
             )
             _finish(execution_id, job, SubmitOutcome.CONFIRMED, "", grade.reason,
                      confirmation_id=parsed.confirmation_id, confirmation_url=observation["url"],
-                     confirmation_text_fingerprint=parsed.text_fingerprint)
+                     confirmation_text_fingerprint=parsed.text_fingerprint, **_evidence_kwargs)
             return sr
 
         detail = "no recognized confirmation, duplicate, or validation-error evidence on the resulting page"
         outcome = SubmitOutcome.SUBMISSION_STATUS_UNKNOWN
-        _finish(execution_id, job, outcome, "UNRECOGNIZED_OUTCOME", detail)
+        _finish(execution_id, job, outcome, "UNRECOGNIZED_OUTCOME", detail, **_evidence_kwargs)
         return SubmitAttemptResult(outcome, "UNRECOGNIZED_OUTCOME", detail)
     finally:
         try:
@@ -426,13 +481,27 @@ def run_greenhouse_submit(
 def _finish(
     execution_id: str, job: Job, outcome: SubmitOutcome, error_type: str, detail: str, *,
     record_claim: bool = True, confirmation_id: str = "", confirmation_url: str = "",
-    confirmation_text_fingerprint: str = "",
+    confirmation_text_fingerprint: str = "", final_url: str = "", heading_text: str = "", body_text: str = "",
+    phrase_matched: Optional[bool] = None, heading_phrase_matched: Optional[bool] = None,
+    submit_control_disappeared: Optional[bool] = None, form_fields_disappeared: Optional[bool] = None,
 ) -> None:
     """Persists the outcome through the SAME machinery every other
     submission path in this project already uses -- never a parallel
-    receipt/state system."""
+    receipt/state system.
+
+    Greenhouse Confirmation Detection Forensics V1: the evidence kwargs
+    (final_url/heading_text/body_text/the four booleans) are recorded on
+    EVERY outcome that has them available, not just CONFIRMED -- every call
+    site before a click was ever dispatched (contract/session/claim
+    failures) legitimately has none of this and passes none, which
+    `claim.record_outcome()`'s own all-optional-kwargs contract already
+    handles as 'not observed' (SQL NULL), never a guessed value."""
     if record_claim:
-        claim.record_outcome(execution_id, outcome=outcome.value, detail=detail)
+        claim.record_outcome(
+            execution_id, outcome=outcome.value, detail=detail, final_url=final_url, heading_text=heading_text,
+            body_text_snippet=body_text, phrase_matched=phrase_matched, heading_phrase_matched=heading_phrase_matched,
+            submit_control_disappeared=submit_control_disappeared, form_fields_disappeared=form_fields_disappeared,
+        )
 
     if outcome == SubmitOutcome.CONFIRMED:
         blockers.resolve_blocker(execution_id, resolution_note="application confirmed via greenhouse canary")

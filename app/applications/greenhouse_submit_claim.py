@@ -95,12 +95,34 @@ def acquire_submit_claim(execution_id: str, job_id: int, *, claimed_by: str = ""
     return ClaimAttempt(True, dict(row) if row else None, "submit-once claim acquired")
 
 
-def record_outcome(execution_id: str, *, outcome: str, detail: str = "") -> None:
+def record_outcome(
+    execution_id: str, *, outcome: str, detail: str = "", final_url: str = "", heading_text: str = "",
+    body_text_snippet: str = "", phrase_matched: Optional[bool] = None,
+    heading_phrase_matched: Optional[bool] = None, submit_control_disappeared: Optional[bool] = None,
+    form_fields_disappeared: Optional[bool] = None,
+) -> None:
+    """Greenhouse Confirmation Detection Forensics V1: the evidence kwargs
+    are all optional (every pre-existing caller keeps working unchanged) and
+    are recorded on EVERY outcome, not just CONFIRMED -- closing the
+    observability gap that made jobs 454/291/342's real UNRECOGNIZED_OUTCOME
+    failures impossible to diagnose after the fact. `heading_text`/
+    `body_text_snippet` are truncated here (never trust the caller to have
+    bounded them) -- bounded, page-authored diagnostic snippets, never a raw
+    payload. `None` for any structural/phrase field means 'not observed for
+    this outcome path' (e.g. a pre-click timeout never got body text) and is
+    stored as SQL NULL, never coerced to a guessed False."""
+    def _bool_to_int(v: Optional[bool]) -> Optional[int]:
+        return None if v is None else int(v)
+
     with db_session() as conn:
         conn.execute(
-            "UPDATE greenhouse_submit_claims SET outcome = ?, outcome_detail = ?, updated_at = ? "
-            "WHERE execution_id = ?",
-            (outcome, (detail or "")[:2000], utcnow(), execution_id),
+            "UPDATE greenhouse_submit_claims SET outcome = ?, outcome_detail = ?, final_url = ?, "
+            "heading_text = ?, body_text_snippet = ?, phrase_matched = ?, heading_phrase_matched = ?, "
+            "submit_control_disappeared = ?, form_fields_disappeared = ?, updated_at = ? WHERE execution_id = ?",
+            (outcome, (detail or "")[:2000], (final_url or "")[:2000], (heading_text or "")[:300],
+             (body_text_snippet or "")[:500], _bool_to_int(phrase_matched), _bool_to_int(heading_phrase_matched),
+             _bool_to_int(submit_control_disappeared), _bool_to_int(form_fields_disappeared), utcnow(),
+             execution_id),
         )
 
 

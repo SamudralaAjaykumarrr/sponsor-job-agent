@@ -641,6 +641,23 @@ GREENHOUSE_SUBMIT_CANARY_ENABLED = _env_bool("GREENHOUSE_SUBMIT_CANARY_ENABLED",
 # this elapses -- the honest "no click was ever dispatched" signal used to
 # distinguish a pre-click timeout from a post-click one.
 GREENHOUSE_SUBMIT_CLICK_TIMEOUT_MS = _env_int("GREENHOUSE_SUBMIT_CLICK_TIMEOUT_MS", 10000)
+# Greenhouse Confirmation Detection Forensics V1: bounded settle wait AFTER
+# the clicked submit control's own disappearance is detected, BEFORE
+# capturing body/heading text for classification. A real, provable gap
+# found live: `_click_and_observe` used to sample body_text the instant the
+# OLD control vanished, with zero settle time -- a genuinely SPA-rendered
+# confirmation page can remove the old form synchronously while its
+# replacement content (the actual "thank you" text) renders asynchronously
+# a short time later, so the old code risked scraping a transient
+# empty/loading DOM state rather than the final settled page. Reuses
+# BROWSER_DOM_STABILIZATION_POLL_MS/_SETTLE_POLLS for poll cadence (the same
+# generic "how often to poll" / "how many consecutive stable reads count as
+# settled" primitives app.applications.browser_runtime._wait_for_stable_state
+# already established) but gets its OWN overall timeout budget -- this is a
+# genuinely distinct concern (post-submit confirmation-page settling, not
+# pre-fill form-readiness) and reusing the (larger, 8s-default) discovery
+# timeout here would needlessly slow every real canary attempt.
+GREENHOUSE_SUBMIT_POST_CLICK_SETTLE_TIMEOUT_MS = _env_int("GREENHOUSE_SUBMIT_POST_CLICK_SETTLE_TIMEOUT_MS", 4000)
 
 # CLAUDE.md Phase 15 section 42/44: a Phase 15 large-state benchmark
 # (scripts/phase15_release_benchmark.py) measured the unified dashboard's

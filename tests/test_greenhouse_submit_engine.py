@@ -362,3 +362,120 @@ def test_structural_disappearance_corroborates_a_moderate_phrase_to_strong(tmp_e
     # control -- both signals must have reached the grader as True, not None.
     assert captured.get("submit_control_disappeared") is True
     assert captured.get("form_fields_disappeared") is True
+
+
+# --- Greenhouse Confirmation Detection Forensics V1 (2026-09-04): jobs
+# 454/291/342's real canary attempts all reached SUBMISSION_STATUS_UNKNOWN/
+# UNRECOGNIZED_OUTCOME with zero durable evidence of what was actually
+# observed. Two real, provable gaps this closes: (1) body/heading text was
+# sampled the INSTANT the old submit control disappeared, with no settle
+# time for a genuinely async-rendered replacement; (2) no evidence beyond a
+# generic detail string was ever persisted on a non-CONFIRMED outcome. ------
+
+def test_delayed_confirmation_render_is_still_caught_by_the_settle_wait(tmp_env, sample_profile, tmp_path):
+    """Real, provable timing gap: the old submit control is removed from the
+    DOM THE INSTANT the fetch resolves (so control-disappearance detection
+    fires immediately), but the actual confirmation text only renders
+    150ms LATER via setTimeout -- exactly the SPA race a genuinely
+    async-rendered confirmation page can produce. Without a post-click
+    settle wait, body_text would be sampled against the still-empty
+    intermediate DOM and this would incorrectly reach UNRECOGNIZED_OUTCOME.
+    150ms is deliberately well under this test module's overridden 3-poll
+    x 100ms (=300ms) premature-stability window, so the settle wait is
+    still genuinely waiting (not yet mid-consecutive-stable-count) when the
+    real content lands."""
+    from tests.browser_fixtures import greenhouse_like_submit_flow_page
+
+    url = greenhouse_like_submit_flow_page(tmp_path, delayed_confirmation_ms=150)
+    job = _approved_job(tmp_env, sample_profile, url, "gh-eng-delayed-confirm")
+    hook = _route_returning(200, "<h1>Thank you for applying to Acme Corp</h1><p>Confirmation Number: GH-DELAY-1</p>")
+
+    result = run_greenhouse_submit(job.id, headless=True, _test_route_hook=hook)
+
+    assert result.outcome == SubmitOutcome.CONFIRMED, result.detail
+    assert result.confirmation_id == "GH-DELAY-1"
+
+
+def test_unrecognized_outcome_persists_evidence_for_future_diagnosis(tmp_env, sample_profile, tmp_path):
+    """The exact known structural shape of jobs 454/291/342's real failures:
+    the page genuinely changed (form/control both gone) but the text
+    matches no curated phrase anywhere. Per the task's own rule, a
+    historical case with insufficient captured evidence must stay UNKNOWN,
+    never be inflated to a success -- and this proves the NEW evidence
+    columns are actually populated now, closing the observability gap that
+    made a genuine post-hoc diagnosis of 454/291/342 impossible."""
+    from tests.browser_fixtures import greenhouse_like_submit_flow_page
+
+    url = greenhouse_like_submit_flow_page(tmp_path)
+    job = _approved_job(tmp_env, sample_profile, url, "gh-eng-evidence-capture")
+    hook = _route_returning(200, "<h1>Please wait</h1><p>We are processing your request.</p>")
+
+    result = run_greenhouse_submit(job.id, headless=True, _test_route_hook=hook)
+
+    assert result.outcome == SubmitOutcome.SUBMISSION_STATUS_UNKNOWN
+    assert result.error_type == "UNRECOGNIZED_OUTCOME"
+
+    row = claim.get_claim(_find_execution_id(job.id))
+    assert row is not None
+    assert row["submit_attempted"] == 1
+    assert row["final_url"].startswith("file://")
+    assert "please wait" in row["heading_text"].lower()
+    assert "processing your request" in row["body_text_snippet"].lower()
+    assert row["phrase_matched"] == 0
+    assert row["heading_phrase_matched"] == 0
+    # The fixture's post-submit DOM genuinely removes the form/control --
+    # both structural signals must be captured too, not left NULL.
+    assert row["submit_control_disappeared"] == 1
+    assert row["form_fields_disappeared"] == 1
+
+
+def test_blank_response_never_falsely_confirms(tmp_env, sample_profile, tmp_path):
+    """Adversarial: a genuinely blank/partial post-submit page -- no text
+    at all -- must never be treated as a success. False-positive success is
+    worse than an honest UNKNOWN."""
+    from tests.browser_fixtures import greenhouse_like_submit_flow_page
+
+    url = greenhouse_like_submit_flow_page(tmp_path)
+    job = _approved_job(tmp_env, sample_profile, url, "gh-eng-blank")
+    hook = _route_returning(200, "")
+
+    result = run_greenhouse_submit(job.id, headless=True, _test_route_hook=hook)
+
+    assert result.outcome == SubmitOutcome.SUBMISSION_STATUS_UNKNOWN
+    assert result.error_type == "UNRECOGNIZED_OUTCOME"
+
+
+def test_negative_application_wording_never_falsely_confirms(tmp_env, sample_profile, tmp_path):
+    """Adversarial word-overlap trap: the resulting text contains
+    'application' (the same noun a real success phrase also contains) but
+    is actually a NEGATIVE/incomplete outcome -- must never be confused for
+    a genuine success. Proves the curated phrase table's 'affirmative,
+    completed-action phrase only' design (never a bare noun match) holds
+    end-to-end through the real engine, not just at the parser-unit level."""
+    from tests.browser_fixtures import greenhouse_like_submit_flow_page
+
+    url = greenhouse_like_submit_flow_page(tmp_path)
+    job = _approved_job(tmp_env, sample_profile, url, "gh-eng-negative-application")
+    hook = _route_returning(
+        200, "<h1>Something went wrong</h1><p>Your application was not submitted. Please try again later.</p>",
+    )
+
+    result = run_greenhouse_submit(job.id, headless=True, _test_route_hook=hook)
+
+    assert result.outcome == SubmitOutcome.SUBMISSION_STATUS_UNKNOWN
+    assert result.error_type == "UNRECOGNIZED_OUTCOME"
+
+
+def _find_execution_id(job_id: int) -> str:
+    """A terminal execution (APPLIED/SUBMISSION_STATUS_UNKNOWN/etc.) is no
+    longer "active" by the time a test's assertions run -- a direct query
+    by job_id is the same lookup every other test in this file already
+    relies on implicitly via `run_greenhouse_submit`'s own internals."""
+    from app.db import db_session
+
+    with db_session() as conn:
+        row = conn.execute(
+            "SELECT execution_id FROM application_executions WHERE job_id = ? ORDER BY id DESC LIMIT 1",
+            (job_id,),
+        ).fetchone()
+    return row["execution_id"] if row else ""
