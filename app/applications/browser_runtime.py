@@ -800,6 +800,7 @@ class _LiveSession:
 
         start = time.monotonic()
         raw_fields = _detect_fields(page)
+        raw_fields = _rescan_unidentifiable_fields(page, raw_fields)
         submit_button = _detect_button(page, _SUBMIT_BUTTON_PHRASES)
         next_button = _detect_button(page, _NEXT_BUTTON_PHRASES, exclude_phrases=_SUBMIT_BUTTON_PHRASES)
 
@@ -1594,6 +1595,42 @@ def _fingerprint_fields(raw_fields: list[dict]) -> str:
     ]
     normalized = json.dumps(signature, sort_keys=True)
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:40]
+
+
+def _is_unidentifiable(rf: dict) -> bool:
+    """True for a field with no label, no id, and no name -- nothing a
+    filler or a human reviewer could ever address it by. See
+    `_rescan_unidentifiable_fields`'s docstring for why this specific shape
+    gets one bounded rescan rather than being surfaced immediately."""
+    return not rf.get("label") and not rf.get("id") and not rf.get("name")
+
+
+def _rescan_unidentifiable_fields(page, raw_fields: list[dict]) -> list[dict]:
+    """One bounded rescan when the initial `_detect_fields()` pass caught a
+    widget mid-hydration (see `config.BROWSER_FIELD_RESCAN_WAIT_MS`'s
+    docstring for the real, live-observed case this fixes). Only ever
+    REPLACES the result with a strictly better one (fewer unidentifiable
+    fields than the previous attempt) -- if a rescan doesn't improve things,
+    the original (or best-so-far) scan is kept and returned as-is, so this
+    can never fabricate a field's identity or silently drop a genuinely
+    unidentifiable field from the report. Bounded by
+    `BROWSER_FIELD_RESCAN_MAX_ATTEMPTS`, never an unbounded retry loop."""
+    best = raw_fields
+    best_unidentifiable = sum(1 for rf in best if _is_unidentifiable(rf))
+    if best_unidentifiable == 0:
+        return best
+    for _ in range(max(0, config.BROWSER_FIELD_RESCAN_MAX_ATTEMPTS)):
+        try:
+            page.wait_for_timeout(max(0, config.BROWSER_FIELD_RESCAN_WAIT_MS))
+            rescanned = _detect_fields(page)
+        except Exception:  # noqa: BLE001 -- a page mid-navigation may throw transiently; keep the best-so-far
+            break
+        unidentifiable = sum(1 for rf in rescanned if _is_unidentifiable(rf))
+        if unidentifiable < best_unidentifiable:
+            best, best_unidentifiable = rescanned, unidentifiable
+        if best_unidentifiable == 0:
+            break
+    return best
 
 
 def _detect_fields(page) -> list[dict]:

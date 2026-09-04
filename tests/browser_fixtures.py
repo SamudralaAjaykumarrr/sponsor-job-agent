@@ -194,6 +194,40 @@ def conditional_sponsorship_page(tmp_path: Path) -> str:
     """))
 
 
+def hydrating_combobox_form_page(tmp_path: Path, *, hydrate_delay_ms: int = 300) -> str:
+    """A required react-select-style combobox `<input>` is present in the DOM
+    from first paint (so `_detect_fields()`'s generic input/textarea/select
+    query picks it up immediately) but starts with NO id/label/role -- only
+    after `hydrate_delay_ms` does its own widget JS attach `id`,
+    `role="combobox"`, and an `aria-labelledby` pointing at a real question
+    label, exactly matching the real, live-observed DOM sequence on
+    Anthropic's newest Greenhouse UI that motivated
+    `browser_runtime._rescan_unidentifiable_fields`. An ordinary already-
+    fillable required field (`fname`) is present from the start too, so
+    `_wait_for_stable_state()`'s content_ready condition (a) resolves almost
+    immediately -- well before `hydrate_delay_ms` fires -- reproducing the
+    real race: the DOM is declared 'stable' while this one field is still
+    mid-hydration."""
+    return _write(tmp_path, "hydrating_combobox.html", _jsonld_block() + textwrap.dedent(f"""
+        <form>
+          <label for="fname">Full Name</label><input id="fname" name="full_name" type="text" required>
+          <input type="text" required>
+          <button type="submit">Submit Application</button>
+        </form>
+        <script>
+          setTimeout(function () {{
+            var input = document.querySelector('form input[type="text"]:not(#fname)');
+            input.id = 'visa_sponsorship_q';
+            input.setAttribute('role', 'combobox');
+            var label = document.createElement('label');
+            label.setAttribute('for', 'visa_sponsorship_q');
+            label.innerText = 'Do you require visa sponsorship?';
+            input.parentElement.insertBefore(label, input);
+          }}, {hydrate_delay_ms});
+        </script>
+    """))
+
+
 def multi_step_pages(tmp_path: Path) -> tuple[str, str]:
     """Two real, separately-loaded pages linked by a "Next" control -- closer
     to how real multi-page ATS forms (e.g. Workday) behave than a single

@@ -278,6 +278,50 @@ def test_deterministic_rerun_produces_same_selector_resolution(tmp_path):
         browser_runtime.close_session(session_id)
 
 
+# --- 19: a combobox still mid-hydration when the DOM otherwise looks
+# "stable" gets one bounded rescan instead of being surfaced as an
+# unidentifiable phantom field (real, live-observed against Anthropic's
+# newest Greenhouse UI -- see config.BROWSER_FIELD_RESCAN_WAIT_MS) --------
+
+def test_hydrating_combobox_resolves_to_real_label_not_phantom_field(tmp_path):
+    from tests.browser_fixtures import hydrating_combobox_form_page
+
+    url = hydrating_combobox_form_page(tmp_path, hydrate_delay_ms=300)
+    session_id = "t-hydrate"
+    try:
+        outcome = _open(tmp_path, session_id, url)
+        assert outcome.pause_reason is None
+        # The bug this guards: without the rescan, this field's label/id/name
+        # are all still empty (type falls back to the bare tag name "input")
+        # because _detect_fields() ran before the widget's own JS attached
+        # its real attributes.
+        phantom = [rf for rf in outcome.fields if not rf.get("label") and not rf.get("id") and not rf.get("name")]
+        assert phantom == [], f"unidentifiable field(s) survived the rescan: {phantom}"
+        visa = _field(outcome.fields, "Do you require visa sponsorship?")
+        assert visa["id"] == "visa_sponsorship_q"
+        assert visa["type"] == "combobox"
+    finally:
+        browser_runtime.close_session(session_id)
+
+
+def test_hydrating_combobox_rescan_never_loops_past_configured_bound(tmp_path, monkeypatch):
+    """A widget that NEVER finishes hydrating (hydrate_delay_ms far beyond
+    the rescan budget) must still return promptly with the field honestly
+    reported as unidentifiable -- never an unbounded retry loop."""
+    from tests.browser_fixtures import hydrating_combobox_form_page
+
+    monkeypatch.setattr(config, "BROWSER_FIELD_RESCAN_WAIT_MS", 100)
+    monkeypatch.setattr(config, "BROWSER_FIELD_RESCAN_MAX_ATTEMPTS", 2)
+    url = hydrating_combobox_form_page(tmp_path, hydrate_delay_ms=60_000)
+    session_id = "t-hydrate-never"
+    try:
+        outcome = _open(tmp_path, session_id, url)
+        phantom = [rf for rf in outcome.fields if not rf.get("label") and not rf.get("id") and not rf.get("name")]
+        assert len(phantom) == 1
+    finally:
+        browser_runtime.close_session(session_id)
+
+
 # --- 18: no test in this file ever performs a final submit action ----------
 
 def test_no_submit_control_is_ever_clicked_in_this_suite(tmp_path):

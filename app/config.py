@@ -458,6 +458,23 @@ BROWSER_DOM_STABILIZATION_POLL_MS = _env_int("BROWSER_DOM_STABILIZATION_POLL_MS"
 # "settled" even when no recognizable form content ever appeared.
 BROWSER_DOM_STABILIZATION_SETTLE_POLLS = _env_int("BROWSER_DOM_STABILIZATION_SETTLE_POLLS", 3)
 
+# A field-detection scan can occasionally catch a custom widget (e.g. a
+# react-select-style combobox) mid-hydration: the underlying <input> node
+# already exists (so it's picked up by _detect_fields()'s generic
+# input/textarea/select query) but its label/id/name/role attributes have
+# not yet been attached by the widget's own JS, well after
+# _wait_for_stable_state() already declared the page settled (a real
+# live-observed case against Anthropic's newest Greenhouse UI: the DOM's
+# overall outerHTML-length signature had already stopped changing before
+# a handful of combobox inputs finished acquiring their real attributes,
+# so the settle-signature check never caught it). A field this
+# unidentifiable (no label, no id, no name) can never be filled or asked
+# about anyway, so one bounded rescan is always a safe, non-destructive
+# improvement -- never a guess at its content, and never skipped/retried
+# indefinitely.
+BROWSER_FIELD_RESCAN_WAIT_MS = _env_int("BROWSER_FIELD_RESCAN_WAIT_MS", 400)
+BROWSER_FIELD_RESCAN_MAX_ATTEMPTS = _env_int("BROWSER_FIELD_RESCAN_MAX_ATTEMPTS", 2)
+
 # --- Phase 13: provider resilience and real-world ATS reliability -----------
 # See docs/phase13-provider-resilience.md.
 #
