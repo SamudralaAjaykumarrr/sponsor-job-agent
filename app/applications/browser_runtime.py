@@ -1250,6 +1250,18 @@ class _LiveSession:
             # authoritative when present; input_value() is only the
             # fallback for a plain text/autocomplete field that genuinely
             # has no such display element (e.g. Location/City).
+            #
+            # A genuinely multi-select react-select field (a real Figma
+            # posting's "primary technical expertise"/"programming
+            # languages" questions, both rendered with a `[]`-suffixed
+            # field id) renders each chosen option as a `multi-value` chip
+            # instead of a `single-value` element -- a real live gap: with
+            # no multi-value fallback, this check found nothing, fell
+            # through to input_value() (always "" right after a react-select
+            # selection, same as single-select), and reported False even
+            # though the click+select genuinely succeeded, permanently
+            # blocking these fields from ever verifying. Checked only when
+            # no single-value element is found at that same ancestor level.
             try:
                 displayed = target.evaluate(
                     """(sel) => {
@@ -1259,8 +1271,12 @@ class _LiveSession:
                         for (let i = 0; i < 6 && node; i++) {
                             node = node.parentElement;
                             if (!node) break;
-                            const disp = node.querySelector('[class*="single-value" i]');
-                            if (disp) return disp.innerText;
+                            const single = node.querySelector('[class*="single-value" i]');
+                            if (single) return single.innerText;
+                            const labels = node.querySelectorAll('[class*="multi-value__label" i]');
+                            if (labels.length) return Array.from(labels).map(m => m.innerText).join(', ');
+                            const multi = node.querySelectorAll('[class*="multi-value" i]');
+                            if (multi.length) return Array.from(multi).map(m => m.innerText).join(', ');
                         }
                         return null;
                     }""",
@@ -1314,7 +1330,13 @@ class _LiveSession:
         commonly place several fields close together in the DOM. A plain
         text/tel/textarea field has no such display element of its own by
         construction, so it goes straight to input_value(); a checkbox
-        goes straight to is_checked()."""
+        goes straight to is_checked().
+
+        A genuinely multi-select react-select field renders each chosen
+        option as a `multi-value` chip instead of a `single-value` element
+        -- checked as a fallback at the same ancestor level, same rationale
+        as `_fill_combobox`'s own identical fallback (a real live gap found
+        against a real Figma posting's multi-select questions)."""
         target = rf.get("_frame") or self.page
         try:
             loc = target.locator(_selector_for(rf))
@@ -1331,8 +1353,12 @@ class _LiveSession:
                         for (let i = 0; i < 6 && node; i++) {
                             node = node.parentElement;
                             if (!node) break;
-                            const disp = node.querySelector('[class*="single-value" i]');
-                            if (disp) return disp.innerText;
+                            const single = node.querySelector('[class*="single-value" i]');
+                            if (single) return single.innerText;
+                            const labels = node.querySelectorAll('[class*="multi-value__label" i]');
+                            if (labels.length) return Array.from(labels).map(m => m.innerText).join(', ');
+                            const multi = node.querySelectorAll('[class*="multi-value" i]');
+                            if (multi.length) return Array.from(multi).map(m => m.innerText).join(', ');
                         }
                         return null;
                     }""",
