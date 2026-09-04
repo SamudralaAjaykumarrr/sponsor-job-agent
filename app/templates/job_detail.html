@@ -310,6 +310,12 @@
       <button class="btn btn-primary" type="submit">Reconcile Submission</button>
     </form>
     {% endif %}
+    {% elif latest_execution_terminal %}
+    <div class="banner banner-success">
+      <strong>Application completed.</strong> Status: <strong>{{ latest_execution.status }}</strong>.
+      {% if latest_execution.user_action_reason %}<br>{{ latest_execution.user_action_reason }}{% endif %}
+      {% if latest_execution.finished_at %}<br><span class="faint">Finished {{ latest_execution.finished_at }}</span>{% endif %}
+    </div>
     {% else %}
     <div class="btn-row">
       <form method="post" action="/jobs/{{ job.id }}/applications/prepare">
@@ -325,15 +331,15 @@
       </form>
       <form method="post" action="/jobs/{{ job.id }}/applications/queue"><button class="btn" type="submit">Queue Application</button></form>
     </div>
-    {% if latest_execution and (latest_execution.confirmation_id or latest_execution.confirmation_url) %}
+    {% endif %}
+    {% if not active_execution and latest_execution and (latest_execution.confirmation_id or latest_execution.confirmation_url) %}
     <p style="margin-top:0.6rem;">Confirmation{% if latest_execution.confirmation_id %}: {{ latest_execution.confirmation_id }}{% endif %}
        {% if latest_execution.confirmation_url %}(<a href="{{ latest_execution.confirmation_url }}" target="_blank" rel="noopener">receipt</a>){% endif %}</p>
     {% endif %}
-    {% if latest_receipt %}
+    {% if not active_execution and latest_receipt %}
     <p class="faint">Receipt <a href="/applications/receipts">{{ latest_receipt.receipt_id }}</a>
        via {{ latest_receipt.submitted_via }} · evidence: {{ latest_receipt.evidence_strength }} ·
        recorded {{ latest_receipt.created_at }}</p>
-    {% endif %}
     {% endif %}
   </section>
 

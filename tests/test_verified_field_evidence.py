@@ -259,3 +259,47 @@ def test_non_evidence_application_field_never_gets_elevated_priority():
     field_id, confidence = match_field_with_application_fields(label, "", [lookalike])
     assert field_id == "work_authorization_status"  # falls through to the unchanged generic behavior
     assert confidence == FieldConfidence.MEDIUM
+
+
+# --- real live gap (2026-09-04, Discord job 291): a REQUIRED sensitive-
+# category field with a real EXACT canonical alias (Gender/Veteran Status/
+# Disability Status/...) could never resolve even with genuine, explicit
+# human confirmation, because the alias match won outright before an
+# available evidence override was ever consulted. Fixed: for SENSITIVE
+# aliases specifically (whose generic value can never be auto-filled
+# anyway), a genuine evidence override for the SAME exact label now wins. --
+
+def test_sensitive_alias_prefers_a_genuine_evidence_override():
+    evidence_field = ApplicationField(
+        field_id="verified:gender_discord", label="Gender*", category=FieldCategory.DEMOGRAPHICS,
+        normalized_type="select", required=True, verified_value="Male", confidence=FieldConfidence.EXACT,
+        auto_fill_allowed=True, value_source="browser_verified_field_evidence",
+    )
+    field_id, confidence = match_field_with_application_fields("Gender*", "", [evidence_field])
+    assert field_id == "verified:gender_discord"
+    assert confidence == FieldConfidence.EXACT
+
+
+def test_sensitive_alias_falls_back_to_generic_without_an_override():
+    """No override present -- the generic alias still wins (unchanged), it's
+    just that this generic result remains unfillable downstream (see
+    form_model._normalize_one's generically_sensitive gate)."""
+    field_id, confidence = match_field_with_application_fields("Gender*", "", [])
+    assert field_id == "gender"
+    assert confidence == FieldConfidence.EXACT
+
+
+def test_non_sensitive_alias_still_never_overridden_by_a_lookalike_override():
+    """The Email-style precedent (test_match_field_with_application_fields_
+    never_overrides_a_real_alias) extended: even a genuinely evidence-sourced
+    override for a NON-sensitive-category aliased field (e.g. First Name)
+    must never win -- that carve-out is scoped strictly to SENSITIVE_
+    CATEGORIES, whose generic mapping can never be auto-filled anyway."""
+    evidence_field = ApplicationField(
+        field_id="verified:fname_lookalike", label="First Name", category=FieldCategory.CONTACT,
+        normalized_type="text", required=True, verified_value="Someone Else", confidence=FieldConfidence.EXACT,
+        auto_fill_allowed=True, value_source="browser_verified_field_evidence",
+    )
+    field_id, confidence = match_field_with_application_fields("First Name", "", [evidence_field])
+    assert field_id == "first_name"
+    assert confidence == FieldConfidence.EXACT

@@ -210,3 +210,65 @@ def test_real_id_shapes_are_still_extracted():
         ("application id: R-12345", "R-12345"),
     ):
         assert extract_confirmation_id(text) == expected
+
+
+# --- Multi-signal confirmation contract (2026-09-04, job 454/Anthropic's
+# real canary returned UNRECOGNIZED_OUTCOME -- a body-text-only phrase list
+# proved too brittle against real-world wording variation) -----------------
+
+def test_new_success_phrases_are_recognized():
+    """Broadened phrase table -- real-world ATS confirmation wording this
+    project had not yet curated."""
+    for text in (
+        "You're all set! We'll be in touch.",
+        "Your application is complete.",
+        "We've got your application and will review it shortly.",
+        "Application successfully received by our recruiting team.",
+        "Your submission was successful.",
+    ):
+        assert find_success_phrase(text) != "", text
+
+
+def test_success_wording_not_in_body_but_present_in_heading_still_confirms():
+    """A page whose heading says the application succeeded, in wording this
+    project's phrase table doesn't happen to cover in the BODY text, is
+    still recognized -- via the separate, independent heading check."""
+    heading = "You're All Set!"
+    body = "We appreciate your interest and will follow up if there's a fit."
+    parsed = parse_confirmation_text(body, heading_text=heading)
+    assert parsed.phrase_matched is False
+    assert parsed.heading_phrase_matched is True
+    assert parsed.matched_heading_phrase == "you're all set"
+    grade = classify_confirmation_evidence(
+        phrase_matched=parsed.phrase_matched, heading_phrase_matched=parsed.heading_phrase_matched,
+        confirmation_id=parsed.confirmation_id, current_url="https://job-boards.greenhouse.io/acme/jobs/1",
+    )
+    assert grade.confirms() is True
+    assert grade.strength == ConfirmationEvidenceStrength.MODERATE
+
+
+def test_duplicate_heading_short_circuits_even_without_a_duplicate_body_phrase():
+    parsed = parse_confirmation_text(
+        "We appreciate your continued interest in our company.",
+        heading_text="You Have Already Applied",
+    )
+    assert parsed.already_applied is True
+    assert parsed.phrase_matched is False
+
+
+def test_confirmation_shaped_url_with_misleading_neutral_content_never_auto_confirms():
+    """A URL alone that merely LOOKS like a confirmation route (contains
+    "confirm"/"thank"/etc) must never be trusted when the actual page
+    content is neutral/uninformative -- exactly the "confirmation URL with
+    misleading page content" case."""
+    body = "Please wait while we process your request."
+    parsed = parse_confirmation_text(body, heading_text="")
+    assert parsed.phrase_matched is False
+    assert parsed.heading_phrase_matched is False
+    grade = classify_confirmation_evidence(
+        phrase_matched=parsed.phrase_matched, heading_phrase_matched=parsed.heading_phrase_matched,
+        confirmation_id=parsed.confirmation_id,
+        current_url="https://job-boards.greenhouse.io/acme/jobs/1/confirmation",
+    )
+    assert grade.confirms() is False
+    assert grade.strength == ConfirmationEvidenceStrength.WEAK

@@ -19,7 +19,7 @@ from app.applications import doctor as applications_doctor
 from app.applications import metrics as applications_metrics
 from app.applications import repo as applications_repo
 from app.applications.eligibility import evaluate_executor_eligibility
-from app.applications.product_state import compute_stage
+from app.applications.product_state import ProductStage, compute_stage
 from app.applications.executor import (
     AutoSubmitDisabledError,
     ExecutorDisabledError,
@@ -355,6 +355,15 @@ def job_detail(request: Request, job_id: int):
     # but its confirmation evidence should still be visible on this page --
     # fall back to the most recent execution row for that purpose only.
     latest_execution = executions[-1] if executions else None
+    # A completed/reconciled application (CONFIRMED/COMPLETED_BY_USER --
+    # e.g. job 454/Anthropic's 2026-09-04 human reconciliation) has no
+    # active_execution (terminal, active=0) -- reusing compute_stage's own
+    # ProductStage classification here (the SAME one compute_apply_cta uses)
+    # keeps this page's "what actions are legal" judgment from ever
+    # disagreeing with the CTA badge shown just above it.
+    latest_execution_terminal = latest_execution is not None and compute_stage(latest_execution).stage in (
+        ProductStage.CONFIRMED, ProductStage.COMPLETED_BY_USER,
+    )
     eligibility = evaluate_executor_eligibility(job)
     employment_type_decision = human_verified_employment_evidence.resolve_for_job(job)
     active_browser_session = browser_session.get_active_session_for_job(job_id)
@@ -390,7 +399,8 @@ def job_detail(request: Request, job_id: int):
             "job": job, "score_breakdown": score_breakdown, "history": history, "provenance": provenance,
             "latest_decision": latest_decision, "decision_history": decision_history,
             "executions": executions, "active_execution": active_execution,
-            "latest_execution": latest_execution, "eligibility": eligibility,
+            "latest_execution": latest_execution, "latest_execution_terminal": latest_execution_terminal,
+            "eligibility": eligibility,
             "employment_type_decision": employment_type_decision,
             "job_cta": job_cta,
             "executor_enabled": config.APPLICATION_EXECUTOR_ENABLED,

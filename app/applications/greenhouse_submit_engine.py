@@ -118,8 +118,24 @@ def _scan_final_submit_controls(live) -> list[dict]:
     return finals
 
 
+_FILLABLE_FIELDS_SELECTOR = (
+    "input:not([type=hidden]):not([type=password]):not([type=submit]):not([type=button]), textarea, select"
+)
+
+
+def _count_fillable_fields(live) -> int:
+    """Runs inside the live session's dedicated Playwright thread. Same
+    selector `_wait_for_stable_state()` already uses for its own
+    has_fields check -- never a second, differently-scoped query."""
+    try:
+        return live.page.locator(_FILLABLE_FIELDS_SELECTOR).count()
+    except Exception:  # noqa: BLE001 -- a page mid-navigation may throw transiently
+        return -1
+
+
 def _click_and_observe(
     live, control: dict, *, click_timeout_ms: int, observe_timeout_ms: int, observe_poll_ms: int,
+    pre_field_count: int = -1,
 ) -> dict:
     """Runs inside the live session's dedicated Playwright thread. The ONE
     physical click this entire feature exists to perform -- and the ONLY
@@ -176,7 +192,8 @@ def _click_and_observe(
 
         if not clicked:
             return {"clicked": False, "click_error": click_error, "failed_requests": list(failed_requests),
-                    "timed_out": False, "validation_errors": [], "body_text": "", "url": page.url}
+                    "timed_out": False, "validation_errors": [], "body_text": "", "url": page.url,
+                    "heading_text": "", "submit_control_disappeared": None, "form_fields_disappeared": None}
 
         changed = selector is None  # no id to track -- fall back to "assume changed", scan decides
         if selector:
@@ -201,10 +218,26 @@ def _click_and_observe(
             body_text = page.inner_text("body")
         except Exception:  # noqa: BLE001
             body_text = validation.get("body_text", "")
+        try:
+            heading_text = page.evaluate("() => (document.querySelector('h1,h2')||{}).innerText || ''")
+        except Exception:  # noqa: BLE001
+            heading_text = ""
+        post_field_count = _count_fillable_fields(live)
+        # Structural corroboration is conservative BY DESIGN (see
+        # confirmation_evidence.classify_confirmation_evidence's docstring):
+        # only a genuine before/after comparison (both counts actually
+        # observed, never -1) where the form's fields have GENUINELY gone to
+        # zero counts as "the form disappeared" -- never guessed from a
+        # single-sided observation.
+        form_fields_disappeared = (
+            pre_field_count > 0 and post_field_count == 0
+        ) if pre_field_count >= 0 and post_field_count >= 0 else None
         return {
             "clicked": True, "click_error": "", "failed_requests": list(failed_requests),
             "timed_out": not changed and not failed_requests,
             "validation_errors": validation.get("errors") or [], "body_text": body_text, "url": page.url,
+            "heading_text": heading_text, "submit_control_disappeared": changed,
+            "form_fields_disappeared": form_fields_disappeared,
         }
     finally:
         try:
@@ -310,12 +343,15 @@ def run_greenhouse_submit(
                      record_claim=False)
             return SubmitAttemptResult(SubmitOutcome.BLOCKED, "ALREADY_ATTEMPTED", attempt.reason)
 
+        pre_field_count = live.run(_count_fillable_fields, live, timeout=10)
+
         repo.log_event(execution_id, job_id, "submit_attempted", detail="greenhouse_submit_engine")
         observation = live.run(
             _click_and_observe, live, control,
             click_timeout_ms=config.GREENHOUSE_SUBMIT_CLICK_TIMEOUT_MS,
             observe_timeout_ms=config.BROWSER_DOM_STABILIZATION_TIMEOUT_MS,
             observe_poll_ms=config.BROWSER_DOM_STABILIZATION_POLL_MS,
+            pre_field_count=pre_field_count,
             timeout=((config.GREENHOUSE_SUBMIT_CLICK_TIMEOUT_MS + config.BROWSER_DOM_STABILIZATION_TIMEOUT_MS)
                      / 1000.0) + 20,
         )
@@ -345,7 +381,7 @@ def run_greenhouse_submit(
             return SubmitAttemptResult(outcome, "TIMEOUT_AFTER_CLICK", detail)
 
         body_text = observation["body_text"]
-        parsed = parse_confirmation_text(body_text)
+        parsed = parse_confirmation_text(body_text, heading_text=observation.get("heading_text", ""))
 
         if parsed.already_applied:
             detail = f"duplicate-application evidence observed: '{parsed.matched_duplicate_phrase}' -- never " \
@@ -362,7 +398,9 @@ def run_greenhouse_submit(
 
         grade = classify_confirmation_evidence(
             phrase_matched=parsed.phrase_matched, confirmation_id=parsed.confirmation_id,
-            current_url=observation["url"],
+            current_url=observation["url"], heading_phrase_matched=parsed.heading_phrase_matched,
+            submit_control_disappeared=observation.get("submit_control_disappeared"),
+            form_fields_disappeared=observation.get("form_fields_disappeared"),
         )
         if grade.confirms():
             sr = SubmitAttemptResult(

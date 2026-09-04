@@ -227,3 +227,75 @@ def test_test_fixture_job_cta_never_leaks_into_default_real_mode_views(tmp_env, 
     # The opt-in TEST MODE audit view is the one place it's allowed to show up.
     audit_resp = client.get("/", params={"include_test_data": "true"})
     assert job.company in audit_resp.text
+
+
+# --- Application Detail UX gap closure (2026-09-04): a completed/reconciled
+# application must never visually offer Prepare/Queue actions the backend
+# would reject anyway (job 454/Anthropic's real terminal reconciliation
+# surfaced this) --------------------------------------------------------
+
+def test_reconciled_terminal_application_shows_completed_banner_not_prepare_queue(tmp_env, sample_profile):
+    from app.applications.reconcile import reconcile_execution
+    from app.db import db_session
+
+    save_profile(sample_profile)
+    job = ingest_and_process(_mock_job(external_job_id="terminal-ux-1"))
+    result = queue_application(job.id, mode="ASSIST")
+    execution_id = result.execution_id
+    with db_session() as conn:
+        conn.execute(
+            "UPDATE application_executions SET status = 'SUBMISSION_STATUS_UNKNOWN' WHERE execution_id = ?",
+            (execution_id,),
+        )
+    reconcile_result = reconcile_execution(execution_id, "manual_applied", note="applied outside the executor")
+    assert reconcile_result.ok
+
+    client = TestClient(app)
+    resp = client.get(f"/jobs/{job.id}")
+    assert resp.status_code == 200
+
+    exec_section_start = resp.text.index('id="application-execution"')
+    exec_html = resp.text[exec_section_start:]
+    assert "Application completed" in exec_html
+    assert "applied outside the executor" in exec_html
+    # Button text specifically -- unrelated prose elsewhere on the page
+    # (e.g. the Browser Assist section's own help text) legitimately still
+    # mentions these words in passing.
+    assert ">Prepare Application<" not in exec_html
+    assert ">Queue Application<" not in exec_html
+    # Job-level truthful indicators (top hero) are unaffected by this change
+    # -- the CTA badge shows "VIEW RECEIPT" (compute_apply_cta's success-style
+    # label override), and the state tag shows APPLIED directly.
+    hero_html = resp.text[:exec_section_start]
+    assert "tag-neutral\">APPLIED<" in hero_html
+    assert "VIEW RECEIPT" in hero_html
+
+
+def test_withdrawn_reconciliation_still_shows_prepare_queue_for_requeue(tmp_env, sample_profile):
+    """confirmed_not_submitted -> WITHDRAWN is explicitly meant to be
+    re-queueable (see app.applications.reconcile's own docstring) -- the
+    terminal-completed banner must never hide the Prepare/Queue actions for
+    THIS resolution, only for a genuinely completed one."""
+    from app.applications.reconcile import reconcile_execution
+    from app.db import db_session
+
+    save_profile(sample_profile)
+    job = ingest_and_process(_mock_job(external_job_id="terminal-ux-2"))
+    result = queue_application(job.id, mode="ASSIST")
+    execution_id = result.execution_id
+    with db_session() as conn:
+        conn.execute(
+            "UPDATE application_executions SET status = 'SUBMISSION_STATUS_UNKNOWN' WHERE execution_id = ?",
+            (execution_id,),
+        )
+    reconcile_result = reconcile_execution(execution_id, "confirmed_not_submitted")
+    assert reconcile_result.ok
+
+    client = TestClient(app)
+    resp = client.get(f"/jobs/{job.id}")
+    assert resp.status_code == 200
+    exec_section_start = resp.text.index('id="application-execution"')
+    exec_html = resp.text[exec_section_start:]
+    assert "Application completed" not in exec_html
+    assert "Prepare Application" in exec_html
+    assert "Queue Application" in exec_html

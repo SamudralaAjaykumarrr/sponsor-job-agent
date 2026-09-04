@@ -65,6 +65,13 @@ SUCCESS_PHRASES: tuple[str, ...] = (
     # which would only ever match one employer) so it generalizes to any
     # Greenhouse-hosted employer using this same default template.
     "thank you for your interest in joining",
+    # Multi-signal confirmation contract (2026-09-04, job 454/Anthropic's real
+    # UNRECOGNIZED_OUTCOME canary result): additional real-world, affirmative,
+    # completed-action ATS confirmation phrasings this project had not yet
+    # curated -- still deliberately specific ("your application is complete",
+    # never a bare "complete"), never a vague/ambiguous fragment.
+    "you're all set", "your application is complete", "we've got your application",
+    "application successfully received", "your submission was successful",
 )
 
 # CLAUDE.md Phase 11 section 36: evidence of a PRIOR application.
@@ -89,9 +96,19 @@ _FINGERPRINT_SNIPPET_CHARS = 300
 class ConfirmationParse:
     """One page's TEXT observations. Deliberately carries no verdict of its
     own -- `already_applied` and `phrase_matched` are independent facts, and
-    grading them is `app.applications.confirmation_evidence`'s job."""
+    grading them is `app.applications.confirmation_evidence`'s job.
+
+    `heading_phrase_matched` is a SEPARATE, more reliable signal than
+    `phrase_matched` (which scans the whole body): a page's own accessible
+    heading (`<h1>`/`<h2>`) is the primary semantic indicator of page state,
+    far less likely to produce a false positive than a substring found
+    anywhere in the body -- see app.applications.confirmation_evidence's
+    multi-signal grading (2026-09-04, added after job 454/Anthropic's real
+    canary returned UNRECOGNIZED_OUTCOME)."""
     phrase_matched: bool = False
     matched_phrase: str = ""
+    heading_phrase_matched: bool = False
+    matched_heading_phrase: str = ""
     already_applied: bool = False
     matched_duplicate_phrase: str = ""
     confirmation_id: str = ""
@@ -100,6 +117,8 @@ class ConfirmationParse:
     def as_dict(self) -> dict:
         return {
             "phrase_matched": self.phrase_matched, "matched_phrase": self.matched_phrase,
+            "heading_phrase_matched": self.heading_phrase_matched,
+            "matched_heading_phrase": self.matched_heading_phrase,
             "already_applied": self.already_applied,
             "matched_duplicate_phrase": self.matched_duplicate_phrase,
             "confirmation_id": self.confirmation_id, "text_fingerprint": self.text_fingerprint,
@@ -160,24 +179,40 @@ def fingerprint_text(text: str) -> str:
     return hashlib.sha256(snippet.encode("utf-8")).hexdigest()[:24]
 
 
-def parse_confirmation_text(text: str) -> ConfirmationParse:
+def parse_confirmation_text(text: str, *, heading_text: str = "") -> ConfirmationParse:
     """The whole text-side observation in one call. A duplicate-application
     page short-circuits: it is reported with `already_applied=True` and
     `phrase_matched=False` so no caller can accidentally treat it as a fresh
     confirmation, even if the same page ALSO happens to contain a success
     phrase (a real "you already applied -- your application was received on
-    ..." page does)."""
+    ..." page does).
+
+    `heading_text` is optional (every existing caller that doesn't supply it
+    keeps its exact prior behavior byte-for-byte) -- when supplied, it is
+    checked against the SAME phrase tables, separately from the body scan,
+    so a caller can tell "the page's own heading says so" apart from "this
+    substring appears somewhere in the body"."""
     duplicate_phrase = find_duplicate_application_phrase(text)
     if duplicate_phrase:
         return ConfirmationParse(
             phrase_matched=False, already_applied=True, matched_duplicate_phrase=duplicate_phrase,
         )
+    # A duplicate-application HEADING must short-circuit exactly like a
+    # duplicate-application BODY phrase -- never treated as a fresh
+    # confirmation merely because the body scan above didn't also catch it.
+    if heading_text and find_duplicate_application_phrase(heading_text):
+        return ConfirmationParse(
+            phrase_matched=False, already_applied=True,
+            matched_duplicate_phrase=find_duplicate_application_phrase(heading_text),
+        )
     phrase = find_success_phrase(text)
+    heading_phrase = find_success_phrase(heading_text) if heading_text else ""
     # `confirmation_id` is extracted regardless of whether a success phrase
     # matched: a confirmation-id-shaped token WITHOUT a trusted phrase is
     # exactly the WEAK-evidence case `confirmation_evidence` models (and
     # never confirms on its own), so the grader must still see it.
     return ConfirmationParse(
         phrase_matched=bool(phrase), matched_phrase=phrase,
+        heading_phrase_matched=bool(heading_phrase), matched_heading_phrase=heading_phrase,
         confirmation_id=extract_confirmation_id(text), text_fingerprint=fingerprint_text(text),
     )

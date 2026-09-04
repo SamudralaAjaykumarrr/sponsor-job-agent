@@ -62,3 +62,67 @@ def test_url_looks_like_confirmation_hints():
     assert url_looks_like_confirmation("https://x/confirmation") is True
     assert url_looks_like_confirmation("https://x/apply") is False
     assert url_looks_like_confirmation("") is False
+
+
+# --- Multi-signal confirmation contract (2026-09-04, added after job 454/
+# Anthropic's real canary returned UNRECOGNIZED_OUTCOME) --------------------
+
+def test_heading_phrase_alone_is_moderate_and_confirms():
+    """A heading match behaves like a body phrase match when it's the only
+    signal present."""
+    grade = classify_confirmation_evidence(
+        phrase_matched=False, heading_phrase_matched=True, confirmation_id="", current_url="https://x/apply",
+    )
+    assert grade.strength == ConfirmationEvidenceStrength.MODERATE
+    assert grade.confirms() is True
+
+
+def test_phrase_matched_in_both_body_and_heading_is_strong_without_id_or_url():
+    """Two independent locations agreeing is corroboration in its own right,
+    equal in weight to an id/URL match -- no confirmation id or
+    confirmation-shaped URL needed."""
+    grade = classify_confirmation_evidence(
+        phrase_matched=True, heading_phrase_matched=True, confirmation_id="", current_url="https://x/apply",
+    )
+    assert grade.strength == ConfirmationEvidenceStrength.STRONG
+    assert grade.confirms() is True
+
+
+def test_structural_disappearance_alone_never_confirms():
+    """Submit control and form fields both genuinely observed gone, but with
+    NO phrase match anywhere -- WEAK only, never sufficient alone (a
+    validation error or an unrelated page change could also cause this)."""
+    grade = classify_confirmation_evidence(
+        phrase_matched=False, confirmation_id="", current_url="https://x/apply",
+        submit_control_disappeared=True, form_fields_disappeared=True,
+    )
+    assert grade.strength == ConfirmationEvidenceStrength.WEAK
+    assert grade.confirms() is False
+
+
+def test_structural_disappearance_upgrades_moderate_phrase_to_strong():
+    grade = classify_confirmation_evidence(
+        phrase_matched=True, confirmation_id="", current_url="https://x/apply",
+        submit_control_disappeared=True, form_fields_disappeared=True,
+    )
+    assert grade.strength == ConfirmationEvidenceStrength.STRONG
+    assert grade.confirms() is True
+
+
+def test_only_submit_control_disappeared_is_not_structural_corroboration():
+    """Requiring BOTH signals together is deliberately conservative -- one
+    alone (e.g. the button vanished but the rest of the form is still there)
+    must never count as structural corroboration."""
+    grade = classify_confirmation_evidence(
+        phrase_matched=True, confirmation_id="", current_url="https://x/apply",
+        submit_control_disappeared=True, form_fields_disappeared=False,
+    )
+    assert grade.strength == ConfirmationEvidenceStrength.MODERATE
+
+
+def test_structural_signals_default_none_never_fabricates_corroboration():
+    """Optional[bool]=None (not observed) must contribute nothing -- this is
+    the default every existing caller (browser_runtime, browser_assist) gets
+    without passing the new parameters at all."""
+    grade = classify_confirmation_evidence(phrase_matched=True, confirmation_id="", current_url="https://x/apply")
+    assert grade.strength == ConfirmationEvidenceStrength.MODERATE

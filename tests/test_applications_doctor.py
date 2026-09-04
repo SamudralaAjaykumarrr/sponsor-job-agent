@@ -219,6 +219,110 @@ def test_doctor_still_catches_genuine_unsupported_provider_submission_bypass(pro
     assert "approval_submitted_for_unsupported_provider" in checks
 
 
+def _reconciled_unsupported_execution(job, *, submission_method: str = "") -> str:
+    """Shared fixture builder for the reconciliation-exemption tests below:
+    a greenhouse (ASSIST_ONLY/UNSUPPORTED-capability) execution taken all
+    the way to SUBMISSION_STATUS_UNKNOWN, then reconciled via
+    app.applications.reconcile.reconcile_execution() -- the SAME sanctioned,
+    audited, human-driven path used for job 454's real reconciliation
+    (2026-09-04)."""
+    from app.applications import repo as executions_repo
+    from app.applications.reconcile import reconcile_execution
+    from app.db import db_session as _db_session
+
+    execution_id = executions_repo.create_execution(job.id, provider="greenhouse", mode="ASSIST")
+    with _db_session() as conn:
+        conn.execute(
+            "INSERT INTO application_approvals (approval_id, execution_id, job_id, provider, approved_at, "
+            "approved_by, job_identity_fingerprint, jd_fingerprint, resume_variant_id, resume_fingerprint, "
+            "answers_version, profile_fingerprint, form_fingerprint, sponsorship_status_at_approval, "
+            "employment_type_at_approval, submission_capability, status, created_at) "
+            "VALUES ('appr_test_reconciled', ?, ?, 'greenhouse', '2026-09-04T00:00:00+00:00', 'user', "
+            "'fp', 'jdfp', '', '', 1, 'pfp', 'ffp', 'LIKELY_SPONSOR', 'FULL_TIME', 'UNSUPPORTED', 'ACTIVE', "
+            "'2026-09-04T00:00:00+00:00')",
+            (execution_id, job.id),
+        )
+        conn.execute(
+            "UPDATE application_executions SET status = 'SUBMISSION_STATUS_UNKNOWN', submission_method = ? "
+            "WHERE execution_id = ?",
+            (submission_method, execution_id),
+        )
+    result = reconcile_execution(execution_id, "confirmed_applied", note="human-observed evidence")
+    assert result.ok
+    return execution_id
+
+
+def test_doctor_does_not_flag_cli_reconciled_execution_for_unsupported_provider(profile_saved):
+    """job 454/Anthropic (2026-09-04): app.applications.reconcile.
+    reconcile_execution()'s 'confirmed_applied'/'manual_applied' resolutions
+    are a SECOND sanctioned way an UNSUPPORTED-capability approval legitimately
+    reaches APPLIED, distinct from browser_assist's own confirmation pipeline
+    -- _check_approval_submitted_for_unsupported_provider must recognize this
+    one too, not just the browser-evidence path job 200 already covered."""
+    from app.applications.doctor import run_doctor
+
+    job = ingest_and_process(Job(
+        title="Backend Software Engineer", company="Acme Corp", location="Remote - US",
+        description=JD_TEXT, employment_type="Full-time", provider="greenhouse",
+        external_job_id="doc-cli-reconciled", company_identifier="acme", mode=ApplicationMode.ASSIST,
+    ))
+    _reconciled_unsupported_execution(job)
+
+    report = run_doctor()
+    checks = {i.check for i in report.issues}
+    assert "approval_submitted_for_unsupported_provider" not in checks
+    assert "browser_applied_without_confirmation" not in checks
+    assert "unsupported_provider_auto_submit" not in checks
+
+
+def test_doctor_still_catches_unsupported_provider_auto_submit_with_no_reconciliation(profile_saved):
+    """Preserves detection: submission_method set on an unsupported-capability
+    provider's execution with NEITHER a CONFIRMED browser session NOR a
+    reconcile_execution() audit trail is still a genuine, unexplained bypass."""
+    from app.applications import repo as executions_repo
+    from app.applications.doctor import run_doctor
+    from app.db import db_session as _db_session
+
+    job = ingest_and_process(Job(
+        title="Backend Software Engineer", company="Acme Corp", location="Remote - US",
+        description=JD_TEXT, employment_type="Full-time", provider="greenhouse",
+        external_job_id="doc-unexplained-auto-submit", company_identifier="acme", mode=ApplicationMode.ASSIST,
+    ))
+    execution_id = executions_repo.create_execution(job.id, provider="greenhouse", mode="ASSIST")
+    with _db_session() as conn:
+        conn.execute(
+            "UPDATE application_executions SET status = 'APPLIED', submission_method = 'greenhouse_canary' "
+            "WHERE execution_id = ?",
+            (execution_id,),
+        )
+
+    report = run_doctor()
+    checks = {i.check for i in report.issues}
+    assert "unsupported_provider_auto_submit" in checks
+
+
+def test_doctor_does_not_flag_reconciled_execution_missing_receipt(profile_saved):
+    """A manually-reconciled execution has no application_receipts row BY
+    DESIGN (receipts.py records genuine automated evidence only -- see
+    app.applications.reconcile's own docstring) -- the warning must say so
+    honestly rather than reading identically to an unexplained gap."""
+    from app.applications.doctor import run_doctor
+
+    job = ingest_and_process(Job(
+        title="Backend Software Engineer", company="Acme Corp", location="Remote - US",
+        description=JD_TEXT, employment_type="Full-time", provider="greenhouse",
+        external_job_id="doc-reconciled-receipt", company_identifier="acme", mode=ApplicationMode.ASSIST,
+    ))
+    execution_id = _reconciled_unsupported_execution(job)
+
+    report = run_doctor()
+    receipt_issues = [i for i in report.issues if i.check == "applied_execution_missing_receipt"]
+    assert len(receipt_issues) == 1
+    assert execution_id in receipt_issues[0].detail
+    assert "human reconciliation" in receipt_issues[0].detail
+    assert "never fabricated" in receipt_issues[0].detail
+
+
 def test_doctor_catches_execution_missing_job(profile_saved):
     job = ingest_and_process(_mock_job("doc-3"))
     queue_application(job.id, mode="ASSIST")

@@ -308,3 +308,57 @@ def test_submit_control_not_uniquely_identified_is_blocked(tmp_env, sample_profi
 
     execution = repo.get_active_execution_for_job(job.id)
     assert claim.already_attempted(execution["execution_id"]) is False
+
+
+# --- Multi-signal confirmation contract (2026-09-04, job 454/Anthropic's
+# real canary returned UNRECOGNIZED_OUTCOME) --------------------------------
+
+def test_previously_unrecognized_wording_now_reaches_confirmed(tmp_env, sample_profile, tmp_path):
+    """A real-world ATS confirmation wording this project had not yet
+    curated (job 454's own real failure mode: an ambiguous/unrecognized
+    response) -- now correctly reaches CONFIRMED via the broadened phrase
+    table, exercised through the actual production engine end-to-end, not
+    just the parser in isolation."""
+    from tests.browser_fixtures import greenhouse_like_submit_flow_page
+
+    url = greenhouse_like_submit_flow_page(tmp_path)
+    job = _approved_job(tmp_env, sample_profile, url, "gh-eng-new-phrase")
+    hook = _route_returning(200, "<h1>You're all set!</h1><p>We'll be in touch soon.</p>")
+
+    result = run_greenhouse_submit(job.id, headless=True, _test_route_hook=hook)
+
+    assert result.outcome == SubmitOutcome.CONFIRMED, result.detail
+
+
+def test_structural_disappearance_corroborates_a_moderate_phrase_to_strong(tmp_env, sample_profile, tmp_path):
+    """The clicked submit control and the rest of the form both genuinely
+    disappearing (the real fixture's own post-submit DOM replacement) is
+    fed through as structural corroboration -- a real, end-to-end proof
+    that config.BROWSER_DOM_STABILIZATION_* structural signals reach the
+    confirmation grade, not just a unit-tested code path."""
+    from app.applications import confirmation_evidence as _ce
+    from tests.browser_fixtures import greenhouse_like_submit_flow_page
+
+    captured = {}
+    original = _ce.classify_confirmation_evidence
+
+    def _spy(**kwargs):
+        captured.update(kwargs)
+        return original(**kwargs)
+
+    import app.applications.greenhouse_submit_engine as engine_module
+    engine_module.classify_confirmation_evidence = _spy
+    try:
+        url = greenhouse_like_submit_flow_page(tmp_path)
+        job = _approved_job(tmp_env, sample_profile, url, "gh-eng-structural")
+        hook = _route_returning(200, "<h1>Thank you for applying to Acme Corp</h1>")
+
+        result = run_greenhouse_submit(job.id, headless=True, _test_route_hook=hook)
+    finally:
+        engine_module.classify_confirmation_evidence = original
+
+    assert result.outcome == SubmitOutcome.CONFIRMED, result.detail
+    # The real fixture's post-submit DOM genuinely removes the form/submit
+    # control -- both signals must have reached the grader as True, not None.
+    assert captured.get("submit_control_disappeared") is True
+    assert captured.get("form_fields_disappeared") is True

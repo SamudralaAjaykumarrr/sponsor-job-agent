@@ -144,6 +144,49 @@ def _check_approved_status_without_approval_record(conn, report: DoctorReport) -
         ))
 
 
+def _has_human_reconciliation_evidence(conn, execution_id: str) -> bool:
+    """True when this execution's terminal state is backed by one of this
+    project's own sanctioned, audited, human-driven reconciliation paths --
+    general across every provider and job, never specific to any one
+    execution:
+
+    1. A linked browser_assist_sessions row showing CONFIRMED/
+       confirmation_observed=1 -- the ordinary browser-observed confirmation
+       pipeline (app.applications.browser_assist.attempt_user_submit_
+       reconciliation()/_from_evidence()), already recognized by
+       _check_approval_submitted_for_unsupported_provider since the job 200
+       fix.
+
+    2. An application_audit_log row logging event_type='confirmed' with
+       detail starting 'reconciled:' -- app.applications.reconcile.
+       reconcile_execution()'s own, and ONLY, logging call for both its
+       'confirmed_applied' and 'manual_applied' resolutions (see that
+       module's docstring: an operator found independent evidence, or
+       applied manually, outside the executor entirely -- by design this
+       resolution can legitimately carry NO confirmation_id/url and no
+       CONFIRMED browser session, exactly the shape several checks below
+       used to treat as unexplained).
+
+    Neither signal can be forged by merely setting a status column --both
+    require a genuine prior action through one of the two sanctioned
+    reconciliation code paths, so this never weakens detection of an
+    execution that reached APPLIED/SUBMITTED some OTHER, truly
+    unaccounted-for way."""
+    session_confirmed = conn.execute(
+        "SELECT 1 FROM browser_assist_sessions WHERE execution_id = ? "
+        "AND (status = 'CONFIRMED' OR confirmation_observed = 1) LIMIT 1",
+        (execution_id,),
+    ).fetchone()
+    if session_confirmed is not None:
+        return True
+    reconciled = conn.execute(
+        "SELECT 1 FROM application_audit_log WHERE execution_id = ? "
+        "AND event_type = 'confirmed' AND detail LIKE 'reconciled:%' LIMIT 1",
+        (execution_id,),
+    ).fetchone()
+    return reconciled is not None
+
+
 def _check_approval_submitted_for_unsupported_provider(conn, report: DoctorReport) -> None:
     """No execution with a recorded approval may ever have progressed to
     SUBMITTING/SUBMITTED/SUBMISSION_CONFIRMED for a provider whose
@@ -179,6 +222,8 @@ def _check_approval_submitted_for_unsupported_provider(conn, report: DoctorRepor
         ")"
     ).fetchall()
     for r in rows:
+        if _has_human_reconciliation_evidence(conn, r["execution_id"]):
+            continue
         report.issues.append(Issue(
             "serious", "approval_submitted_for_unsupported_provider",
             f"execution {r['execution_id']} (job {r['job_id']}, provider={r['provider']}) reached "
@@ -288,10 +333,13 @@ def _check_unsupported_provider_auto_submit(conn, report: DoctorReport) -> None:
         if job is None:
             continue
         cap = get_application_provider(job).get_capabilities()
-        if not cap.submission_supported:
-            report.issues.append(Issue("serious", "unsupported_provider_auto_submit",
-                                        f"execution {r['execution_id']} submitted via provider "
-                                        f"'{r['provider']}' whose submission_supported=False"))
+        if cap.submission_supported:
+            continue
+        if _has_human_reconciliation_evidence(conn, r["execution_id"]):
+            continue
+        report.issues.append(Issue("serious", "unsupported_provider_auto_submit",
+                                    f"execution {r['execution_id']} submitted via provider "
+                                    f"'{r['provider']}' whose submission_supported=False"))
 
 
 def _check_non_full_time_in_submission(conn, report: DoctorReport) -> None:
@@ -544,7 +592,15 @@ def _check_browser_applied_without_confirmation(conn, report: DoctorReport) -> N
     treats a non-empty `confirmation_url` on the execution row as valid
     evidence, not just `confirmation_id` -- many employers' confirmation
     pages (Robinhood's included) genuinely have no extractable reference
-    number, only a URL and a thank-you message."""
+    number, only a URL and a thank-you message.
+
+    An execution reconciled via app.applications.reconcile.
+    reconcile_execution() (see _has_human_reconciliation_evidence) is
+    exempted for the SAME reason: that path is a genuine, sanctioned,
+    human-driven action that can legitimately leave every browser_assist
+    session for this execution un-confirmed (the operator found evidence
+    or applied outside the browser-assist flow entirely), never an
+    unaccounted-for status change."""
     rows = conn.execute(
         "SELECT e.execution_id FROM application_executions e "
         "WHERE e.status = 'APPLIED' "
@@ -557,6 +613,8 @@ def _check_browser_applied_without_confirmation(conn, report: DoctorReport) -> N
         ")"
     ).fetchall()
     for r in rows:
+        if _has_human_reconciliation_evidence(conn, r["execution_id"]):
+            continue
         report.issues.append(Issue("serious", "browser_applied_without_confirmation",
                                     f"execution {r['execution_id']} is APPLIED with no confirmation evidence "
                                     f"anywhere (own confirmation_id/url unset, no linked session shows "
@@ -1033,10 +1091,15 @@ def _check_applied_execution_missing_receipt(conn, report: DoctorReport) -> None
         "(SELECT 1 FROM application_receipts r WHERE r.execution_id = e.execution_id)"
     ).fetchall()
     for r in rows:
-        report.issues.append(Issue(
-            "warning", "applied_execution_missing_receipt",
-            f"execution {r['execution_id']} (job {r['job_id']}) is APPLIED with no application_receipts row",
-        ))
+        if _has_human_reconciliation_evidence(conn, r["execution_id"]):
+            detail = (
+                f"execution {r['execution_id']} (job {r['job_id']}) is APPLIED via human reconciliation with no "
+                f"application_receipts row -- expected: a receipt represents genuine automated confirmation "
+                f"evidence, which a manually-reconciled execution has none of by design (never fabricated here)"
+            )
+        else:
+            detail = f"execution {r['execution_id']} (job {r['job_id']}) is APPLIED with no application_receipts row"
+        report.issues.append(Issue("warning", "applied_execution_missing_receipt", detail))
 
 
 def _check_receipt_without_applied_execution(conn, report: DoctorReport) -> None:

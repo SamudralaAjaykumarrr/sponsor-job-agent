@@ -12,7 +12,7 @@ field -- the token-overlap fallback never applies to those categories.
 
 import re
 
-from app.applications.models import FieldCategory, FieldConfidence
+from app.applications.models import SENSITIVE_CATEGORIES, FieldCategory, FieldConfidence
 
 
 def normalize_label(label: str) -> str:
@@ -186,7 +186,33 @@ def match_field_with_application_fields(label: str, name: str, application_field
     own unchanged behavior exactly as before."""
     norm_label = normalize_label(label)
     if norm_label in _ALIAS_INDEX:
-        return _ALIAS_INDEX[norm_label], FieldConfidence.EXACT
+        fid = _ALIAS_INDEX[norm_label]
+        # A SENSITIVE-category EXACT alias (Gender/Veteran Status/Disability
+        # Status/Race -- see FIELD_ALIASES) can NEVER itself yield a safe
+        # fill: its generic, profile-sourced value is always blocked by the
+        # SENSITIVE_CATEGORIES gate downstream (form_model._normalize_one's
+        # `generically_sensitive` check), REQUIRED or not. A real live gap
+        # (2026-09-04, Discord job 291): a candidate explicitly confirmed
+        # these exact answers via record_verified_custom_answer, live,
+        # verified, evidence recorded -- yet a REQUIRED instance of these
+        # fields could never resolve, because this exact-alias match won
+        # outright before the override was ever consulted. Preferring a
+        # genuine browser_verified_field_evidence override HERE can only
+        # ever unblock what was already permanently unfillable through the
+        # generic alias -- it never shadows a mapping that could otherwise
+        # have safely filled the field (unlike "Email"/"First Name"-style
+        # aliases, which keep winning outright, unchanged).
+        alias_category = FIELD_ALIASES[fid][0]
+        if alias_category in SENSITIVE_CATEGORIES:
+            override = next(
+                (af for af in (application_fields or [])
+                 if getattr(af, "label", None) and normalize_label(af.label) == norm_label
+                 and getattr(af, "value_source", "") == "browser_verified_field_evidence"),
+                None,
+            )
+            if override is not None:
+                return override.field_id, FieldConfidence.EXACT
+        return fid, FieldConfidence.EXACT
     for af in application_fields or []:
         af_label = getattr(af, "label", None)
         if af_label and normalize_label(af_label) == norm_label \
