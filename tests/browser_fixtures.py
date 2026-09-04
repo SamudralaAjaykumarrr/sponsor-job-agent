@@ -228,6 +228,34 @@ def hydrating_combobox_form_page(tmp_path: Path, *, hydrate_delay_ms: int = 300)
     """))
 
 
+def react_select_required_dummy_input_page(tmp_path: Path) -> str:
+    """Mirrors the EXACT real DOM shape captured live from Anthropic's
+    newest Greenhouse UI while reinspecting job 454: react-select's own
+    permanent `aria-hidden="true"` `tabindex="-1"` dummy `<input required>`
+    (its "RequiredInput" component, used only to let native HTML5
+    validation fire) sitting as a sibling of the real, properly-labeled
+    `role="combobox"` control -- never a real, distinct question. Motivated
+    `browser_runtime._detect_fields()`'s `aria-hidden` exclusion."""
+    return _write(tmp_path, "react_select_dummy.html", _jsonld_block() + textwrap.dedent("""
+        <form>
+          <label for="fname">Full Name</label><input id="fname" name="full_name" type="text" required>
+          <div class="select-shell">
+            <div class="select__control">
+              <div class="select__value-container">
+                <div class="select__input-container">
+                  <input id="question_18266060008" class="select__input" type="text" role="combobox"
+                         aria-labelledby="question_18266060008-label" aria-required="true" value="">
+                </div>
+              </div>
+            </div>
+            <input required tabindex="-1" aria-hidden="true" class="requiredInput" value="">
+          </div>
+          <label id="question_18266060008-label" for="question_18266060008">Do you require visa sponsorship?</label>
+          <button type="submit">Submit Application</button>
+        </form>
+    """))
+
+
 def multi_step_pages(tmp_path: Path) -> tuple[str, str]:
     """Two real, separately-loaded pages linked by a "Next" control -- closer
     to how real multi-page ATS forms (e.g. Workday) behave than a single

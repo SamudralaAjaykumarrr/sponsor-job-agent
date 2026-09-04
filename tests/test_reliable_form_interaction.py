@@ -322,6 +322,31 @@ def test_hydrating_combobox_rescan_never_loops_past_configured_bound(tmp_path, m
         browser_runtime.close_session(session_id)
 
 
+# --- 20: react-select's aria-hidden RequiredInput dummy is never surfaced
+# as its own question (real, live-observed against Anthropic's newest
+# Greenhouse UI while reinspecting job 454) -----------------------------
+
+def test_aria_hidden_required_dummy_input_never_surfaced_as_a_field(tmp_path):
+    from tests.browser_fixtures import react_select_required_dummy_input_page
+
+    url = react_select_required_dummy_input_page(tmp_path)
+    session_id = "t-aria-hidden-dummy"
+    try:
+        outcome = _open(tmp_path, session_id, url)
+        assert outcome.pause_reason is None
+        # The real bug: this element has no label/id/name and is required=True
+        # -- without the fix it shows up as an unresolvable phantom question.
+        phantom = [rf for rf in outcome.fields if not rf.get("label") and not rf.get("id") and not rf.get("name")]
+        assert phantom == [], f"aria-hidden dummy input was surfaced as a field: {phantom}"
+        # The REAL question must still be detected correctly.
+        visa = _field(outcome.fields, "Do you require visa sponsorship?")
+        assert visa["id"] == "question_18266060008"
+        assert visa["type"] == "combobox"
+        assert visa["required"] is True
+    finally:
+        browser_runtime.close_session(session_id)
+
+
 # --- 18: no test in this file ever performs a final submit action ----------
 
 def test_no_submit_control_is_ever_clicked_in_this_suite(tmp_path):

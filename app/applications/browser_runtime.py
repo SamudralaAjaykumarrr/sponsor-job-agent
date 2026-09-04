@@ -1680,6 +1680,27 @@ def _detect_fields(page) -> list[dict]:
             const type = (el.getAttribute('type') || el.tagName).toLowerCase();
             if (['hidden', 'password', 'submit', 'button', 'image', 'search'].includes(type)) return;
             if (el.closest(chromeSelector)) return;
+            // A real, live-observed react-select pattern (Anthropic's newest
+            // Greenhouse UI): alongside its genuine, properly-labeled
+            // role="combobox" control, react-select also renders a
+            // PERMANENT, aria-hidden="true", tabindex="-1" dummy
+            // <input required> whose only purpose is letting native HTML5
+            // form validation fire (react-select's own "RequiredInput"
+            // component) -- it is explicitly hidden from assistive tech,
+            // never holds or submits the real selected value, and was never
+            // meant to be perceived as its own question. Confirmed via a
+            // real live DOM capture, not inferred: this element's own
+            // outerHTML is exactly
+            // `<input required tabindex="-1" aria-hidden="true" ...>` with
+            // no label/id/name, sitting as a sibling of the real combobox.
+            // Skipping any aria-hidden element (or one inside an
+            // aria-hidden ancestor) is a general, non-Anthropic-specific
+            // rule: an element explicitly hidden from assistive technology
+            // was never meant to be surfaced as something requiring a
+            // person's input, matching this scan's existing "only
+            // user-facing content" philosophy for hidden/password/submit/
+            // landmark elements above.
+            if (el.getAttribute('aria-hidden') === 'true' || el.closest('[aria-hidden="true"]')) return;
 
             let label = '';
             if (el.labels && el.labels.length) label = el.labels[0].innerText;
