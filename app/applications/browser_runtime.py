@@ -801,6 +801,7 @@ class _LiveSession:
         start = time.monotonic()
         raw_fields = _detect_fields(page)
         raw_fields = _rescan_unidentifiable_fields(page, raw_fields)
+        raw_fields = _rescan_until_field_count_stable(page, raw_fields)
         submit_button = _detect_button(page, _SUBMIT_BUTTON_PHRASES)
         next_button = _detect_button(page, _NEXT_BUTTON_PHRASES, exclude_phrases=_SUBMIT_BUTTON_PHRASES)
 
@@ -1060,7 +1061,28 @@ class _LiveSession:
 
             value = app_field.verified_value
             choices = rf.get("choices") or []
-            if choices and not any(str(value).strip().lower() == str(c).strip().lower() for c in choices):
+            # A checkbox's own "choices" is typically just its single
+            # self-labeled accessible text, and `_fill_one`'s checkbox
+            # branch locates it via `get_by_label(value, exact=False)` --
+            # a deliberate LOCATE-BY-SUBSTRING convention (record_verified_
+            # custom_answer's own "value" is a short prefix of the full
+            # label, never the exact full text). A real live bug: this
+            # gate previously required EXACT equality uniformly for every
+            # field type, which a self-labeled checkbox's prefix-style
+            # verified_value could never satisfy, permanently blocking it
+            # from ever auto-resolving even with genuine, durable evidence
+            # on file. Radio/select fields keep the stricter exact-match
+            # semantics unchanged -- their verified_value must genuinely
+            # correspond to ONE enumerated option, never a partial hint.
+            value_norm = str(value).strip().lower()
+            choices_match = (
+                bool(value_norm) and any(
+                    value_norm in str(c).strip().lower() or str(c).strip().lower() in value_norm for c in choices
+                )
+                if rf.get("type") == "checkbox" else
+                any(value_norm == str(c).strip().lower() for c in choices)
+            )
+            if choices and not choices_match:
                 if rf.get("required"):
                     outcome.unresolved.append(label)
                 continue
@@ -1175,6 +1197,102 @@ class _LiveSession:
         except Exception:  # noqa: BLE001
             pass
 
+    def _read_display_flag_class(self, rf: dict) -> Optional[str]:
+        """Provider-Semantic Selection Verification V1: reads the CURRENT
+        display's flag-icon class, scoped to a genuine `single-value`
+        display element first -- never an independent ancestor climb on
+        its own, which can match a DIFFERENT flag icon belonging to the
+        (still-in-DOM, merely hidden) listbox's OWN option elements sitting
+        in the same ancestor subtree as the real display. Returns None
+        when no single-value element, or no flag icon within it, is found
+        -- never guessed. Shared by `_fill_combobox`'s own post-selection
+        check and `_verify_combobox_value`'s standalone re-verification."""
+        target = rf.get("_frame") or self.page
+        try:
+            return target.evaluate(
+                """(sel) => {
+                    const el = document.querySelector(sel);
+                    if (!el) return null;
+                    let node = el;
+                    for (let i = 0; i < 6 && node; i++) {
+                        node = node.parentElement;
+                        if (!node) break;
+                        const single = node.querySelector('[class*="single-value" i]');
+                        if (single) {
+                            const flag = single.querySelector('[class*="flag" i]');
+                            return flag ? flag.className : null;
+                        }
+                    }
+                    return null;
+                }""",
+                _selector_for(rf),
+            )
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _verify_combobox_value(self, rf: dict, expected_value: str) -> Optional[bool]:
+        """Provider-Semantic Selection Verification V1: a READ-ONLY re-
+        check of the field's CURRENT state against `expected_value` --
+        never re-selects anything, never changes the field's current
+        answer. Exists for `app.applications.browser_assist.record_
+        verified_custom_answer()`'s own independent post-fill sanity check
+        (guarding against a DIFFERENT nearby field having been filled by
+        mistake), which previously only ever compared DISPLAYED TEXT -- a
+        real gap for a field whose display is a non-identifying fragment
+        shared by multiple options (a dial code like "+1"), where
+        `_fill_combobox` itself had already genuinely verified the correct
+        option via the flag-icon self-consistency check, only for this
+        SEPARATE, text-only re-check to then reject it as a false failure.
+
+        Tries text first (cheap, no DOM interaction); if inconclusive,
+        opens the dropdown to find `expected_value`'s own option and read
+        ITS flag class (this is a lookup, never a selection -- the popup is
+        always closed via Escape afterward, never by clicking an option),
+        then compares it to the currently-displayed flag. Returns None
+        (never a guessed True/False) when neither signal is available at
+        all -- the caller falls back to its own existing behavior."""
+        target = rf.get("_frame") or self.page
+        displayed = self._read_displayed_value(rf)
+        desired_norm = expected_value.strip().lower()
+        if displayed:
+            t = displayed.strip().lower()
+            if desired_norm in t or t in desired_norm:
+                return True
+        try:
+            loc = target.locator(_selector_for(rf))
+            loc.click(timeout=3000)
+            listbox_sel = self._discover_owned_listbox(target, loc)
+            if listbox_sel is None:
+                self._close_popup(loc)
+                return None
+            try:
+                loc.fill(expected_value, timeout=2000)
+            except Exception:  # noqa: BLE001
+                pass
+            options = target.locator(f"{listbox_sel} [role='option']")
+            count = options.count()
+            expected_flag_class = None
+            for i in range(count):
+                text = (options.nth(i).inner_text() or "").strip().lower()
+                if desired_norm in text or text in desired_norm:
+                    try:
+                        expected_flag_class = options.nth(i).locator('[class*="flag" i]').first.get_attribute(
+                            "class", timeout=500,
+                        )
+                    except Exception:  # noqa: BLE001
+                        expected_flag_class = None
+                    break
+            self._close_popup(loc)
+            self._clear_typed_value(loc)
+            if not expected_flag_class:
+                return None
+            observed_flag_class = self._read_display_flag_class(rf)
+            if observed_flag_class:
+                return observed_flag_class == expected_flag_class
+            return None
+        except Exception:  # noqa: BLE001
+            return None
+
     def _fill_combobox(self, rf: dict, value: str) -> bool:
         """Reliable Form Interaction V1: click-open -> type-filter ->
         SCOPED option match (within the field's own owned listbox only,
@@ -1232,6 +1350,28 @@ class _LiveSession:
                 return False
 
             chosen_text = option_texts[match_idx].strip().lower()
+            # Provider-Semantic Selection Verification V1: some fields (a
+            # real, live-observed phone-country-code picker) display only a
+            # non-identifying fragment after selection (a dial code shared
+            # by multiple countries, e.g. "+1" for the US/Canada/Puerto
+            # Rico/...) -- text-based verification below can never honestly
+            # confirm WHICH option that represents, and correctly refuses
+            # to guess from the dial code alone. This captures the CLICKED
+            # option's own flag-icon class (a stable, provider-supplied
+            # semantic marker widely used by phone-input libraries --
+            # `[class*="flag" i]` matches the common naming convention
+            # broadly, not any one specific library or employer) BEFORE the
+            # click, so it can be compared against the post-selection
+            # display's OWN flag class as a structural self-consistency
+            # check: not "does this mean the United States" (never
+            # inferred), only "is the option now displayed the exact same
+            # one that was clicked" -- genuine verification, not a guess.
+            try:
+                expected_flag_class = options.nth(match_idx).locator('[class*="flag" i]').first.get_attribute(
+                    "class", timeout=1000,
+                )
+            except Exception:  # noqa: BLE001 -- no flag icon on this field's options; contributes nothing below
+                expected_flag_class = None
             options.nth(match_idx).click(timeout=5000)
             target.wait_for_timeout(200)
 
@@ -1288,6 +1428,7 @@ class _LiveSession:
                 current = loc.input_value(timeout=2000)
             except Exception:  # noqa: BLE001
                 current = None
+            observed_flag_class = self._read_display_flag_class(rf) if expected_flag_class else None
             try:
                 expanded = loc.get_attribute("aria-expanded", timeout=2000) or ""
             except Exception:  # noqa: BLE001
@@ -1295,6 +1436,19 @@ class _LiveSession:
             self._close_popup(loc)
             if expanded == "true":
                 return False  # popup never closed -- do not claim success
+
+            # Provider-Semantic Selection Verification V1: checked BEFORE
+            # the text-based candidates below, not after. A field whose
+            # display text is a non-identifying fragment shared by several
+            # real options (a dial code like "+1") makes the ordinary text
+            # comparison return a CONFIDENT False (the text genuinely
+            # doesn't match the country name) rather than "inconclusive" --
+            # trying text first would short-circuit and never reach this
+            # more specific, structural signal at all. A field with no
+            # flag icon (expected_flag_class is None) never enters this
+            # branch, so ordinary fields are completely unaffected.
+            if expected_flag_class and observed_flag_class and observed_flag_class == expected_flag_class:
+                return True
 
             def _matches(text: Optional[str]) -> Optional[bool]:
                 if not text:
@@ -1306,8 +1460,8 @@ class _LiveSession:
                 verdict = _matches(candidate)
                 if verdict is not None:
                     return verdict
-            # Neither the display element nor input_value() yielded any
-            # non-empty evidence at all -- never claim success on silence.
+            # No source yielded any conclusive, non-guessed evidence --
+            # never claim success on silence.
             return False
         except Exception:  # noqa: BLE001
             return False
@@ -1659,6 +1813,52 @@ def _rescan_unidentifiable_fields(page, raw_fields: list[dict]) -> list[dict]:
     return best
 
 
+def _rescan_until_field_count_stable(page, raw_fields: list[dict]) -> list[dict]:
+    """Form-Fingerprint Stability V1: a bounded rescan for the DIFFERENT
+    shape `_rescan_unidentifiable_fields` doesn't cover -- not a single
+    field caught mid-hydration, but a WHOLE ADDITIONAL SECTION (a real,
+    live-observed case: a conditionally-rendered demographic/EEO block,
+    including its own companion consent checkbox, that some real ATS
+    postings load asynchronously and only mount a short time after the
+    rest of the form is already interactive) still appearing after the
+    initial `_detect_fields()` pass returns.
+
+    This is the actual root cause behind a real, live-observed instability:
+    two genuinely identical page loads of the same posting could each
+    capture a DIFFERENT total field count (whichever fields had mounted by
+    the moment `_detect_fields()` happened to run), which then correctly
+    -- `_fingerprint_fields()` itself was never the bug -- produces a
+    DIFFERENT fingerprint for what is semantically the identical form,
+    manifesting as spurious PAUSED_FORM_CHANGED pauses and, separately, a
+    field that appears "missing" on some discovery passes and not others.
+    The fix belongs here, upstream of fingerprinting, not in
+    `_fingerprint_fields()`'s own hashing logic, which already correctly
+    fingerprints semantic form state (name/label/type/required/choices)
+    and must keep genuinely invalidating on a real material change.
+
+    Only ever replaces the result with a result that has MORE fields than
+    the current best -- this can never lose a field a prior scan already
+    found, and stops as soon as growth stops (a field count that came back
+    the same as the last scan is treated as settled, not re-tried for the
+    remaining budget) -- bounded by the same
+    `BROWSER_FIELD_RESCAN_MAX_ATTEMPTS`/`_WAIT_MS` budget
+    `_rescan_unidentifiable_fields` already uses for this same general
+    class of concern (give an async-hydrating form a little more time),
+    never a separate or unbounded wait."""
+    best = raw_fields
+    for _ in range(max(0, config.BROWSER_FIELD_RESCAN_MAX_ATTEMPTS)):
+        try:
+            page.wait_for_timeout(max(0, config.BROWSER_FIELD_RESCAN_WAIT_MS))
+            rescanned = _detect_fields(page)
+        except Exception:  # noqa: BLE001 -- a page mid-navigation may throw transiently; keep the best-so-far
+            break
+        if len(rescanned) > len(best):
+            best = rescanned
+        else:
+            break  # no further growth observed -- settled, stop early
+    return best
+
+
 def _detect_fields(page) -> list[dict]:
     """Real-browser DOM scan: input/textarea/select, plus grouped radio/
     checkbox sets by `name`, with label/aria-label/placeholder/fieldset-legend
@@ -1946,6 +2146,19 @@ def read_displayed_value(session_id: str, rf: dict) -> Optional[str]:
     anything. See that method's docstring."""
     live = _get_live(session_id)
     return live.run(live._read_displayed_value, rf, timeout=10)
+
+
+def verify_combobox_value(session_id: str, rf: dict, expected_value: str) -> Optional[bool]:
+    """Public wrapper for `_LiveSession._verify_combobox_value` -- a READ-
+    ONLY re-check of a combobox field's current state against
+    `expected_value`, trying text first and a flag-icon structural
+    self-consistency check second. Never re-selects anything. Used by
+    app.applications.browser_assist.record_verified_custom_answer() as a
+    fallback when its own bidirectional-substring text check is
+    inconclusive for a field whose display is a non-identifying fragment
+    (see that method's docstring)."""
+    live = _get_live(session_id)
+    return live.run(live._verify_combobox_value, rf, expected_value, timeout=15)
 
 
 def advance_apply_entry(session_id: str) -> dict:

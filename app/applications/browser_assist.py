@@ -880,7 +880,22 @@ def record_verified_custom_answer(session_id: str, question_label_prefix: str, a
         # from both sides so this can never trivially "match" nothing.
         expected_norm = answer_value.strip().lower()
         actual_norm = actual.strip().lower()
-        if not (expected_norm and actual_norm and (expected_norm in actual_norm or actual_norm in expected_norm)):
+        text_matches = bool(
+            expected_norm and actual_norm and (expected_norm in actual_norm or actual_norm in expected_norm)
+        )
+        if not text_matches and rf.get("type") == "combobox":
+            # Provider-Semantic Selection Verification V1: a real live gap
+            # -- `_fill_one`/`_fill_combobox` itself may have ALREADY
+            # genuinely verified the correct option via a flag-icon
+            # structural self-consistency check (a field whose display is
+            # a non-identifying fragment shared by several options, e.g. a
+            # phone-country dial code), and this separate, text-only
+            # re-check would otherwise reject a genuinely correct fill as
+            # a false failure. A read-only re-check, never a new selection.
+            flag_verdict = browser_runtime.verify_combobox_value(session_id, rf, answer_value)
+            if flag_verdict is True:
+                text_matches = True
+        if not text_matches:
             return {"ok": False, "detail": f"displayed value {actual!r} does not correspond to the intended answer "
                                             f"{answer_value!r} -- recording nothing",
                     "expected": answer_value, "actual": actual, "evidence_id": None}

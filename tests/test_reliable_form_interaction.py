@@ -363,3 +363,160 @@ def test_no_submit_control_is_ever_clicked_in_this_suite(tmp_path):
         assert current_url == url_before
     finally:
         browser_runtime.close_session(session_id)
+
+
+# --- Provider-Semantic Selection Verification V1: a phone-country-code
+# field whose display shows only a dial code (ambiguous across multiple
+# real countries), never the country name -- text verification alone can
+# never honestly confirm which one, so a structural flag-icon self-
+# consistency check is used instead. ---------------------------------------
+
+def test_phone_country_code_verified_via_flag_not_ambiguous_dial_code(tmp_path):
+    from tests.browser_fixtures import phone_country_code_combobox_page
+
+    url = phone_country_code_combobox_page(tmp_path)
+    session_id = "t-phone-us"
+    try:
+        outcome = _open(tmp_path, session_id, url)
+        country = _field(outcome.fields, "Country")
+        live = browser_runtime._get_live(session_id)
+        ok = live.run(live._fill_one, country, "United States", timeout=15)
+        assert ok is True
+        # The display genuinely only ever shows the dial code -- proving
+        # the verification did NOT (and could not) rely on country-name
+        # text, only the flag-icon self-consistency check.
+        displayed = live.run(lambda: _displayed_value(live.page, "#country"), timeout=10)
+        assert displayed == "+1"
+        assert "united states" not in (displayed or "").lower()
+    finally:
+        browser_runtime.close_session(session_id)
+
+
+def test_phone_country_code_disambiguates_same_dial_code_by_flag(tmp_path):
+    """Canada shares the identical "+1" dial code with the US -- selecting
+    Canada must resolve to Canada's own flag, never accidentally read back
+    as (or confused with) the US option that happens to render identical
+    display text."""
+    from tests.browser_fixtures import phone_country_code_combobox_page
+
+    url = phone_country_code_combobox_page(tmp_path)
+    session_id = "t-phone-ca"
+    try:
+        outcome = _open(tmp_path, session_id, url)
+        country = _field(outcome.fields, "Country")
+        live = browser_runtime._get_live(session_id)
+        ok = live.run(live._fill_one, country, "Canada", timeout=15)
+        assert ok is True
+
+        def _flag_class(page):
+            return page.evaluate(
+                "() => { const f = document.querySelector('#country ~ .select__single-value [class*=\"flag\" i], "
+                ".select__single-value [class*=\"flag\" i]'); return f ? f.className : null; }"
+            )
+
+        flag = live.run(lambda: _flag_class(live.page), timeout=10)
+        assert flag == "iti__flag iti__ca"
+    finally:
+        browser_runtime.close_session(session_id)
+
+
+def test_phone_country_code_no_match_still_reports_failure_not_a_guess(tmp_path):
+    """A value with no matching option at all must never fall back to the
+    flag-based check to fabricate a success -- the flag check only ever
+    corroborates a genuine option match found first."""
+    from tests.browser_fixtures import phone_country_code_combobox_page
+
+    url = phone_country_code_combobox_page(tmp_path)
+    session_id = "t-phone-nomatch"
+    try:
+        outcome = _open(tmp_path, session_id, url)
+        country = _field(outcome.fields, "Country")
+        live = browser_runtime._get_live(session_id)
+        ok = live.run(live._fill_one, country, "Germany", timeout=15)
+        assert ok is False
+    finally:
+        browser_runtime.close_session(session_id)
+
+
+# --- Form-Fingerprint Stability V1: a whole additional section (its own
+# consent checkbox) that mounts asynchronously, after the rest of the form
+# is already interactive -- the real root cause behind spurious
+# PAUSED_FORM_CHANGED pauses and a field that appeared "missing" on some
+# discovery passes and not others (real, live-observed against Robinhood's
+# real Greenhouse posting). ------------------------------------------------
+
+def test_delayed_consent_section_is_still_discovered(tmp_path):
+    from tests.browser_fixtures import sensitive_evidence_gate_page_delayed_consent
+
+    url = sensitive_evidence_gate_page_delayed_consent(tmp_path, delay_ms=300)
+    session_id = "t-delayed-consent"
+    try:
+        outcome = _open(tmp_path, session_id, url)
+        consent = _field(outcome.fields, "By checking this box, I consent")
+        assert consent["type"] == "checkbox"
+    finally:
+        browser_runtime.close_session(session_id)
+
+
+def test_delayed_consent_section_produces_a_stable_fingerprint(tmp_path):
+    """Two independent discovery passes of the SAME semantically-identical
+    page (one delayed field included both times) must produce the SAME
+    fingerprint -- the real, live-observed instability this fix closes:
+    without waiting for the delayed section, one pass could catch it and
+    another could not, producing two different fingerprints for one
+    unchanged form and spuriously tripping PAUSED_FORM_CHANGED."""
+    from tests.browser_fixtures import sensitive_evidence_gate_page_delayed_consent
+
+    url = sensitive_evidence_gate_page_delayed_consent(tmp_path, delay_ms=300)
+    fingerprints = []
+    for i in range(2):
+        session_id = f"t-delayed-consent-fp-{i}"
+        try:
+            outcome = _open(tmp_path, session_id, url)
+            fingerprints.append(outcome.fingerprint)
+        finally:
+            browser_runtime.close_session(session_id)
+    assert fingerprints[0] == fingerprints[1]
+
+
+def test_delayed_field_rescan_never_loops_past_configured_bound(tmp_path, monkeypatch):
+    """A section that NEVER finishes mounting (delay far beyond the rescan
+    budget) must still return promptly, honestly missing that field --
+    never an unbounded retry loop. Mirrors
+    test_hydrating_combobox_rescan_never_loops_past_configured_bound for
+    this different (whole-field-count-growth) rescan."""
+    from tests.browser_fixtures import sensitive_evidence_gate_page_delayed_consent
+
+    monkeypatch.setattr(config, "BROWSER_FIELD_RESCAN_WAIT_MS", 100)
+    monkeypatch.setattr(config, "BROWSER_FIELD_RESCAN_MAX_ATTEMPTS", 2)
+    url = sensitive_evidence_gate_page_delayed_consent(tmp_path, delay_ms=60_000)
+    session_id = "t-delayed-never"
+    try:
+        outcome = _open(tmp_path, session_id, url)
+        consent = [rf for rf in outcome.fields if "consent" in (rf.get("label") or "").lower()]
+        assert consent == []
+    finally:
+        browser_runtime.close_session(session_id)
+
+
+def test_immediate_and_delayed_mount_of_the_same_field_set_agree(tmp_path):
+    """delay_ms=0 (mounted immediately) and delay_ms=300 (mounted after the
+    rescan catches up) describe the IDENTICAL field set -- both must
+    fingerprint identically, proving the stability fix reaches the same
+    semantic answer regardless of exactly when the async section mounted.
+    Genuine material-change detection (a truly different field set) remains
+    covered, unmodified, by test_real_structural_change_still_triggers_
+    different_fingerprint above -- this fix never touches
+    _fingerprint_fields()'s own hashing logic, only what it's given."""
+    from tests.browser_fixtures import sensitive_evidence_gate_page_delayed_consent
+
+    fps = []
+    for i, delay_ms in enumerate((0, 300)):
+        url = sensitive_evidence_gate_page_delayed_consent(tmp_path, delay_ms=delay_ms)
+        session_id = f"t-immediate-vs-delayed-{i}"
+        try:
+            outcome = _open(tmp_path, session_id, url)
+            fps.append(outcome.fingerprint)
+        finally:
+            browser_runtime.close_session(session_id)
+    assert fps[0] == fps[1]

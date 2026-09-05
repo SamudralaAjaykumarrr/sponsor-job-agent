@@ -133,6 +133,39 @@ def test_verified_answer_resolves_field_on_later_independent_pass(tmp_path, tmp_
         browser_runtime.close_session(session_id)
 
 
+def test_verified_checkbox_answer_resolves_on_a_later_independent_fill_pass(tmp_path, tmp_env, monkeypatch):
+    """Real live gap: a self-labeled checkbox's `choices` is just its own
+    full accessible label, while `record_verified_custom_answer`'s
+    verified_value is deliberately a short LOCATE-BY-SUBSTRING prefix
+    (matching `_fill_one`'s own `get_by_label(value, exact=False)`
+    convention), never the exact full label text. `_fill_pass`'s generic
+    choices-gate previously required EXACT equality for every field type,
+    so a genuinely durable, verified checkbox answer could never auto-
+    resolve on any LATER, independent fill pass (e.g. a fresh
+    resume_session() reconstruction) -- it stayed unresolved forever
+    despite real evidence on file, even though the SAME immediate
+    rediscovery right after recording it happened to already show it
+    filled in the live DOM."""
+    monkeypatch.setattr("app.applications.browser_assist.get_job", lambda jid: _fake_job(jid))
+    url = sensitive_evidence_gate_page(tmp_path)
+    session_id, execution_id = _session_and_execution(214)
+    try:
+        _open(session_id, url, job_id=214)
+        result = browser_assist.record_verified_custom_answer(
+            session_id, "By checking this box, I consent", "I consent to the company collecting",
+        )
+        assert result["ok"] is True
+        assert result["evidence_id"]
+
+        job = _fake_job(214)
+        app_fields = browser_assist._build_fields_for_job(job, execution_id)
+        outcome = browser_runtime.rediscover(session_id)
+        fill_result = browser_runtime.fill_fields(session_id, outcome.fields, app_fields)
+        assert not any("checking this box" in u.lower() for u in fill_result.unresolved), fill_result.unresolved
+    finally:
+        browser_runtime.close_session(session_id)
+
+
 # --- 2: click without displayed-value verification does NOT satisfy
 # readiness -- an unmatched value records nothing. ---
 
@@ -377,5 +410,84 @@ def test_consent_checkbox_left_unchecked_never_records_evidence(tmp_path, tmp_en
         assert result["ok"] is False
         assert result["evidence_id"] is None
         assert vfe.list_evidence_for_execution(execution_id) == []
+    finally:
+        browser_runtime.close_session(session_id)
+
+
+# --- Provider-Semantic Selection Verification V1: record_verified_custom_
+# answer() must accept a genuinely flag-verified combobox selection even
+# when its OWN independent text re-check is inconclusive (a real live gap:
+# _fill_one/_fill_combobox already verified the correct option via the
+# flag-icon check, but this separate text-only re-check used to reject it
+# as a false failure for a field whose display is a non-identifying
+# fragment, e.g. a phone-country dial code). --------------------------------
+
+def test_verified_custom_answer_accepts_flag_verified_phone_country(tmp_path, tmp_env, monkeypatch):
+    from tests.browser_fixtures import phone_country_code_combobox_page
+
+    monkeypatch.setattr("app.applications.browser_assist.get_job", lambda jid: _fake_job(jid))
+    url = phone_country_code_combobox_page(tmp_path)
+    session_id, execution_id = _session_and_execution(211)
+    try:
+        _open(session_id, url, job_id=211)
+        result = browser_assist.record_verified_custom_answer(session_id, "Country", "United States")
+        assert result["ok"] is True, result["detail"]
+        assert result["evidence_id"]
+        # The recorded evidence is honest about what was actually visible
+        # on screen -- "+1", never a fabricated "United States" the page
+        # itself never displayed.
+        assert result["actual"] == "+1"
+
+        rows = vfe.list_evidence_for_execution(execution_id)
+        assert len(rows) == 1
+        assert rows[0]["expected_answer"] == "United States"
+        assert rows[0]["actual_displayed_value"] == "+1"
+    finally:
+        browser_runtime.close_session(session_id)
+
+
+def test_verified_custom_answer_rejects_wrong_country_despite_same_dial_code(tmp_path, tmp_env, monkeypatch):
+    """Canada shares the identical "+1" text with the US -- asking for
+    "Canada" then checking against a page that only ever shows "United
+    States" (never actually possible here since the fixture always
+    displays whichever was truly selected, but this proves the flag
+    fallback in record_verified_custom_answer is never reached for a
+    genuinely UNMATCHED value in the first place, at the fill_one_field
+    layer -- no evidence is ever recorded for a value with no real match)."""
+    from tests.browser_fixtures import phone_country_code_combobox_page
+
+    monkeypatch.setattr("app.applications.browser_assist.get_job", lambda jid: _fake_job(jid))
+    url = phone_country_code_combobox_page(tmp_path)
+    session_id, execution_id = _session_and_execution(212)
+    try:
+        _open(session_id, url, job_id=212)
+        result = browser_assist.record_verified_custom_answer(session_id, "Country", "Germany")
+        assert result["ok"] is False
+        assert result["evidence_id"] is None
+        assert vfe.list_evidence_for_execution(execution_id) == []
+    finally:
+        browser_runtime.close_session(session_id)
+
+
+# --- Form-Fingerprint Stability V1: a consent checkbox that only mounts
+# after a real delay must still be answerable through the ordinary
+# record_verified_custom_answer path (proving the field-count-stability
+# rescan in browser_runtime feeds through end-to-end, not just at the raw
+# discovery level). ----------------------------------------------------
+
+def test_verified_custom_answer_resolves_delayed_consent_checkbox(tmp_path, tmp_env, monkeypatch):
+    from tests.browser_fixtures import sensitive_evidence_gate_page_delayed_consent
+
+    monkeypatch.setattr("app.applications.browser_assist.get_job", lambda jid: _fake_job(jid))
+    url = sensitive_evidence_gate_page_delayed_consent(tmp_path, delay_ms=300)
+    session_id, execution_id = _session_and_execution(213)
+    try:
+        _open(session_id, url, job_id=213)
+        result = browser_assist.record_verified_custom_answer(
+            session_id, "By checking this box, I consent", "I consent to the company collecting",
+        )
+        assert result["ok"] is True, result["detail"]
+        assert result["actual"] == "true"
+        assert result["evidence_id"]
     finally:
         browser_runtime.close_session(session_id)

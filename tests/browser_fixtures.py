@@ -1471,6 +1471,132 @@ def sensitive_evidence_gate_page(tmp_path: Path) -> str:
     return _write(tmp_path, "sensitive_evidence_gate.html", body)
 
 
+def sensitive_evidence_gate_page_delayed_consent(tmp_path: Path, *, delay_ms: int = 300) -> str:
+    """Form-Fingerprint Stability V1: the SAME shape as
+    `sensitive_evidence_gate_page`, except the consent checkbox (and its
+    label) are not in the DOM at all until `delay_ms` after page load --
+    mirroring a real, live-observed race on a real Robinhood/Greenhouse
+    posting where a whole additional demographic/EEO section (its
+    companion consent checkbox included) mounted asynchronously, a short
+    but real time after the rest of the form was already interactive and
+    fillable. `gender`/`official` are present from first paint, so
+    `_wait_for_stable_state()`'s content_ready condition resolves almost
+    immediately -- well before `delay_ms` fires -- reproducing the exact
+    race `_rescan_until_field_count_stable` exists to close: a discovery
+    pass that runs right after the DOM is declared 'stable' would
+    otherwise miss this field entirely, and would also compute a DIFFERENT
+    (field-count-short) fingerprint than a pass that happened to run a
+    moment later."""
+    body = _jsonld_block() + _COMBOBOX_WIDGET_JS + textwrap.dedent(f"""
+        <h1>Job Application</h1>
+        <form id="application-form">
+          <label for="fname">First Name</label><input id="fname" name="first_name" type="text" required>
+          <label for="mail">Email</label><input id="mail" name="email" type="text" required>
+
+          <div class="field-wrap">
+            <label id="gender-label" for="gender">What is your gender identity?</label>
+            <input id="gender" role="combobox" aria-expanded="false" aria-labelledby="gender-label" required
+                   onclick="sjaOpenCombobox('gender', 'gender-listbox')"
+                   oninput="sjaOpenCombobox('gender', 'gender-listbox')">
+            <div id="gender-listbox" role="listbox" style="display:none">
+              <div role="option" onclick="sjaSelectOption('gender', 'gender-listbox', 'Cisgender man')">Cisgender man</div>
+              <div role="option" onclick="sjaSelectOption('gender', 'gender-listbox', 'Cisgender woman')">Cisgender woman</div>
+            </div>
+          </div>
+
+          <div class="field-wrap">
+            <label id="official-label" for="official">Are you related to or have a close personal relationship with a government official?</label>
+            <input id="official" role="combobox" aria-expanded="false" aria-labelledby="official-label" required
+                   onclick="sjaOpenCombobox('official', 'official-listbox')"
+                   oninput="sjaOpenCombobox('official', 'official-listbox')">
+            <div id="official-listbox" role="listbox" style="display:none">
+              <div role="option" onclick="sjaSelectOption('official', 'official-listbox', 'Yes')">Yes</div>
+              <div role="option" onclick="sjaSelectOption('official', 'official-listbox', 'No')">No</div>
+            </div>
+          </div>
+
+          <div id="consent-slot"></div>
+
+          <button type="submit">Submit Application</button>
+        </form>
+        <script>
+          setTimeout(function () {{
+            var slot = document.getElementById('consent-slot');
+            var label = document.createElement('label');
+            label.setAttribute('for', 'consent');
+            label.innerText = 'By checking this box, I consent to the company collecting my demographic survey responses.';
+            var input = document.createElement('input');
+            input.id = 'consent';
+            input.type = 'checkbox';
+            input.required = true;
+            slot.appendChild(label);
+            slot.appendChild(input);
+          }}, {delay_ms});
+        </script>
+    """)
+    return _write(tmp_path, "sensitive_evidence_gate_delayed.html", body)
+
+
+def phone_country_code_combobox_page(tmp_path: Path) -> str:
+    """Form-Fingerprint Stability V1 / Provider-Semantic Selection
+    Verification V1: mirrors a real, live-observed phone-country-code
+    picker (Robinhood's real Greenhouse posting) that, after selection,
+    displays ONLY a flag icon and dial code (e.g. "+1") -- never the
+    country's name -- so ordinary text-based display verification can
+    never honestly confirm WHICH country (multiple real countries share a
+    dial code: US/Canada/Puerto Rico all use "+1"). Each option carries its
+    own `iti__flag iti__<iso2>` marker (the real, widely-used
+    intl-tel-input library's own convention -- general to any provider
+    using this common library, not specific to this fixture or any one
+    employer), which `browser_runtime._fill_combobox`'s flag-based
+    self-consistency check is exercised against."""
+    body = _jsonld_block() + textwrap.dedent("""
+        <h1>Job Application</h1>
+        <form id="application-form">
+          <label id="country-label" for="country">Country</label>
+          <input id="country" role="combobox" aria-expanded="false" aria-labelledby="country-label"
+                 onclick="sjaOpenPhoneCombobox()" oninput="sjaOpenPhoneCombobox()">
+          <div id="country-listbox" role="listbox" style="display:none">
+            <div role="option" onclick="sjaSelectPhoneOption('iti__us', '+1', 'United States +1')">
+              <div class="iti__flag iti__us"></div>United States +1
+            </div>
+            <div role="option" onclick="sjaSelectPhoneOption('iti__ca', '+1', 'Canada +1')">
+              <div class="iti__flag iti__ca"></div>Canada +1
+            </div>
+          </div>
+          <button type="submit">Submit Application</button>
+        </form>
+        <script>
+          function sjaOpenPhoneCombobox() {
+            document.getElementById('country').setAttribute('aria-expanded', 'true');
+            document.getElementById('country').setAttribute('aria-controls', 'country-listbox');
+            document.getElementById('country-listbox').style.display = 'block';
+          }
+          function sjaSelectPhoneOption(flagClass, dialCode, optionText) {
+            var input = document.getElementById('country');
+            input.value = '';
+            input.setAttribute('aria-expanded', 'false');
+            input.removeAttribute('aria-controls');
+            document.getElementById('country-listbox').style.display = 'none';
+            var display = input.parentElement.querySelector('.select__single-value');
+            if (!display) {
+              display = document.createElement('div');
+              display.className = 'select__single-value';
+              input.parentElement.appendChild(display);
+            }
+            display.innerHTML = '<div class="iti__flag ' + flagClass + '"></div><span>' + dialCode + '</span>';
+          }
+          document.addEventListener('keydown', function (e) {
+            if (e.key === 'Escape') {
+              document.querySelectorAll('[role=listbox]').forEach(function (lb) { lb.style.display = 'none'; });
+              document.querySelectorAll('[role=combobox]').forEach(function (cb) { cb.setAttribute('aria-expanded', 'false'); });
+            }
+          });
+        </script>
+    """)
+    return _write(tmp_path, "phone_country_code_combobox.html", body)
+
+
 def combobox_reliability_page_option_changed(tmp_path: Path) -> str:
     """Same STRUCTURAL shape (same questions/required/types) as
     combobox_reliability_page, used to prove that filling/selecting values
